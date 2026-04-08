@@ -336,8 +336,8 @@ expr
     | expr '||' expr                               // logical or
     | expr '&&' expr                               // logical and
     | expr ('=='|'!='|'<'|'>'|'<='|'>=') expr      // comparison
-    | expr ('+'|'-') expr                           // additive
     | expr ('*'|'/'|'%'|'\\') expr                   // multiplicative (\ = integer division)
+    | expr ('+'|'-') expr                           // additive
     | '-' expr                                      // unary minus
     | '(' expr ')'                                  // grouping
     | anyId ('(' exprList ')')?                     // variable or macro call

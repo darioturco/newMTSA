@@ -13,10 +13,13 @@ import java.nio.file.Path;
 public class Main {
 
     public static void main(String[] args) throws IOException {
-        // Path file = Path.of(args[0]);
-        Path file = Path.of(".\\fsp\\Benchmark\\DP\\DP-2-2.fsp");
-        //Path file = Path.of(".\\fsp\\Benchmark\\TL\\TL-2-2.fsp");
-        //Path file = Path.of(".\\fsp\\Benchmark\\CM\\CM-2-2.fsp");
+        Path file;
+        if(args.length > 0){
+            file = Path.of(args[0]);
+        }else{
+            file = Path.of(".\\fsp\\Benchmark\\CM\\CM-2-2.fsp");
+        }
+
         FSPModel model = FSPParser.parse(file);
 
         System.out.println("===============================================");

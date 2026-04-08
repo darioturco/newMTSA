@@ -164,10 +164,12 @@ class FSPParserTest {
         Path file = Paths.get("fsp/Benchmark/TL/TL-2-2.fsp");
         FSPModel model = FSPParser.parse(file);
 
-        assertEquals(3, model.processes().size());
-        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Machine")));
+        assertEquals(5, model.processes().size());
+        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Machine(0)")));
+        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Machine(1)")));
+        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Buffer(1)")));
+        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Buffer(2)")));
         assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("TU")));
-        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Buffer")));
 
         assertEquals(3, model.composites().size());
         assertTrue(model.composites().stream().anyMatch(c -> c.name().equals("Plant")));
@@ -180,6 +182,34 @@ class FSPParserTest {
         assertTrue(goal.marking().contains("accept"));
         assertTrue(goal.marking().contains("reject"));
         assertTrue(goal.nonblocking());
+    }
+
+    /**
+     * fsp/Benchmark/CM/CM-2-2.fsp  — Cats and Mice benchmark
+     *
+     * Verifies operator-precedence correctness:
+     *   const Areas = 2*Levels+1  with Levels=1 (K=1)  →  (2*1)+1 = 3,  NOT 2*(1+1)=4
+     *   const Center = Areas \ 2                        →  3\2 = 1
+     *   const Last   = Areas-1                          →  2
+     */
+    @Test
+    void benchmarkCM_constantsHaveCorrectValues() throws IOException {
+        Path file = Paths.get("fsp/Benchmark/CM/CM-2-2.fsp");
+        FSPModel model = FSPParser.parse(file);
+
+        assertTrue(model.errors().isEmpty(),
+                "Parse errors in CM-2-2.fsp: " + model.errors());
+
+        var consts = model.constants();
+        java.util.function.Function<String, Integer> get =
+                name -> consts.stream()
+                        .filter(c -> c.name().equals(name))
+                        .mapToInt(c -> c.value()).findFirst().orElseThrow();
+
+        assertEquals(1, get.apply("Levels"), "Levels");
+        assertEquals(3, get.apply("Areas"),  "Areas = 2*Levels+1 must respect * before +");
+        assertEquals(1, get.apply("Center"), "Center = Areas \\ 2");
+        assertEquals(2, get.apply("Last"),   "Last = Areas-1");
     }
 
     /**

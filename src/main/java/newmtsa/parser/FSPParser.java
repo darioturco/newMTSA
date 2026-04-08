@@ -143,6 +143,14 @@ public class FSPParser {
     private static final Pattern FOLD_TERNARY = Pattern.compile(
             "(?<!\\w)(-?\\d+)\\s*\\?\\s*(-?\\d+)\\s*:\\s*(-?\\d+)(?!\\d)");
 
+    /** Matches:  integer  &&  integer */
+    private static final Pattern FOLD_AND = Pattern.compile(
+            "(?<!\\w)(-?\\d+)\\s*&&\\s*(-?\\d+)(?!\\d)");
+
+    /** Matches:  integer  ||  integer */
+    private static final Pattern FOLD_OR = Pattern.compile(
+            "(?<!\\w)(-?\\d+)\\s*\\|\\|\\s*(-?\\d+)(?!\\d)");
+
     private static String foldConsts(String text) {
         String prev;
         int limit = 40;   // guard against infinite loops
@@ -154,18 +162,33 @@ public class FSPParser {
             // greedily match the leading digit of an un-folded expression like
             // "0-1" and produce a wrong result.
             String arith;
-            do {
-                arith = text;
-                text = foldOne(text, FOLD_MUL);  // higher precedence first
-                text = foldOne(text, FOLD_ADD);
-            } while (!text.equals(arith));
+            // Fold all multiplications to convergence BEFORE any additions,
+            // so that precedence is respected (e.g. 2*3+1*4 → 6+4 = 10, not 7*4 = 28).
+            do { arith = text; text = foldOne(text, FOLD_MUL); } while (!text.equals(arith));
+            do { arith = text; text = foldOne(text, FOLD_ADD); } while (!text.equals(arith));
             text = foldCmp(text);                 // comparisons → 0 or 1
+            text = foldAnd(text);                 // integer && integer → 0 or 1
+            text = foldOr(text);                  // integer || integer → 0 or 1
             text = foldTernary(text);             // n ? a : b → a or b
             // Remove redundant parens around a bare integer, but only when NOT
             // preceded by a word character (to avoid mangling names like "Monitor(0)").
             text = text.replaceAll("(?<!\\w)\\((-?\\d+)\\)", "$1");
         } while (!text.equals(prev) && --limit > 0);
         return text;
+    }
+
+    private static String foldAnd(String text) {
+        Matcher m = FOLD_AND.matcher(text);
+        if (!m.find()) return text;
+        int r = (Integer.parseInt(m.group(1)) != 0 && Integer.parseInt(m.group(2)) != 0) ? 1 : 0;
+        return text.substring(0, m.start()) + r + text.substring(m.end());
+    }
+
+    private static String foldOr(String text) {
+        Matcher m = FOLD_OR.matcher(text);
+        if (!m.find()) return text;
+        int r = (Integer.parseInt(m.group(1)) != 0 || Integer.parseInt(m.group(2)) != 0) ? 1 : 0;
+        return text.substring(0, m.start()) + r + text.substring(m.end());
     }
 
     private static String foldCmp(String text) {
@@ -217,6 +240,13 @@ public class FSPParser {
         }
     }
 
+    /**
+     * A concrete action string plus any range-variable bindings introduced
+     * by a labeled index in the action label (e.g. {@code [b:Area]} binds b).
+     * The bindings must be active when the transition target is evaluated.
+     */
+    private record ActionExpansion(String text, Map<String, Integer> bindings) {}
+
     // ─── Visitor ──────────────────────────────────────────────────────────────
     // Walks the parse tree and collects top-level definitions into plain lists.
     // Each visitX method records the definition it cares about and returns null
@@ -254,6 +284,11 @@ public class FSPParser {
         // Declared ranges keyed by name:  Area → [lo, hi]
         // Used when a local-process index spec references a range by name, e.g. [a:Area].
         private final Map<String, int[]> rangeMap = new HashMap<>();
+
+        // Local-process aliases within the current LTS being built.
+        // e.g.  Etiquete[0] = Ready  →  localAliases["Etiquete[0]"] = "Ready"
+        // Populated in expandIndexSpec; followed in lpStateName.
+        private final Map<String, String> localAliases = new HashMap<>();
 
         // Set during visitProcessDef so that lpStateName can resolve the process
         // name back to the actual initial state when it appears as a transition target.
@@ -476,6 +511,7 @@ public class FSPParser {
             currentEnv = new HashMap<>(constEnv);
             currentProcessName = null;
             currentProcessInitialState = null;
+            localAliases.clear();
         }
 
         /**
@@ -490,10 +526,15 @@ public class FSPParser {
             StringBuilder sb = new StringBuilder(ctx.UPPER_ID().getText());
             for (var e : ctx.expr()) sb.append("[").append(e.getText()).append("]");
             String result = substituteConsts(sb.toString(), currentEnv, List.of());
-            // When the process name appears as a state reference (e.g. "-> TU") and
-            // it is an alias for another state, resolve it to that state.
+            // Resolve top-level process name alias (e.g. TU = Idle → "TU" → "Idle").
             if (currentProcessInitialState != null && result.equals(currentProcessName)) {
                 return currentProcessInitialState;
+            }
+            // Resolve local process aliases (e.g. Etiquete[0] = Ready → "Etiquete[0]" → "Ready").
+            // Follow the chain in case of multi-hop aliases.
+            String aliased;
+            while ((aliased = localAliases.get(result)) != null) {
+                result = aliased;
             }
             return result;
         }
@@ -527,10 +568,16 @@ public class FSPParser {
                 List<Transition> transitions, int[] counter) {
 
             if (specIdx == specs.size()) {
-                // All index specs resolved — register this state and extract transitions.
                 String stateName = baseName + nameAccum;
-                states.add(stateName);
-                extractFromLocalProcess(stateName, body, states, actions, transitions, counter);
+                if (body.UPPER_ID() != null) {
+                    // Pure alias:  Etiquete[0] = Ready
+                    // Register the alias; do NOT add a spurious state.
+                    String target = lpStateName(body);
+                    localAliases.put(stateName, target);
+                } else {
+                    states.add(stateName);
+                    extractFromLocalProcess(stateName, body, states, actions, transitions, counter);
+                }
                 return;
             }
 
@@ -614,8 +661,16 @@ public class FSPParser {
                 FSPGrammarParser.LocalProcessContext lp,
                 Set<String> states, Set<String> actions,
                 List<Transition> transitions, int[] counter) {
-            if (lp.UPPER_ID() != null) return; // pure alias — no outgoing transitions here
-            if (lp.choice() == null) return;    // if/then/else — skip (complex expansion not yet supported)
+            if (lp.UPPER_ID() != null) return; // pure alias — no outgoing transitions
+            if (lp.IF() != null) {
+                // if (cond) then lp0 else lp1 — evaluate condition and recurse into branch.
+                String cond = substituteConsts(lp.expr(0).getText(), currentEnv, List.of());
+                FSPGrammarParser.LocalProcessContext branch =
+                        "0".equals(cond) ? lp.localProcess(1) : lp.localProcess(0);
+                extractFromLocalProcess(fromState, branch, states, actions, transitions, counter);
+                return;
+            }
+            if (lp.choice() == null) return;
             extractFromChoice(fromState, lp.choice(), states, actions, transitions, counter);
         }
 
@@ -630,10 +685,11 @@ public class FSPParser {
 
         /**
          * Turn one guardedPrefix into one or more transitions.
-         * Action chains  a -> b -> c -> State  become:
-         *   fromState --a--> _fromState_N
-         *   _fromState_N --b--> _fromState_N+1
-         *   _fromState_N+1 --c--> State
+         * Handles:
+         *  - when-guards (skip if condition folds to "0")
+         *  - range-indexed action labels (cat[0..Cats-1].move[b:Area] → multiple transitions)
+         *  - if-then-else in the target localProcess
+         *  - action chains  a -> b -> State
          */
         private void extractFromGuardedPrefix(
                 String fromState,
@@ -641,45 +697,215 @@ public class FSPParser {
                 Set<String> states, Set<String> actions,
                 List<Transition> transitions, int[] counter) {
 
-            var ap     = gp.actionPrefix();
+            // Evaluate the when-guard; skip if the condition is false (folds to "0").
+            if (gp.WHEN() != null) {
+                String cond = substituteConsts(gp.expr().getText(), currentEnv, List.of());
+                if ("0".equals(cond)) return;
+            }
+
+            var ap = gp.actionPrefix();
             if (ap == null || ap.prefixActions() == null || ap.localProcess() == null)
                 return; // parse error already recorded; skip this prefix
-            var labels = ap.prefixActions().processActionLabel();
-            var target = ap.localProcess();
 
-            String current = fromState;
-            for (int i = 0; i < labels.size(); i++) {
-                var    pal        = labels.get(i);
-                // Substitute current process parameters (and consts) into the action text.
-                // e.g.  think[Pid]  with Pid=0  →  think[0]
-                String actionText = substituteConsts(pal.getText(), currentEnv, List.of());
-                String baseAction = pal.labelBase() != null
-                        ? substituteConsts(pal.labelBase().getText(), currentEnv, List.of())
-                        : actionText;
-                actions.add(baseAction);
+            extractChain(fromState, ap.prefixActions().processActionLabel(), 0,
+                         ap.localProcess(), states, actions, transitions, counter);
+        }
 
-                boolean isLast = (i == labels.size() - 1);
-                String next;
-                if (isLast) {
-                    if (target.UPPER_ID() != null) {
-                        next = lpStateName(target);
-                    } else if (target.choice() != null) {
-                        // Inline target choice — create an intermediate state.
-                        next = "_" + fromState + "_" + counter[0]++;
-                        states.add(next);
-                        extractFromChoice(next, target.choice(), states, actions, transitions, counter);
-                    } else {
-                        // if/then/else or other complex form — no transition to add
-                        return;
-                    }
-                } else {
-                    next = "_" + fromState + "_" + counter[0]++;
-                    states.add(next);
+        /**
+         * Recursively process a chain of action labels with range expansion.
+         * For each expansion of label[labelIdx], temporarily binds its range
+         * variables into currentEnv, then either recurses for the next label
+         * or resolves the final target state.
+         */
+        private void extractChain(
+                String fromState,
+                List<FSPGrammarParser.ProcessActionLabelContext> labels,
+                int labelIdx,
+                FSPGrammarParser.LocalProcessContext finalTarget,
+                Set<String> states, Set<String> actions,
+                List<Transition> transitions, int[] counter) {
+
+            var pal = labels.get(labelIdx);
+            boolean isLast = (labelIdx == labels.size() - 1);
+
+            for (ActionExpansion exp : expandProcessActionLabel(pal)) {
+                actions.add(exp.text());
+
+                // Temporarily bind any range variables from this label.
+                Map<String, Integer> saved = new HashMap<>();
+                for (var entry : exp.bindings().entrySet()) {
+                    saved.put(entry.getKey(), currentEnv.get(entry.getKey()));
+                    currentEnv.put(entry.getKey(), entry.getValue());
                 }
 
-                transitions.add(new Transition(current, actionText, next));
-                current = next;
+                if (isLast) {
+                    String next = resolveTargetState(fromState, finalTarget,
+                                                     states, actions, transitions, counter);
+                    if (next != null)
+                        transitions.add(new Transition(fromState, exp.text(), next));
+                } else {
+                    String intermediate = "_" + fromState + "_" + counter[0]++;
+                    states.add(intermediate);
+                    transitions.add(new Transition(fromState, exp.text(), intermediate));
+                    extractChain(intermediate, labels, labelIdx + 1, finalTarget,
+                                 states, actions, transitions, counter);
+                }
+
+                // Restore bindings.
+                for (String varName : exp.bindings().keySet()) {
+                    Integer prev = saved.get(varName);
+                    if (prev == null) currentEnv.remove(varName);
+                    else currentEnv.put(varName, prev);
+                }
             }
+        }
+
+        /**
+         * Resolve a localProcess to a concrete state name, handling:
+         *  - UPPER_ID [expr]*  →  state reference (via lpStateName)
+         *  - if-then-else      →  evaluate condition, pick branch, recurse
+         *  - '(' choice ')'    →  create intermediate state, extract choice
+         */
+        private String resolveTargetState(
+                String fromState,
+                FSPGrammarParser.LocalProcessContext lp,
+                Set<String> states, Set<String> actions,
+                List<Transition> transitions, int[] counter) {
+
+            if (lp.UPPER_ID() != null) {
+                String name = lpStateName(lp);
+                states.add(name);  // ensures ERROR / STOP / etc. appear as states
+                return name;
+            }
+            if (lp.IF() != null) {
+                String cond = substituteConsts(lp.expr(0).getText(), currentEnv, List.of());
+                // "0" = false → ELSE branch; anything else → THEN branch
+                FSPGrammarParser.LocalProcessContext branch =
+                        "0".equals(cond) ? lp.localProcess(1) : lp.localProcess(0);
+                return resolveTargetState(fromState, branch, states, actions, transitions, counter);
+            }
+            if (lp.choice() != null) {
+                String inter = "_" + fromState + "_" + counter[0]++;
+                states.add(inter);
+                extractFromChoice(inter, lp.choice(), states, actions, transitions, counter);
+                return inter;
+            }
+            return null;
+        }
+
+        // ── Action-label expansion ────────────────────────────────────────────
+        // Expand a processActionLabel (possibly containing range indices or
+        // range-variable bindings) into a list of ActionExpansion records,
+        // each holding a concrete action string and any variables bound during
+        // the expansion (e.g. b=3 from [b:Area]).
+
+        private List<ActionExpansion> expandProcessActionLabel(
+                FSPGrammarParser.ProcessActionLabelContext pal) {
+            if (pal.labelBase() != null) return expandActionLabelBase(pal.labelBase());
+            // Set form: {a, b, c} — expand each child and concatenate.
+            List<ActionExpansion> result = new ArrayList<>();
+            for (var child : pal.processActionLabel())
+                result.addAll(expandProcessActionLabel(child));
+            return result;
+        }
+
+        private List<ActionExpansion> expandActionLabelBase(
+                FSPGrammarParser.LabelBaseContext lb) {
+            // Cartesian product over segments, joined with ".".
+            List<ActionExpansion> acc = List.of(new ActionExpansion("", Map.of()));
+            boolean first = true;
+            for (var seg : lb.labelSegment()) {
+                String sep = first ? "" : ".";
+                first = false;
+                List<ActionExpansion> next = new ArrayList<>();
+                for (ActionExpansion prefix : acc) {
+                    for (ActionExpansion s : expandActionLabelSegment(seg)) {
+                        Map<String, Integer> merged = new HashMap<>(prefix.bindings());
+                        merged.putAll(s.bindings());
+                        next.add(new ActionExpansion(
+                                prefix.text().isEmpty() ? s.text() : prefix.text() + sep + s.text(),
+                                merged));
+                    }
+                }
+                acc = next;
+            }
+            return acc;
+        }
+
+        private List<ActionExpansion> expandActionLabelSegment(
+                FSPGrammarParser.LabelSegmentContext seg) {
+            String base = seg.LOWER_ID().getText();
+            if (seg.labelIndex().isEmpty()) return List.of(new ActionExpansion(base, Map.of()));
+            // Cartesian product of index expansions, prefixed with base.
+            List<ActionExpansion> indexPart = List.of(new ActionExpansion("", Map.of()));
+            for (var idx : seg.labelIndex()) {
+                List<ActionExpansion> next = new ArrayList<>();
+                for (ActionExpansion prefix : indexPart) {
+                    for (ActionExpansion s : expandActionLabelIndex(idx)) {
+                        Map<String, Integer> merged = new HashMap<>(prefix.bindings());
+                        merged.putAll(s.bindings());
+                        next.add(new ActionExpansion(prefix.text() + s.text(), merged));
+                    }
+                }
+                indexPart = next;
+            }
+            return indexPart.stream()
+                    .map(e -> new ActionExpansion(base + e.text(), e.bindings()))
+                    .collect(Collectors.toList());
+        }
+
+        /**
+         * Expand one label index bracket to a list of "[value]" ActionExpansions.
+         * Variable bindings (b:Area) are captured; plain ranges produce no binding.
+         */
+        private List<ActionExpansion> expandActionLabelIndex(
+                FSPGrammarParser.LabelIndexContext idx) {
+            if (idx.anyId() != null) {
+                // Variable binding:  b:Area  — expand range, bind variable name.
+                String varName = idx.anyId().getText();
+                var roe = idx.rangeOrExpr();
+                int lo, hi;
+                if (roe.expr().size() >= 2) {
+                    lo = Integer.parseInt(substituteConsts(roe.expr(0).getText(), currentEnv, List.of()));
+                    hi = Integer.parseInt(substituteConsts(roe.expr(1).getText(), currentEnv, List.of()));
+                } else {
+                    String text = substituteConsts(roe.expr(0).getText(), currentEnv, List.of());
+                    int[] bounds = parseRangeBound(text);
+                    if (bounds == null) return List.of(new ActionExpansion("[" + text + "]", Map.of()));
+                    lo = bounds[0]; hi = bounds[1];
+                }
+                List<ActionExpansion> result = new ArrayList<>();
+                for (int v = lo; v <= hi; v++)
+                    result.add(new ActionExpansion("[" + v + "]", Map.of(varName, v)));
+                return result;
+            }
+            // Plain rangeOrExpr: either an explicit range (lo..hi) or a scalar/range-name.
+            return expandActionRangeOrExpr(idx.rangeOrExpr());
+        }
+
+        private List<ActionExpansion> expandActionRangeOrExpr(
+                FSPGrammarParser.RangeOrExprContext roe) {
+            if (roe.expr().size() >= 2) {
+                // Explicit range:  lo..hi
+                int lo = Integer.parseInt(substituteConsts(roe.expr(0).getText(), currentEnv, List.of()));
+                int hi = Integer.parseInt(substituteConsts(roe.expr(1).getText(), currentEnv, List.of()));
+                List<ActionExpansion> result = new ArrayList<>();
+                for (int v = lo; v <= hi; v++)
+                    result.add(new ActionExpansion("[" + v + "]", Map.of()));
+                return result;
+            }
+            // Single expr: scalar or range name.
+            String text = substituteConsts(roe.expr(0).getText(), currentEnv, List.of());
+            int[] bounds = parseRangeBound(text);
+            if (bounds != null) {
+                if (bounds[0] == bounds[1])
+                    return List.of(new ActionExpansion("[" + bounds[0] + "]", Map.of()));
+                List<ActionExpansion> result = new ArrayList<>();
+                for (int v = bounds[0]; v <= bounds[1]; v++)
+                    result.add(new ActionExpansion("[" + v + "]", Map.of()));
+                return result;
+            }
+            return List.of(new ActionExpansion("[" + text + "]", Map.of()));
         }
 
         // ── composite ────────────────────────────────────────────────────────
@@ -887,9 +1113,90 @@ public class FSPParser {
 
         private List<String> extractExtSetElements(FSPGrammarParser.ExtSetElementsContext ctx) {
             if (ctx == null) return List.of();
-            return ctx.extSetElement().stream()
-                    .map(e -> e.getStart().getText())
-                    .collect(Collectors.toList());
+            List<String> result = new ArrayList<>();
+            for (var e : ctx.extSetElement()) {
+                if (e.labelBase() != null) {
+                    result.addAll(expandLabelBase(e.labelBase()));
+                } else if (e.UPPER_ID() != null) {
+                    result.add(e.UPPER_ID().getText());
+                } else if (e.INT() != null) {
+                    result.add(e.INT().getText());
+                }
+            }
+            return result;
+        }
+
+        /**
+         * Expand a labelBase to all concrete action strings.
+         * Handles dotted segments (eat.all) and range indices (take[Phil][Phil]).
+         */
+        private List<String> expandLabelBase(FSPGrammarParser.LabelBaseContext lb) {
+            List<List<String>> segExpansions = new ArrayList<>();
+            for (var seg : lb.labelSegment())
+                segExpansions.add(expandLabelSegment(seg));
+            // Cartesian product of segments, joined with "."
+            List<String> acc = List.of("");
+            for (List<String> part : segExpansions) {
+                List<String> next = new ArrayList<>();
+                for (String prefix : acc)
+                    for (String s : part)
+                        next.add(prefix.isEmpty() ? s : prefix + "." + s);
+                acc = next;
+            }
+            return acc;
+        }
+
+        private List<String> expandLabelSegment(FSPGrammarParser.LabelSegmentContext seg) {
+            String base = seg.LOWER_ID().getText();
+            if (seg.labelIndex().isEmpty()) return List.of(base);
+            // Cartesian product of all index expansions
+            List<String> indexPart = List.of("");
+            for (var idx : seg.labelIndex()) {
+                List<String> expanded = expandLabelIndex(idx);
+                List<String> next = new ArrayList<>();
+                for (String prefix : indexPart)
+                    for (String s : expanded)
+                        next.add(prefix + s);
+                indexPart = next;
+            }
+            String base0 = base;
+            return indexPart.stream().map(i -> base0 + i).collect(Collectors.toList());
+        }
+
+        /** Expand one label index bracket to a list of "[value]" strings. */
+        private List<String> expandLabelIndex(FSPGrammarParser.LabelIndexContext idx) {
+            if (idx.anyId() != null) {
+                // Variable binding:  b:Area  — expand the range, ignore var name
+                var roe = idx.rangeOrExpr();
+                return expandRangeOrExpr(roe);
+            }
+            return expandRangeOrExpr(idx.rangeOrExpr());
+        }
+
+        private List<String> expandRangeOrExpr(FSPGrammarParser.RangeOrExprContext roe) {
+            if (roe.expr().size() >= 2) {
+                // Explicit range:  lo..hi
+                String loText = substituteConsts(roe.expr(0).getText(), constEnv, List.of());
+                String hiText = substituteConsts(roe.expr(1).getText(), constEnv, List.of());
+                try {
+                    int lo = Integer.parseInt(loText), hi = Integer.parseInt(hiText);
+                    List<String> r = new ArrayList<>();
+                    for (int v = lo; v <= hi; v++) r.add("[" + v + "]");
+                    return r;
+                } catch (NumberFormatException e) {
+                    return List.of("[" + loText + ".." + hiText + "]");
+                }
+            }
+            // Single expr: a scalar or a range name
+            String text = substituteConsts(roe.expr(0).getText(), constEnv, List.of());
+            int[] bounds = parseRangeBound(text);
+            if (bounds != null) {
+                if (bounds[0] == bounds[1]) return List.of("[" + bounds[0] + "]");
+                List<String> r = new ArrayList<>();
+                for (int v = bounds[0]; v <= bounds[1]; v++) r.add("[" + v + "]");
+                return r;
+            }
+            return List.of("[" + text + "]");
         }
 
         /**
