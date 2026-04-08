@@ -166,9 +166,9 @@ public class FSPParser {
             // so that precedence is respected (e.g. 2*3+1*4 → 6+4 = 10, not 7*4 = 28).
             do { arith = text; text = foldOne(text, FOLD_MUL); } while (!text.equals(arith));
             do { arith = text; text = foldOne(text, FOLD_ADD); } while (!text.equals(arith));
-            text = foldCmp(text);                 // comparisons → 0 or 1
-            text = foldAnd(text);                 // integer && integer → 0 or 1
-            text = foldOr(text);                  // integer || integer → 0 or 1
+            do { arith = text; text = foldCmp(text); } while (!text.equals(arith));
+            do { arith = text; text = foldAnd(text); } while (!text.equals(arith));
+            do { arith = text; text = foldOr(text);  } while (!text.equals(arith));
             text = foldTernary(text);             // n ? a : b → a or b
             // Remove redundant parens around a bare integer, but only when NOT
             // preceded by a word character (to avoid mangling names like "Monitor(0)").

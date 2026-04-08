@@ -332,12 +332,12 @@ anyId
     ;
 
 expr
-    : <assoc=right> expr '?' expr ':' expr         // ternary
-    | expr '||' expr                               // logical or
-    | expr '&&' expr                               // logical and
-    | expr ('=='|'!='|'<'|'>'|'<='|'>=') expr      // comparison
-    | expr ('*'|'/'|'%'|'\\') expr                   // multiplicative (\ = integer division)
+    : expr ('*'|'/'|'%'|'\\') expr                   // multiplicative (\ = integer division) — highest
     | expr ('+'|'-') expr                           // additive
+    | expr ('=='|'!='|'<'|'>'|'<='|'>=') expr      // comparison
+    | expr '&&' expr                               // logical and
+    | expr '||' expr                               // logical or
+    | <assoc=right> expr '?' expr ':' expr         // ternary — lowest
     | '-' expr                                      // unary minus
     | '(' expr ')'                                  // grouping
     | anyId ('(' exprList ')')?                     // variable or macro call

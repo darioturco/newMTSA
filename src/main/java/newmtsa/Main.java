@@ -17,7 +17,12 @@ public class Main {
         if(args.length > 0){
             file = Path.of(args[0]);
         }else{
-            file = Path.of(".\\fsp\\Benchmark\\CM\\CM-2-2.fsp");
+            //file = Path.of(".\\fsp\\Benchmark\\CM\\CM-2-2.fsp");
+            //file = Path.of(".\\fsp\\Benchmark\\DP\\DP-2-2.fsp");
+            //file = Path.of(".\\fsp\\Benchmark\\TL\\TL-2-2.fsp");
+            //file = Path.of(".\\fsp\\Benchmark\\TA\\TA-2-2.fsp");
+            file = Path.of(".\\fsp\\Benchmark\\AT\\AT-2-2.fsp");
+            //file = Path.of(".\\fsp\\Benchmark\\BW\\BW-2-2.fsp");
         }
 
         FSPModel model = FSPParser.parse(file);
