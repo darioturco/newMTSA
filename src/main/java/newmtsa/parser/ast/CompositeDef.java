@@ -1,3 +1,5 @@
 package newmtsa.parser.ast;
 
-public record CompositeDef(String name) {}
+/** @deprecated Renamed to {@link ParallelCompositionLazy}. */
+@Deprecated
+public final class CompositeDef {}

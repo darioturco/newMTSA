@@ -7,12 +7,18 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public class FSPParser {
 
     public static FSPModel parse(Path file) throws IOException {
-        CharStream chars = CharStreams.fromString(Files.readString(file));
+        // Pre-process: expand macros before feeding source to ANTLR.
+        MacroPreprocessor.Result preprocessed =
+                MacroPreprocessor.process(Files.readString(file));
+
+        CharStream chars = CharStreams.fromString(preprocessed.source());
 
         FSPGrammarLexer lexer = new FSPGrammarLexer(chars);
         CommonTokenStream tokens = new CommonTokenStream(lexer);
@@ -37,16 +43,178 @@ public class FSPParser {
         Visitor visitor = new Visitor();
         visitor.visit(tree);
 
+        // After the visitor has resolved all constants, substitute their names
+        // with numeric values in macro bodies and LTS action/state labels.
+        Map<String, Integer> env = visitor.constEnv;
+
+        List<MacroDef> resolvedMacros = preprocessed.macros().stream()
+                .map(m -> new MacroDef(m.name(), m.params(),
+                        substituteConsts(m.body(), env, m.params())))
+                .collect(Collectors.toList());
+
+        // Processes are now instantiated on demand during composite visits;
+        // the instances map holds the results in insertion order.
+        List<LTS> resolvedProcesses = visitor.instances.values().stream()
+                .map(lts -> new LTS(
+                        lts.name(), lts.initialState(),
+                        lts.states().stream()
+                                .map(s -> substituteConsts(s, env, List.of()))
+                                .collect(Collectors.toList()),
+                        lts.actions().stream()
+                                .map(a -> substituteConsts(a, env, List.of()))
+                                .distinct().collect(Collectors.toList()),
+                        lts.transitions().stream()
+                                .map(t -> new Transition(
+                                        substituteConsts(t.from(), env, List.of()),
+                                        substituteConsts(t.action(), env, List.of()),
+                                        substituteConsts(t.to(), env, List.of())))
+                                .collect(Collectors.toList())))
+                .collect(Collectors.toList());
+
+        Set<String> actions = resolvedProcesses.stream()
+                .flatMap(lts -> lts.actions().stream())
+                .collect(Collectors.toSet());
+
         return new FSPModel(
-                List.copyOf(visitor.processes),
+                List.copyOf(resolvedProcesses),
                 List.copyOf(visitor.composites),
                 List.copyOf(visitor.fluents),
                 List.copyOf(visitor.asserts),
                 List.copyOf(visitor.ltlProperties),
                 List.copyOf(visitor.sets),
                 List.copyOf(visitor.controllerSpecs),
+                List.copyOf(visitor.constants),
+                List.copyOf(visitor.ranges),
+                List.copyOf(resolvedMacros),
+                Set.copyOf(actions),
                 List.copyOf(errors)
         );
+    }
+
+    /**
+     * Replace whole-word occurrences of every constant name in {@code text}
+     * with its resolved integer value, then fold any all-integer arithmetic
+     * sub-expressions that result (e.g. {@code 2-1} → {@code 1}).
+     * Names listed in {@code exclude} are left untouched (macro parameters).
+     * Constants are sorted longest-first to prevent a short name (e.g. "N")
+     * from being replaced inside a longer one (e.g. "Nodes").
+     */
+    private static String substituteConsts(String text,
+                                           Map<String, Integer> env,
+                                           List<String> exclude) {
+        // Process longer names first to avoid partial replacements.
+        List<Map.Entry<String, Integer>> sorted = env.entrySet().stream()
+                .filter(e -> !exclude.contains(e.getKey()))
+                .sorted(Comparator.comparingInt((Map.Entry<String, Integer> e) ->
+                        e.getKey().length()).reversed())
+                .collect(Collectors.toList());
+
+        for (Map.Entry<String, Integer> e : sorted) {
+            text = text.replaceAll(
+                    "\\b" + Pattern.quote(e.getKey()) + "\\b",
+                    Matcher.quoteReplacement(String.valueOf(e.getValue())));
+        }
+        return foldConsts(text);
+    }
+
+    // ── Arithmetic constant-folding ───────────────────────────────────────────
+    // After const-name substitution the text may contain sub-expressions that
+    // are now fully numeric, e.g. "2-1" or "(3+4)*2".  These are evaluated
+    // using three passes (multiplication/division before addition/subtraction)
+    // applied repeatedly until the text stabilises.
+    //
+    // Expressions that still contain variable names are left untouched.
+    // The lookbehind (?<!\w) ensures we never start a number match in the
+    // middle of an identifier (e.g. the "1" in "Fid1" is not matched).
+
+    /** Matches:  integer  [* / % \]  integer  */
+    private static final Pattern FOLD_MUL = Pattern.compile(
+            "(?<!\\w)(-?\\d+)\\s*([*/%\\\\])\\s*(-?\\d+)");
+
+    /** Matches:  integer  [+ -]  integer   but not inside a larger number */
+    private static final Pattern FOLD_ADD = Pattern.compile(
+            "(?<!\\w)(-?\\d+)\\s*([+\\-])\\s*(-?\\d+)(?!\\d)");
+
+    /** Matches:  integer  comparison-op  integer */
+    private static final Pattern FOLD_CMP = Pattern.compile(
+            "(?<!\\w)(-?\\d+)\\s*(==|!=|<=|>=|<|>)\\s*(-?\\d+)(?!\\d)");
+
+    /** Matches a fully-numeric ternary:  integer ? integer : integer */
+    private static final Pattern FOLD_TERNARY = Pattern.compile(
+            "(?<!\\w)(-?\\d+)\\s*\\?\\s*(-?\\d+)\\s*:\\s*(-?\\d+)(?!\\d)");
+
+    private static String foldConsts(String text) {
+        String prev;
+        int limit = 40;   // guard against infinite loops
+        do {
+            prev = text;
+            // Fold all arithmetic to a local fixed point FIRST so that the
+            // branches of a ternary (e.g. 0-1 → -1) are fully numeric before
+            // the ternary pattern is applied.  Without this, FOLD_TERNARY would
+            // greedily match the leading digit of an un-folded expression like
+            // "0-1" and produce a wrong result.
+            String arith;
+            do {
+                arith = text;
+                text = foldOne(text, FOLD_MUL);  // higher precedence first
+                text = foldOne(text, FOLD_ADD);
+            } while (!text.equals(arith));
+            text = foldCmp(text);                 // comparisons → 0 or 1
+            text = foldTernary(text);             // n ? a : b → a or b
+            // Remove redundant parens around a bare integer, but only when NOT
+            // preceded by a word character (to avoid mangling names like "Monitor(0)").
+            text = text.replaceAll("(?<!\\w)\\((-?\\d+)\\)", "$1");
+        } while (!text.equals(prev) && --limit > 0);
+        return text;
+    }
+
+    private static String foldCmp(String text) {
+        Matcher m = FOLD_CMP.matcher(text);
+        if (!m.find()) return text;
+        long left  = Long.parseLong(m.group(1));
+        String op  = m.group(2);
+        long right = Long.parseLong(m.group(3));
+        int result = switch (op) {
+            case "==" -> left == right ? 1 : 0;
+            case "!=" -> left != right ? 1 : 0;
+            case "<"  -> left <  right ? 1 : 0;
+            case ">"  -> left >  right ? 1 : 0;
+            case "<=" -> left <= right ? 1 : 0;
+            case ">=" -> left >= right ? 1 : 0;
+            default   -> throw new IllegalArgumentException(op);
+        };
+        return text.substring(0, m.start()) + result + text.substring(m.end());
+    }
+
+    private static String foldTernary(String text) {
+        Matcher m = FOLD_TERNARY.matcher(text);
+        if (!m.find()) return text;
+        int cond   = Integer.parseInt(m.group(1));
+        String val = cond != 0 ? m.group(2) : m.group(3);
+        return text.substring(0, m.start()) + val + text.substring(m.end());
+    }
+
+    /** Apply {@code pattern} once (leftmost match) and return the updated text. */
+    private static String foldOne(String text, Pattern pattern) {
+        Matcher m = pattern.matcher(text);
+        if (!m.find()) return text;
+        long left  = Long.parseLong(m.group(1));
+        String op  = m.group(2);
+        long right = Long.parseLong(m.group(3));
+        try {
+            long result = switch (op) {
+                case "+"  -> left + right;
+                case "-"  -> left - right;
+                case "*"  -> left * right;
+                case "/"  -> left / right;
+                case "%"  -> left % right;
+                case "\\" -> left / right;   // FSP integer division
+                default   -> throw new IllegalArgumentException(op);
+            };
+            return text.substring(0, m.start()) + result + text.substring(m.end());
+        } catch (ArithmeticException e) {
+            return text;   // division by zero — leave unchanged
+        }
     }
 
     // ─── Visitor ──────────────────────────────────────────────────────────────
@@ -56,21 +224,462 @@ public class FSPParser {
 
     private static final class Visitor extends FSPGrammarBaseVisitor<Void> {
 
-        final List<ProcessDef>        processes       = new ArrayList<>();
-        final List<CompositeDef>      composites      = new ArrayList<>();
+        // Process templates: parse context stored on first visit, LTS built on demand.
+        final Map<String, FSPGrammarParser.ProcessDefContext> templateCtx = new LinkedHashMap<>();
+        // Instantiated LTS objects, keyed by instance name (e.g. "Philosopher(0)").
+        // Insertion order matches the order composites first reference each instance.
+        final Map<String, LTS>                 instances  = new LinkedHashMap<>();
+        final List<ParallelCompositionLazy>    composites = new ArrayList<>();
         final List<FluentDef>         fluents         = new ArrayList<>();
         final List<AssertDef>         asserts         = new ArrayList<>();
         final List<LtlPropertyDef>    ltlProperties   = new ArrayList<>();
         final List<SetDef>            sets            = new ArrayList<>();
         final List<ControllerSpecDef> controllerSpecs = new ArrayList<>();
+        final List<ConstDef>          constants       = new ArrayList<>();
+        final List<RangeDef>          ranges          = new ArrayList<>();
 
-        // ── process ──────────────────────────────────────────────────────────
-        // Ejemplo = A0, A0 = (a -> A1), ...
+        // Resolved const values available for expression evaluation.
+        // Keyed by base name so that later consts can reference earlier ones.
+        private final Map<String, Integer> constEnv = new HashMap<>();
+
+        // Tracks how many times each const base name has been seen,
+        // used to produce unique names on repetition (N, N_1, N_2, …).
+        private final Map<String, Integer> constNameCount = new HashMap<>();
+
+        // Per-process environment: global consts merged with the current
+        // process's parameter defaults (and any active range-loop variables).
+        // Set at the start of visitProcessDef, reset when it returns.
+        private Map<String, Integer> currentEnv = new HashMap<>();
+
+        // Declared ranges keyed by name:  Area → [lo, hi]
+        // Used when a local-process index spec references a range by name, e.g. [a:Area].
+        private final Map<String, int[]> rangeMap = new HashMap<>();
+
+        // Set during visitProcessDef so that lpStateName can resolve the process
+        // name back to the actual initial state when it appears as a transition target.
+        // e.g.  TU = Idle  →  currentProcessName="TU", currentProcessInitialState="Idle"
+        //       Monitor = (eat -> Done)  →  both are null (process name IS the initial state)
+        private String currentProcessName          = null;
+        private String currentProcessInitialState  = null;
+
+        // ── const ────────────────────────────────────────────────────────────
+        // const N = 2    const Philosophers = N
+
+        @Override
+        public Void visitConstDef(FSPGrammarParser.ConstDefContext ctx) {
+            String baseName = ctx.UPPER_ID().getText();
+            int    value    = evalExpr(ctx.expr());
+
+            // Update the environment so later consts can reference this one.
+            constEnv.put(baseName, value);
+
+            int count = constNameCount.merge(baseName, 1, Integer::sum);
+            String uniqueName = count == 1 ? baseName : baseName + "_" + (count - 1);
+
+            constants.add(new ConstDef(uniqueName, value));
+            return null;
+        }
+
+        // ── range ────────────────────────────────────────────────────────────
+        // range Phil = 0..Philosophers-1
+
+        @Override
+        public Void visitRangeDef(FSPGrammarParser.RangeDefContext ctx) {
+            String name = ctx.UPPER_ID().getText();
+            FSPGrammarParser.RangeOrExprContext roe = ctx.rangeOrExpr();
+
+            if (roe.expr().size() < 2)
+                throw new IllegalArgumentException(
+                        "Range '" + name + "' requires two bounds separated by '..'");
+
+            int init = evalExpr(roe.expr(0));
+            int end  = evalExpr(roe.expr(1));   // throws if init > end via RangeDef compact ctor
+            ranges.add(new RangeDef(name, init, end));
+            rangeMap.put(name, new int[]{init, end});
+            return null;
+        }
+
+        /**
+         * Recursively evaluate an arithmetic expression using the resolved
+         * constants collected so far.  Supports:
+         *   INT literal, constant reference (UPPER_ID / LOWER_ID),
+         *   unary minus, grouping, binary + - * / %, ternary ? :
+         */
+        private int evalExpr(FSPGrammarParser.ExprContext ctx) {
+            // INT literal
+            if (ctx.INT() != null) {
+                return Integer.parseInt(ctx.INT().getText());
+            }
+
+            // Variable / constant reference  (anyId with no argument list)
+            if (ctx.anyId() != null) {
+                String name = ctx.anyId().getText();
+                Integer resolved = constEnv.get(name);
+                if (resolved == null)
+                    throw new IllegalArgumentException(
+                            "Undefined constant referenced in const expression: " + name);
+                return resolved;
+            }
+
+            int subExprs = ctx.expr().size();
+
+            // Unary:  '-' expr   or   '(' expr ')'
+            if (subExprs == 1) {
+                int inner = evalExpr(ctx.expr(0));
+                return ctx.getChild(0).getText().equals("-") ? -inner : inner;
+            }
+
+            // Ternary:  expr '?' expr ':' expr
+            if (subExprs == 3) {
+                return evalExpr(ctx.expr(0)) != 0
+                        ? evalExpr(ctx.expr(1))
+                        : evalExpr(ctx.expr(2));
+            }
+
+            // Binary:  expr op expr
+            if (subExprs == 2) {
+                int left  = evalExpr(ctx.expr(0));
+                int right = evalExpr(ctx.expr(1));
+                String op = ctx.getChild(1).getText();
+                return switch (op) {
+                    case "+"  -> left + right;
+                    case "-"  -> left - right;
+                    case "*"  -> left * right;
+                    case "/"  -> left / right;
+                    case "%"  -> left % right;
+                    case "\\" -> left / right;   // FSP integer division
+                    default   -> throw new IllegalArgumentException(
+                            "Unsupported operator in const expression: " + op);
+                };
+            }
+
+            throw new IllegalArgumentException(
+                    "Cannot evaluate const expression: " + ctx.getText());
+        }
+
+        // ── process (LTS) ────────────────────────────────────────────────────
+        // Builds a full LTS: states, unique base actions, and transitions.
+        // Action chains (a -> b -> S) are expanded with generated intermediate
+        // states named _StateName_N to preserve one action per edge.
 
         @Override
         public Void visitProcessDef(FSPGrammarParser.ProcessDefContext ctx) {
-            processes.add(new ProcessDef(ctx.UPPER_ID().getText()));
+            // Store only the parse context; the LTS will be built on demand when
+            // the process is referenced from a composite (possibly with explicit args).
+            templateCtx.put(ctx.UPPER_ID().getText(), ctx);
             return null;
+        }
+
+        // ── on-demand instantiation ───────────────────────────────────────────
+
+        /**
+         * Return (possibly creating) the LTS instance for {@code processName}
+         * with the given positional argument values.
+         * Instance name:  "Philosopher(0)"  for args=[0],  "TU" for args=[].
+         */
+        private LTS getOrInstantiate(String processName, List<Integer> args) {
+            String instanceName = makeInstanceName(processName, args);
+            if (instances.containsKey(instanceName)) return instances.get(instanceName);
+
+            FSPGrammarParser.ProcessDefContext ctx = templateCtx.get(processName);
+            if (ctx == null) return null;   // unknown process — composite reference?
+
+            Map<String, Integer> paramEnv = buildParamEnv(ctx, args);
+            LTS lts = buildLTSFromTemplate(ctx, instanceName, paramEnv);
+            instances.put(instanceName, lts);
+            return lts;
+        }
+
+        private String makeInstanceName(String processName, List<Integer> args) {
+            if (args.isEmpty()) return processName;
+            return processName + "(" +
+                    args.stream().map(Object::toString).collect(Collectors.joining(", ")) + ")";
+        }
+
+        /**
+         * Map template parameter names to the supplied argument values.
+         * Missing arguments fall back to the parameter's default expression.
+         */
+        private Map<String, Integer> buildParamEnv(
+                FSPGrammarParser.ProcessDefContext ctx, List<Integer> args) {
+            Map<String, Integer> paramEnv = new LinkedHashMap<>();
+            if (ctx.paramDefList() == null) return paramEnv;
+            List<FSPGrammarParser.ParamDefContext> params = ctx.paramDefList().paramDef();
+            for (int i = 0; i < params.size(); i++) {
+                String pname = params.get(i).anyId().getText();
+                if (i < args.size()) {
+                    paramEnv.put(pname, args.get(i));
+                } else if (params.get(i).expr() != null) {
+                    try { paramEnv.put(pname, evalExpr(params.get(i).expr())); }
+                    catch (IllegalArgumentException ignored) { }
+                }
+            }
+            return paramEnv;
+        }
+
+        /**
+         * Build a concrete LTS from a process template with the given parameter
+         * bindings.  {@code instanceName} is the name of the resulting LTS
+         * (e.g. "Philosopher(0)"); it may differ from the template name when
+         * explicit args are supplied.
+         */
+        private LTS buildLTSFromTemplate(
+                FSPGrammarParser.ProcessDefContext ctx,
+                String instanceName,
+                Map<String, Integer> paramEnv) {
+
+            String templateName = ctx.UPPER_ID().getText();
+
+            // Set per-instance environment (consts + params) and alias resolution fields.
+            currentEnv = new HashMap<>(constEnv);
+            currentEnv.putAll(paramEnv);
+            currentProcessName         = templateName;
+            currentProcessInitialState = null;
+
+            Set<String>      states      = new LinkedHashSet<>();
+            Set<String>      actions     = new LinkedHashSet<>();
+            List<Transition> transitions = new ArrayList<>();
+            int[]            counter     = {0};
+
+            FSPGrammarParser.LocalProcessContext initLp = ctx.localProcess();
+            if (initLp == null) {
+                resetProcessState();
+                return new LTS(instanceName, instanceName, List.of(), List.of(), List.of());
+            }
+
+            String initialState;
+            if (initLp.UPPER_ID() != null) {
+                // e.g.  TU = Idle   /   Philosopher(Pid=0) = Idle
+                // Template name is an alias → map "templateName" back to this state.
+                initialState = lpStateName(initLp);
+                currentProcessInitialState = initialState;
+                states.add(initialState);
+            } else {
+                // e.g.  Monitor(Id=0) = (eat[Id] -> Done)
+                // The initial state is the instance itself.
+                // Map template name → instance name so back-refs ("-> Monitor") resolve.
+                initialState = instanceName;
+                currentProcessInitialState = instanceName;
+                states.add(instanceName);
+                extractFromLocalProcess(instanceName, initLp, states, actions, transitions, counter);
+            }
+
+            for (var lpd : ctx.localProcessDef())
+                expandLocalProcessDef(lpd, states, actions, transitions, counter);
+
+            resetProcessState();
+            return new LTS(instanceName, initialState,
+                    List.copyOf(states), List.copyOf(actions), List.copyOf(transitions));
+        }
+
+        private void resetProcessState() {
+            currentEnv = new HashMap<>(constEnv);
+            currentProcessName = null;
+            currentProcessInitialState = null;
+        }
+
+        /**
+         * State-reference name from a localProcess node (UPPER_ID + optional index exprs).
+         * Applies currentEnv substitution so parameter names and constants are resolved.
+         * e.g.  Etiquete[Steps]  with Steps=2  →  "Etiquete[2]"
+         *
+         * Also resolves back-references to the process name itself.
+         * e.g.  in  TU = Idle, Testing = (... -> TU),  "TU" → "Idle"
+         */
+        private String lpStateName(FSPGrammarParser.LocalProcessContext ctx) {
+            StringBuilder sb = new StringBuilder(ctx.UPPER_ID().getText());
+            for (var e : ctx.expr()) sb.append("[").append(e.getText()).append("]");
+            String result = substituteConsts(sb.toString(), currentEnv, List.of());
+            // When the process name appears as a state reference (e.g. "-> TU") and
+            // it is an alias for another state, resolve it to that state.
+            if (currentProcessInitialState != null && result.equals(currentProcessName)) {
+                return currentProcessInitialState;
+            }
+            return result;
+        }
+
+        /**
+         * Expand a localProcessDef, iterating over any range-variable index specs.
+         * e.g.  Etiquete[s:1..Steps]  with Steps=2  →  creates Etiquete[1] and Etiquete[2].
+         * Concrete index specs  [0]  produce a single state directly.
+         */
+        private void expandLocalProcessDef(
+                FSPGrammarParser.LocalProcessDefContext lpd,
+                Set<String> states, Set<String> actions,
+                List<Transition> transitions, int[] counter) {
+            expandIndexSpec(lpd.UPPER_ID().getText(), lpd.indexSpec(), 0,
+                            new StringBuilder(), lpd.localProcess(),
+                            states, actions, transitions, counter);
+        }
+
+        /**
+         * Recursively resolve each index spec, then register the resulting state.
+         * Range-variable specs  [s:lo..hi]  iterate over every value in [lo, hi];
+         * concrete specs  [expr]  are evaluated once using currentEnv.
+         */
+        private void expandIndexSpec(
+                String baseName,
+                List<FSPGrammarParser.IndexSpecContext> specs,
+                int specIdx,
+                StringBuilder nameAccum,
+                FSPGrammarParser.LocalProcessContext body,
+                Set<String> states, Set<String> actions,
+                List<Transition> transitions, int[] counter) {
+
+            if (specIdx == specs.size()) {
+                // All index specs resolved — register this state and extract transitions.
+                String stateName = baseName + nameAccum;
+                states.add(stateName);
+                extractFromLocalProcess(stateName, body, states, actions, transitions, counter);
+                return;
+            }
+
+            FSPGrammarParser.IndexSpecContext spec = specs.get(specIdx);
+
+            if (spec.anyId() != null) {
+                // Range-variable binding:  [s:1..Steps]  or  [a:Area]
+                String varName = spec.anyId().getText();
+                var roe = spec.rangeOrExpr();
+
+                int lo, hi;
+                if (roe.expr().size() >= 2) {
+                    // Explicit range:  s:1..Steps  — evaluate both bounds
+                    lo = parseSubstituted(roe.expr(0).getText());
+                    hi = parseSubstituted(roe.expr(1).getText());
+                } else {
+                    // Single expr:  a:Area  — could be a range name or a scalar
+                    String boundText = substituteConsts(roe.expr(0).getText(), currentEnv, List.of());
+                    int[] parsed = parseRangeBound(boundText);
+                    if (parsed == null) {
+                        // Unresolvable — keep raw spec text, no expansion
+                        String rawSpec = spec.getText();
+                        expandIndexSpec(baseName, specs, specIdx + 1,
+                                        new StringBuilder(nameAccum).append("[").append(rawSpec).append("]"),
+                                        body, states, actions, transitions, counter);
+                        return;
+                    }
+                    lo = parsed[0];
+                    hi = parsed[1];
+                }
+
+                Integer saved = currentEnv.get(varName);
+                for (int v = lo; v <= hi; v++) {
+                    currentEnv.put(varName, v);
+                    expandIndexSpec(baseName, specs, specIdx + 1,
+                                    new StringBuilder(nameAccum).append("[").append(v).append("]"),
+                                    body, states, actions, transitions, counter);
+                }
+                // Restore the variable binding that existed before (or remove it).
+                if (saved != null) currentEnv.put(varName, saved);
+                else              currentEnv.remove(varName);
+
+            } else {
+                // Concrete expression:  [0]  or  [Pid]  — evaluate and continue.
+                String val = substituteConsts(spec.expr().getText(), currentEnv, List.of());
+                expandIndexSpec(baseName, specs, specIdx + 1,
+                                new StringBuilder(nameAccum).append("[").append(val).append("]"),
+                                body, states, actions, transitions, counter);
+            }
+        }
+
+        /**
+         * Substitute currentEnv into {@code text} (const-folding included)
+         * and parse the result as an integer.  Used for range bounds.
+         */
+        private int parseSubstituted(String text) {
+            return Integer.parseInt(substituteConsts(text, currentEnv, List.of()));
+        }
+
+        /**
+         * Parse a range-bound string to a [lo, hi] pair.
+         * <ul>
+         *   <li>A plain integer → [n, n]</li>
+         *   <li>A declared range name (e.g. "Area") → [range.lo, range.hi]</li>
+         *   <li>Anything else → null (caller should fall back)</li>
+         * </ul>
+         */
+        private int[] parseRangeBound(String text) {
+            try {
+                int v = Integer.parseInt(text);
+                return new int[]{v, v};
+            } catch (NumberFormatException e) {
+                int[] bounds = rangeMap.get(text);
+                return bounds;   // null if not found
+            }
+        }
+
+        /** Extract transitions from a localProcess into the provided collections. */
+        private void extractFromLocalProcess(
+                String fromState,
+                FSPGrammarParser.LocalProcessContext lp,
+                Set<String> states, Set<String> actions,
+                List<Transition> transitions, int[] counter) {
+            if (lp.UPPER_ID() != null) return; // pure alias — no outgoing transitions here
+            if (lp.choice() == null) return;    // if/then/else — skip (complex expansion not yet supported)
+            extractFromChoice(fromState, lp.choice(), states, actions, transitions, counter);
+        }
+
+        private void extractFromChoice(
+                String fromState,
+                FSPGrammarParser.ChoiceContext choice,
+                Set<String> states, Set<String> actions,
+                List<Transition> transitions, int[] counter) {
+            for (var gp : choice.guardedPrefix())
+                extractFromGuardedPrefix(fromState, gp, states, actions, transitions, counter);
+        }
+
+        /**
+         * Turn one guardedPrefix into one or more transitions.
+         * Action chains  a -> b -> c -> State  become:
+         *   fromState --a--> _fromState_N
+         *   _fromState_N --b--> _fromState_N+1
+         *   _fromState_N+1 --c--> State
+         */
+        private void extractFromGuardedPrefix(
+                String fromState,
+                FSPGrammarParser.GuardedPrefixContext gp,
+                Set<String> states, Set<String> actions,
+                List<Transition> transitions, int[] counter) {
+
+            var ap     = gp.actionPrefix();
+            if (ap == null || ap.prefixActions() == null || ap.localProcess() == null)
+                return; // parse error already recorded; skip this prefix
+            var labels = ap.prefixActions().processActionLabel();
+            var target = ap.localProcess();
+
+            String current = fromState;
+            for (int i = 0; i < labels.size(); i++) {
+                var    pal        = labels.get(i);
+                // Substitute current process parameters (and consts) into the action text.
+                // e.g.  think[Pid]  with Pid=0  →  think[0]
+                String actionText = substituteConsts(pal.getText(), currentEnv, List.of());
+                String baseAction = pal.labelBase() != null
+                        ? substituteConsts(pal.labelBase().getText(), currentEnv, List.of())
+                        : actionText;
+                actions.add(baseAction);
+
+                boolean isLast = (i == labels.size() - 1);
+                String next;
+                if (isLast) {
+                    if (target.UPPER_ID() != null) {
+                        next = lpStateName(target);
+                    } else if (target.choice() != null) {
+                        // Inline target choice — create an intermediate state.
+                        next = "_" + fromState + "_" + counter[0]++;
+                        states.add(next);
+                        extractFromChoice(next, target.choice(), states, actions, transitions, counter);
+                    } else {
+                        // if/then/else or other complex form — no transition to add
+                        return;
+                    }
+                } else {
+                    next = "_" + fromState + "_" + counter[0]++;
+                    states.add(next);
+                }
+
+                transitions.add(new Transition(current, actionText, next));
+                current = next;
+            }
         }
 
         // ── composite ────────────────────────────────────────────────────────
@@ -78,28 +687,107 @@ public class FSPParser {
 
         @Override
         public Void visitCompositeDef(FSPGrammarParser.CompositeDefContext ctx) {
-            composites.add(new CompositeDef(ctx.UPPER_ID().getText()));
+            String   name = ctx.UPPER_ID().getText();
+            List<LTS> components = new ArrayList<>();
+            for (var item : ctx.compositeExpr().compositeItem())
+                collectFromAtom(item.compositeAtom(), new HashMap<>(), components);
+            composites.add(new ParallelCompositionLazy(name, List.copyOf(components)));
             return null;
         }
 
         // ── heuristic controller ─────────────────────────────────────────────
         // heuristic ||DirectedController = Plant~{Goal}.
-        // Treated as a composite — first UPPER_ID is the controller name.
+        // Plant is a composite name — record as a lazy composition with no components.
 
         @Override
         public Void visitHeuristicDef(FSPGrammarParser.HeuristicDefContext ctx) {
-            composites.add(new CompositeDef(ctx.UPPER_ID(0).getText()));
+            composites.add(new ParallelCompositionLazy(ctx.UPPER_ID(0).getText(), List.of()));
             return null;
         }
 
         // ── monolithic director ───────────────────────────────────────────────
         // monolithicDirector ||MonolithicController = Plant~{Goal}.
-        // Treated as a composite — first UPPER_ID is the controller name.
 
         @Override
         public Void visitMonolithicDef(FSPGrammarParser.MonolithicDefContext ctx) {
-            composites.add(new CompositeDef(ctx.UPPER_ID(0).getText()));
+            composites.add(new ParallelCompositionLazy(ctx.UPPER_ID(0).getText(), List.of()));
             return null;
+        }
+
+        // ── controller ────────────────────────────────────────────────────────
+        // controller ||MonolithicController = Plant~{Goal}.
+
+        @Override
+        public Void visitControllerDef(FSPGrammarParser.ControllerDefContext ctx) {
+            composites.add(new ParallelCompositionLazy(ctx.UPPER_ID(0).getText(), List.of()));
+            return null;
+        }
+
+        /**
+         * Recursively traverse a compositeAtom, expanding forall loops and
+         * instantiating each referenced process with the current loop-variable
+         * bindings.  Instantiated LTS objects are appended to {@code out}.
+         *
+         * @param atom     the atom to process
+         * @param loopEnv  current forall variable bindings (e.g. {p→0})
+         * @param out      accumulator for instantiated LTS components
+         */
+        private void collectFromAtom(
+                FSPGrammarParser.CompositeAtomContext atom,
+                Map<String, Integer> loopEnv,
+                List<LTS> out) {
+            if (atom == null) return;
+
+            if (atom.UPPER_ID() != null) {
+                // Direct process reference:  Philosopher(p)  or  TU  or  Plant
+                String processName = atom.UPPER_ID().getText();
+                List<Integer> args = new ArrayList<>();
+                if (atom.exprList() != null) {
+                    Map<String, Integer> evalEnv = new HashMap<>(constEnv);
+                    evalEnv.putAll(loopEnv);
+                    for (var e : atom.exprList().expr()) {
+                        String sub = substituteConsts(e.getText(), evalEnv, List.of());
+                        try { args.add(Integer.parseInt(sub)); }
+                        catch (NumberFormatException ignore) { /* unresolvable arg — skip */ }
+                    }
+                }
+                LTS instance = getOrInstantiate(processName, args);
+                if (instance != null) out.add(instance);
+
+            } else if (atom.compositeExpr() != null) {
+                // Grouped expression:  (A || B || C)
+                for (var item : atom.compositeExpr().compositeItem())
+                    collectFromAtom(item.compositeAtom(), loopEnv, out);
+
+            } else if (atom.compositeAtom() != null) {
+                // Forall loop:  forall [p:Phil] compositeAtom
+                String varName = atom.LOWER_ID().getText();
+                var roe = atom.rangeOrExpr();
+                Map<String, Integer> evalEnv = new HashMap<>(constEnv);
+                evalEnv.putAll(loopEnv);
+
+                int lo, hi;
+                if (roe.expr().size() >= 2) {
+                    lo = parseWithEnv(roe.expr(0).getText(), evalEnv);
+                    hi = parseWithEnv(roe.expr(1).getText(), evalEnv);
+                } else {
+                    String bound = substituteConsts(roe.expr(0).getText(), evalEnv, List.of());
+                    int[] bounds = parseRangeBound(bound);
+                    if (bounds == null) return;   // unresolvable range
+                    lo = bounds[0]; hi = bounds[1];
+                }
+
+                for (int v = lo; v <= hi; v++) {
+                    Map<String, Integer> inner = new HashMap<>(loopEnv);
+                    inner.put(varName, v);
+                    collectFromAtom(atom.compositeAtom(), inner, out);
+                }
+            }
+        }
+
+        /** Substitute env into text, fold arithmetic, parse as integer. */
+        private int parseWithEnv(String text, Map<String, Integer> env) {
+            return Integer.parseInt(substituteConsts(text, env, List.of()));
         }
 
         // ── set ──────────────────────────────────────────────────────────────

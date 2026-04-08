@@ -12,6 +12,7 @@ definition
     : processDef
     | heuristicDef          // keyword-prefixed; before compositeDef
     | monolithicDef         // keyword-prefixed
+    | controllerDef         // keyword-prefixed
     | compositeDef
     | constDef
     | rangeDef
@@ -82,6 +83,7 @@ indexSpec
 
 localProcess
     : '(' choice ')' alphabetExt?
+    | IF '(' expr ')' THEN localProcess ELSE localProcess
     | UPPER_ID ('[' expr ']')*
     ;
 
@@ -113,13 +115,26 @@ prefixActions
     ;
 
 processActionLabel
-    : labelBase ('[' expr ']')*
+    : labelBase
     | '{' processActionLabel (',' processActionLabel)* '}'
     ;
 
-// Dotted action labels:  eat.all  step.next
+// Index inside a label bracket: either a variable binding (b:Area) or a range/expr.
+labelIndex
+    : anyId ':' rangeOrExpr   // variable binding:  b:Area
+    | rangeOrExpr              // range or scalar:   0..Cats-1  |  a+1
+    ;
+
+// One segment of a dotted label, with optional indexed parameters.
+//   cat[0..Cats-1]   move[b:Area]   eat   think[Pid]
+labelSegment
+    : LOWER_ID ('[' labelIndex ']')*
+    ;
+
+// Dotted action labels with optional indexed segments:
+//   eat.all   step.next   cat[0..Cats-1].move[b:Area]
 labelBase
-    : LOWER_ID ('.' LOWER_ID)*
+    : labelSegment ('.' labelSegment)*
     ;
 
 // ═══════════════════════════════════════════════════════════════
@@ -145,7 +160,7 @@ compositeItem
 compositeAtom
     : UPPER_ID ('(' exprList ')')?
     | '(' compositeExpr ')'
-    | FORALL '[' LOWER_ID ':' rangeOrExpr ']' '(' compositeExpr ')'
+    | FORALL '[' LOWER_ID ':' rangeOrExpr ']' compositeAtom
     ;
 
 // ═══════════════════════════════════════════════════════════════
@@ -169,6 +184,16 @@ monolithicDef
     ;
 
 // ═══════════════════════════════════════════════════════════════
+//  CONTROLLER  (MTSA — keyword 'controller', different from controllerSpec)
+//
+//  controller ||MonolithicController = Plant~{Goal}.
+// ═══════════════════════════════════════════════════════════════
+
+controllerDef
+    : CONTROLLER_LC '||' UPPER_ID '=' UPPER_ID '~' '{' UPPER_ID '}' '.'
+    ;
+
+// ═══════════════════════════════════════════════════════════════
 //  SET DEFINITION
 //
 //  set All = {a, b, c}
@@ -183,7 +208,7 @@ setElements
     ;
 
 setElement
-    : LOWER_ID
+    : labelBase
     | UPPER_ID setDiff?
     ;
 
@@ -203,7 +228,7 @@ extSetElements
     ;
 
 extSetElement
-    : labelBase ('[' rangeOrExpr ']')*
+    : labelBase
     | UPPER_ID setDiff?
     | INT
     ;
@@ -308,9 +333,11 @@ anyId
 
 expr
     : <assoc=right> expr '?' expr ':' expr         // ternary
+    | expr '||' expr                               // logical or
+    | expr '&&' expr                               // logical and
     | expr ('=='|'!='|'<'|'>'|'<='|'>=') expr      // comparison
     | expr ('+'|'-') expr                           // additive
-    | expr ('*'|'/'|'%') expr                       // multiplicative
+    | expr ('*'|'/'|'%'|'\\') expr                   // multiplicative (\ = integer division)
     | '-' expr                                      // unary minus
     | '(' expr ')'                                  // grouping
     | anyId ('(' exprList ')')?                     // variable or macro call
@@ -367,6 +394,7 @@ ASSERT               : 'assert' ;
 SET                  : 'set' ;
 HEURISTIC            : 'heuristic' ;
 MONOLITHIC_DIRECTOR  : 'monolithicDirector' ;
+CONTROLLER_LC        : 'controller' ;
 LTL_PROPERTY         : 'ltl_property' ;
 CONTROLLER_SPEC      : 'controllerSpec' ;
 CONST                : 'const' ;
@@ -374,6 +402,9 @@ RANGE                : 'range' ;
 DEF                  : 'def' ;
 WHEN                 : 'when' ;
 FORALL               : 'forall' ;
+IF                   : 'if' ;
+THEN                 : 'then' ;
+ELSE                 : 'else' ;
 
 // controllerSpec field names
 LIVENESS             : 'liveness' ;

@@ -121,10 +121,14 @@ class FSPParserTest {
         Path file = Paths.get("fsp/Benchmark/DP/DP-2-2.fsp");
         FSPModel model = FSPParser.parse(file);
 
-        assertEquals(3, model.processes().size());
-        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Philosopher")));
-        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Fork")));
-        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Monitor")));
+        // Phil = 0..1 → 2 instances of each of the 3 process templates = 6 instances.
+        assertEquals(6, model.processes().size());
+        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Philosopher(0)")));
+        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Philosopher(1)")));
+        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Fork(0)")));
+        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Fork(1)")));
+        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Monitor(0)")));
+        assertTrue(model.processes().stream().anyMatch(p -> p.name().equals("Monitor(1)")));
 
         assertEquals(3, model.composites().size());
         assertTrue(model.composites().stream().anyMatch(c -> c.name().equals("Plant")));

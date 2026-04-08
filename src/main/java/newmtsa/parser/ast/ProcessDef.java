@@ -1,3 +1,5 @@
 package newmtsa.parser.ast;
 
-public record ProcessDef(String name) {}
+/** @deprecated Renamed to {@link LTS}. */
+@Deprecated
+public final class ProcessDef {}

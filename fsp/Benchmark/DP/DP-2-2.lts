@@ -55,9 +55,6 @@ Monitor(Id=0) = (eat[Id] -> Done),
 
 ||Plant = (forall [p:Phil] (Philosopher(p) || Fork(p) || Monitor(p))).
 
-heuristic ||DirectedController = Plant~{Goal}.
-monolithicDirector ||MonolithicController = Plant~{Goal}.
-
 controllerSpec Goal = {
   controllable = {take[Phil][Phil]}
   marking = {eat.all}
