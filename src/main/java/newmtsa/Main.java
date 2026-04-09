@@ -57,10 +57,16 @@ public class Main {
                                .reduce((a, b) -> a + ", " + b).orElse("unresolved")
                         + "]");
 
-        printSection("Fluents", model.fluents(),
-                f -> f.name()
-                    + " = <{" + String.join(", ", f.initiatingActions()) + "}"
-                    + ", {" + String.join(", ", f.terminatingActions()) + "}>");
+        printSection("Fluents", model.fluents(), f -> {
+            // Derive init/term sets from the fluent LTS transitions
+            List<String> init = f.transitions().stream()
+                    .filter(t -> t.from().equals("off") && t.to().equals("on"))
+                    .map(t -> t.action()).collect(java.util.stream.Collectors.toList());
+            List<String> term = f.transitions().stream()
+                    .filter(t -> t.from().equals("on") && t.to().equals("off"))
+                    .map(t -> t.action()).collect(java.util.stream.Collectors.toList());
+            return f.name() + " = <{" + String.join(", ", init) + "}, {" + String.join(", ", term) + "}>";
+        });
 
         printSection("Asserts", model.asserts(),
                 a -> a.name());

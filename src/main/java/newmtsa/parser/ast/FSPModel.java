@@ -6,7 +6,7 @@ import java.util.Set;
 public record FSPModel(
         List<LTS> processes,
         List<ParallelCompositionLazy> composites,
-        List<FluentDef> fluents,
+        List<LTS> fluents,
         List<AssertDef> asserts,
         List<LtlPropertyDef> ltlProperties,
         List<SetDef> sets,

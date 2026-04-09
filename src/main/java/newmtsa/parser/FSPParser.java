@@ -68,7 +68,8 @@ public class FSPParser {
                                         substituteConsts(t.from(), env, List.of()),
                                         substituteConsts(t.action(), env, List.of()),
                                         substituteConsts(t.to(), env, List.of())))
-                                .collect(Collectors.toList())))
+                                .collect(Collectors.toList()),
+                        false))
                 .collect(Collectors.toList());
 
         Set<String> actions = resolvedProcesses.stream()
@@ -281,7 +282,7 @@ public class FSPParser {
         // Insertion order matches the order composites first reference each instance.
         final Map<String, LTS>                 instances  = new LinkedHashMap<>();
         final List<ParallelCompositionLazy>    composites = new ArrayList<>();
-        final List<FluentDef>         fluents         = new ArrayList<>();
+        final List<LTS>               fluents         = new ArrayList<>();
         final List<AssertDef>         asserts         = new ArrayList<>();
         final List<LtlPropertyDef>    ltlProperties   = new ArrayList<>();
         final List<SetDef>            sets            = new ArrayList<>();
@@ -502,7 +503,7 @@ public class FSPParser {
             FSPGrammarParser.LocalProcessContext initLp = ctx.localProcess();
             if (initLp == null) {
                 resetProcessState();
-                return new LTS(instanceName, instanceName, List.of(), List.of(), List.of());
+                return new LTS(instanceName, instanceName, List.of(), List.of(), List.of(), false);
             }
 
             String initialState;
@@ -527,7 +528,7 @@ public class FSPParser {
 
             resetProcessState();
             return new LTS(instanceName, initialState,
-                    List.copyOf(states), List.copyOf(actions), List.copyOf(transitions));
+                    List.copyOf(states), List.copyOf(actions), List.copyOf(transitions), false);
         }
 
         private void resetProcessState() {
@@ -1074,15 +1075,33 @@ public class FSPParser {
         }
 
         // ── fluent ───────────────────────────────────────────────────────────
-        // fluent F1 = <a, All\{b}>
+        // fluent F1 = <initActions, termActions>
+        // Represented as a 2-state LTS: "off" (initial) and "on".
 
         @Override
         public Void visitFluentDef(FSPGrammarParser.FluentDefContext ctx) {
-            fluents.add(new FluentDef(
-                    ctx.UPPER_ID().getText(),
-                    extractActionLabels(ctx.actionLabels(0)),
-                    extractActionLabels(ctx.actionLabels(1))
-            ));
+            String name = ctx.UPPER_ID().getText();
+            List<String> init = extractActionLabels(ctx.actionLabels(0));
+            List<String> term = extractActionLabels(ctx.actionLabels(1));
+
+            // Build the 2-state fluent LTS.
+            Set<String>  allActions  = new LinkedHashSet<>(init);
+            allActions.addAll(term);
+            List<Transition> trans = new ArrayList<>();
+            for (String a : init) {
+                trans.add(new Transition("off", a, "on"));   // off → on
+                trans.add(new Transition("on",  a, "on"));   // already on: self-loop
+            }
+            for (String t : term) {
+                trans.add(new Transition("on",  t, "off"));  // on → off
+                trans.add(new Transition("off", t, "off"));  // already off: self-loop
+            }
+            fluents.add(new LTS(
+                    name, "off",
+                    List.of("off", "on"),
+                    List.copyOf(allActions),
+                    trans,
+                    true));
             return null;
         }
 
@@ -1169,12 +1188,37 @@ public class FSPParser {
                     .collect(Collectors.toList());
         }
 
-        /** Returns the leading token text of each set element (the action name or set name). */
+        /**
+         * Expand all elements of a setElements node to concrete action strings.
+         * Handles dotted/indexed labels (via expandLabelBase) and set references
+         * (UPPER_ID, optionally with set-difference).
+         */
         private List<String> extractSetElements(FSPGrammarParser.SetElementsContext ctx) {
             if (ctx == null) return List.of();
-            return ctx.setElement().stream()
-                    .map(e -> e.getStart().getText())
-                    .collect(Collectors.toList());
+            List<String> result = new ArrayList<>();
+            for (var e : ctx.setElement()) {
+                if (e.labelBase() != null) {
+                    result.addAll(expandLabelBase(e.labelBase()));
+                } else {
+                    // UPPER_ID setDiff?  — named set reference, optionally subtracted
+                    List<String> base = resolveSetByName(e.UPPER_ID().getText());
+                    if (e.setDiff() != null) {
+                        Set<String> toRemove = new HashSet<>(extractSetElements(e.setDiff().setElements()));
+                        base = base.stream().filter(s -> !toRemove.contains(s)).collect(Collectors.toList());
+                    }
+                    result.addAll(base);
+                }
+            }
+            return result;
+        }
+
+        /** Look up a named set and return its expanded elements; falls back to [name] if unknown. */
+        private List<String> resolveSetByName(String name) {
+            return sets.stream()
+                    .filter(s -> s.name().equals(name))
+                    .findFirst()
+                    .map(SetDef::elements)
+                    .orElse(List.of(name));
         }
 
         private List<String> extractExtSetElements(FSPGrammarParser.ExtSetElementsContext ctx) {
@@ -1266,15 +1310,22 @@ public class FSPParser {
         }
 
         /**
-         * Flatten an actionLabels node to a list of action-label strings.
-         *  - LOWER_ID          → ["a"]
-         *  - UPPER_ID setDiff? → ["All"]   (set reference, resolved later)
-         *  - { setElements }   → ["a","b","c"]
+         * Flatten an actionLabels node to a list of concrete action strings.
+         *  - labelBase         → expand to all concrete labels (dotted/indexed)
+         *  - UPPER_ID setDiff? → resolve named set, apply optional set-difference
+         *  - { setElements }   → expand all elements
          */
         private List<String> extractActionLabels(FSPGrammarParser.ActionLabelsContext ctx) {
             if (ctx == null) return List.of();
             if (ctx.labelBase() != null) return expandLabelBase(ctx.labelBase());
-            if (ctx.UPPER_ID() != null) return List.of(ctx.UPPER_ID().getText());
+            if (ctx.UPPER_ID() != null) {
+                List<String> base = resolveSetByName(ctx.UPPER_ID().getText());
+                if (ctx.setDiff() != null) {
+                    Set<String> toRemove = new HashSet<>(extractSetElements(ctx.setDiff().setElements()));
+                    base = base.stream().filter(s -> !toRemove.contains(s)).collect(Collectors.toList());
+                }
+                return base;
+            }
             return extractSetElements(ctx.setElements());
         }
     }
