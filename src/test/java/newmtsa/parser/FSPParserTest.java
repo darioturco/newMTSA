@@ -72,8 +72,9 @@ class FSPParserTest {
         assertEquals(1, model.controllerSpecs().size());
         ControllerSpecDef goal = model.controllerSpecs().get(0);
         assertEquals("Goal", goal.name());
-        assertTrue(goal.liveness().contains("S1"));
-        assertTrue(goal.liveness().contains("S2"));
+        // assert S1 = F1, assert S2 = F2 — liveness is resolved to the underlying fluent names
+        assertTrue(goal.liveness().contains("F1"));
+        assertTrue(goal.liveness().contains("F2"));
         assertTrue(goal.controllable().contains("a"));
     }
 

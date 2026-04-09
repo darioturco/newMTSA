@@ -75,6 +75,20 @@ public class FSPParser {
                 .flatMap(lts -> lts.actions().stream())
                 .collect(Collectors.toSet());
 
+        // Resolve assert aliases in liveness/safety/assumption:
+        // if "assert A = F" and liveness = {A}, replace A with F.
+        Map<String, String> assertAliases = visitor.simpleAssertMap;
+        List<ControllerSpecDef> resolvedSpecs = visitor.controllerSpecs.stream()
+                .map(cs -> new ControllerSpecDef(
+                        cs.name(),
+                        resolveAssertNames(cs.liveness(),   assertAliases),
+                        resolveAssertNames(cs.safety(),     assertAliases),
+                        resolveAssertNames(cs.assumption(), assertAliases),
+                        cs.controllable(),
+                        cs.marking(),
+                        cs.nonblocking()))
+                .collect(Collectors.toList());
+
         return new FSPModel(
                 List.copyOf(resolvedProcesses),
                 List.copyOf(visitor.composites),
@@ -82,13 +96,20 @@ public class FSPParser {
                 List.copyOf(visitor.asserts),
                 List.copyOf(visitor.ltlProperties),
                 List.copyOf(visitor.sets),
-                List.copyOf(visitor.controllerSpecs),
+                List.copyOf(resolvedSpecs),
                 List.copyOf(visitor.constants),
                 List.copyOf(visitor.ranges),
                 List.copyOf(resolvedMacros),
                 Set.copyOf(actions),
                 List.copyOf(errors)
         );
+    }
+
+    /** Replaces each name in {@code names} with its assert alias target if one exists. */
+    private static List<String> resolveAssertNames(List<String> names, Map<String, String> aliases) {
+        return names.stream()
+                .map(n -> aliases.getOrDefault(n, n))
+                .collect(Collectors.toList());
     }
 
     /**
@@ -267,6 +288,8 @@ public class FSPParser {
         final List<ControllerSpecDef> controllerSpecs = new ArrayList<>();
         final List<ConstDef>          constants       = new ArrayList<>();
         final List<RangeDef>          ranges          = new ArrayList<>();
+        /** Maps assert name → single UPPER_ID it refers to (if assert is just an alias). */
+        final Map<String, String>     simpleAssertMap = new LinkedHashMap<>();
 
         // Resolved const values available for expression evaluation.
         // Keyed by base name so that later consts can reference earlier ones.
@@ -679,6 +702,28 @@ public class FSPParser {
                 FSPGrammarParser.ChoiceContext choice,
                 Set<String> states, Set<String> actions,
                 List<Transition> transitions, int[] counter) {
+            if (choice.FOREACH() != null) {
+                // foreach [varName:range] innerChoice — expand for each value in range
+                String varName = choice.LOWER_ID().getText();
+                var roe = choice.rangeOrExpr();
+                int lo, hi;
+                if (roe.expr().size() >= 2) {
+                    lo = Integer.parseInt(substituteConsts(roe.expr(0).getText(), currentEnv, List.of()));
+                    hi = Integer.parseInt(substituteConsts(roe.expr(1).getText(), currentEnv, List.of()));
+                } else {
+                    String bound = substituteConsts(roe.expr(0).getText(), currentEnv, List.of());
+                    int[] bounds = parseRangeBound(bound);
+                    if (bounds == null) return;
+                    lo = bounds[0]; hi = bounds[1];
+                }
+                Integer saved = currentEnv.get(varName);
+                for (int v = lo; v <= hi; v++) {
+                    currentEnv.put(varName, v);
+                    extractFromChoice(fromState, choice.choice(), states, actions, transitions, counter);
+                }
+                if (saved == null) currentEnv.remove(varName); else currentEnv.put(varName, saved);
+                return;
+            }
             for (var gp : choice.guardedPrefix())
                 extractFromGuardedPrefix(fromState, gp, states, actions, transitions, counter);
         }
@@ -1021,10 +1066,10 @@ public class FSPParser {
 
         @Override
         public Void visitSetDef(FSPGrammarParser.SetDefContext ctx) {
-            sets.add(new SetDef(
-                    ctx.UPPER_ID().getText(),
-                    extractSetElements(ctx.setElements())
-            ));
+            List<String> raw = extractSetElements(ctx.setElements());
+            // Use LinkedHashSet to preserve insertion order while removing duplicates.
+            List<String> deduped = new ArrayList<>(new LinkedHashSet<>(raw));
+            sets.add(new SetDef(ctx.UPPER_ID().getText(), deduped));
             return null;
         }
 
@@ -1046,8 +1091,29 @@ public class FSPParser {
 
         @Override
         public Void visitAssertDef(FSPGrammarParser.AssertDefContext ctx) {
-            asserts.add(new AssertDef(ctx.UPPER_ID().getText()));
+            String name = ctx.UPPER_ID().getText();
+            asserts.add(new AssertDef(name));
+            // If the assert is a simple alias (e.g. "assert A = F"), remember the mapping.
+            String simple = extractSimpleFltlRef(ctx.fltlExpr());
+            if (simple != null) simpleAssertMap.put(name, simple);
             return null;
+        }
+
+        /**
+         * Returns the single UPPER_ID name if the fltlExpr is just a bare identifier,
+         * e.g. "assert A = F" → "F".  Returns null for complex expressions.
+         */
+        private String extractSimpleFltlRef(FSPGrammarParser.FltlExprContext ctx) {
+            var orCtx = ctx.fltlOrExpr();
+            if (orCtx.fltlBinExpr().size() != 1) return null;
+            var binCtx = orCtx.fltlBinExpr(0);
+            if (binCtx.fltlAndExpr().size() != 1) return null;
+            var andCtx = binCtx.fltlAndExpr(0);
+            if (andCtx.fltlUnaryExpr().size() != 1) return null;
+            var unaryCtx = andCtx.fltlUnaryExpr(0);
+            if (unaryCtx.fltlBaseExpr() == null) return null;  // has unary op
+            var baseCtx = unaryCtx.fltlBaseExpr();
+            return baseCtx.UPPER_ID() != null ? baseCtx.UPPER_ID().getText() : null;
         }
 
         // ── ltl_property ─────────────────────────────────────────────────────
@@ -1207,7 +1273,7 @@ public class FSPParser {
          */
         private List<String> extractActionLabels(FSPGrammarParser.ActionLabelsContext ctx) {
             if (ctx == null) return List.of();
-            if (ctx.LOWER_ID() != null) return List.of(ctx.LOWER_ID().getText());
+            if (ctx.labelBase() != null) return expandLabelBase(ctx.labelBase());
             if (ctx.UPPER_ID() != null) return List.of(ctx.UPPER_ID().getText());
             return extractSetElements(ctx.setElements());
         }

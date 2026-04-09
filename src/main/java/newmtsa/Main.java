@@ -20,8 +20,8 @@ public class Main {
             //file = Path.of(".\\fsp\\Benchmark\\CM\\CM-2-2.fsp");
             //file = Path.of(".\\fsp\\Benchmark\\DP\\DP-2-2.fsp");
             //file = Path.of(".\\fsp\\Benchmark\\TL\\TL-2-2.fsp");
-            //file = Path.of(".\\fsp\\Benchmark\\TA\\TA-2-2.fsp");
-            file = Path.of(".\\fsp\\Benchmark\\AT\\AT-2-2.fsp");
+            file = Path.of(".\\fsp\\Benchmark\\TA\\TA-2-2.fsp");
+            //file = Path.of(".\\fsp\\Benchmark\\AT\\AT-2-2.fsp");
             //file = Path.of(".\\fsp\\Benchmark\\BW\\BW-2-2.fsp");
         }
 
@@ -121,3 +121,5 @@ public class Main {
         String format(T item);
     }
 }
+
+

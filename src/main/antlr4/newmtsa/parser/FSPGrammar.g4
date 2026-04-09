@@ -93,7 +93,8 @@ alphabetExt
     ;
 
 choice
-    : guardedPrefix ('|' guardedPrefix)*
+    : FOREACH '[' LOWER_ID ':' rangeOrExpr ']' choice  // foreach loop — expands for each value
+    | guardedPrefix ('|' guardedPrefix)*
     ;
 
 // Optional 'when (cond)' guard before the action prefix
@@ -246,7 +247,7 @@ fluentDef
     ;
 
 actionLabels
-    : LOWER_ID
+    : labelBase
     | '{' setElements '}'
     | UPPER_ID setDiff?
     ;
@@ -402,6 +403,7 @@ RANGE                : 'range' ;
 DEF                  : 'def' ;
 WHEN                 : 'when' ;
 FORALL               : 'forall' ;
+FOREACH              : 'foreach' ;
 IF                   : 'if' ;
 THEN                 : 'then' ;
 ELSE                 : 'else' ;
