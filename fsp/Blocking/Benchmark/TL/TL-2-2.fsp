@@ -63,13 +63,18 @@ Buffer(Id=0) = Operative[0],
 
 ||Plant = (forall [m:0..Machines-1] (Machine(m) || Buffer(m+1)) || TU).
 
+
+set Allactions = {get[m:0..Machines], put[m:1..Machines], reject,
+return[m:0..Machines], accept}
+fluent F = <{accept, reject}, Allactions\{accept, reject}>
+assert A = F
 controllerSpec Goal = {
   controllable = {get[0..Machines]}
-  marking = {accept,reject}
-  nonblocking
+  liveness = {A}
 }
+assert Check = ([]<>A)
 
-monolithicDirector ||MonolithicController = Plant~{Goal}.
+controller ||MonolithicController = Plant~{Goal}.
 
 heuristic ||DirectedController = Plant~{Goal}.
 

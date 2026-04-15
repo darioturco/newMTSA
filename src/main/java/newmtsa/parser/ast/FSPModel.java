@@ -7,7 +7,7 @@ public record FSPModel(
         List<LTS> processes,
         List<ParallelCompositionLazy> composites,
         List<LTS> fluents,
-        List<AssertDef> asserts,
+        List<LtlPropertyDef> asserts,
         List<LtlPropertyDef> ltlProperties,
         List<SetDef> sets,
         List<ControllerSpecDef> controllerSpecs,

@@ -69,7 +69,7 @@ public class FSPParser {
                                         substituteConsts(t.action(), env, List.of()),
                                         substituteConsts(t.to(), env, List.of())))
                                 .collect(Collectors.toList()),
-                        false))
+                        false, Set.of()))
                 .collect(Collectors.toList());
 
         Set<String> actions = resolvedProcesses.stream()
@@ -105,6 +105,115 @@ public class FSPParser {
                 List.copyOf(errors)
         );
     }
+
+    // ── model display ─────────────────────────────────────────────────────────
+
+    /**
+     * Print a human-readable summary of all sections of a parsed {@link FSPModel}
+     * to standard output.
+     */
+    public static void printModel(FSPModel model) {
+        printSection("Constants", model.constants(),
+                c -> c.name() + " = " + c.value());
+
+        printSection("Ranges", model.ranges(),
+                r -> r.name() + " = " + r.init() + ".." + r.end()
+                        + "  (size: " + r.size() + ")");
+
+        printSection("Sets", model.sets(),
+                s -> s.name() + " = {" + String.join(", ", s.elements()) + "}");
+
+        printSection("Macros", model.macros(),
+                m -> m.name() + "(" + String.join(", ", m.params()) + ")"
+                        + " = " + m.body());
+
+        printSection("Actions", java.util.List.of(
+                model.actions().stream().sorted()
+                     .collect(java.util.stream.Collectors.joining(", ", "{ ", " }"))
+        ), a -> a);
+
+        printProcesses(model.processes());
+
+        printSection("Composites (ParallelCompositionLazy)", model.composites(),
+                c -> c.name() + "  components: ["
+                        + c.components().stream().map(LTS::name)
+                                .reduce((a, b) -> a + ", " + b).orElse("unresolved")
+                        + "]");
+
+        printSection("Fluents", model.fluents(), f -> {
+            java.util.List<String> init = f.transitions().stream()
+                    .filter(t -> t.from().equals("off") && t.to().equals("on"))
+                    .map(Transition::action).collect(java.util.stream.Collectors.toList());
+            java.util.List<String> term = f.transitions().stream()
+                    .filter(t -> t.from().equals("on") && t.to().equals("off"))
+                    .map(Transition::action).collect(java.util.stream.Collectors.toList());
+            return f.name() + " = <{" + String.join(", ", init) + "}, {" + String.join(", ", term) + "}>";
+        });
+
+        printSection("Asserts", model.asserts(), p -> {
+            String fluentList = p.fluents().isEmpty() ? "" : "  fluents: " + p.fluents();
+            java.util.List<String> init = p.lts().transitions().stream()
+                    .filter(t -> t.from().equals("off") && t.to().equals("on"))
+                    .map(Transition::action).collect(java.util.stream.Collectors.toList());
+            java.util.List<String> term = p.lts().transitions().stream()
+                    .filter(t -> t.from().equals("on") && t.to().equals("off"))
+                    .map(Transition::action).collect(java.util.stream.Collectors.toList());
+            return p.name() + " = <{" + String.join(", ", init) + "}, {" + String.join(", ", term) + "}>"
+                    + fluentList;
+        });
+
+        printSection("LTL Properties", model.ltlProperties(), LtlPropertyDef::name);
+
+        printSection("Controller Specs", model.controllerSpecs(), cs -> {
+            StringBuilder sb = new StringBuilder(cs.name()).append(" {\n");
+            if (!cs.liveness().isEmpty())
+                sb.append("    liveness     = ").append(cs.liveness()).append("\n");
+            if (!cs.safety().isEmpty())
+                sb.append("    safety       = ").append(cs.safety()).append("\n");
+            if (!cs.assumption().isEmpty())
+                sb.append("    assumption   = ").append(cs.assumption()).append("\n");
+            if (!cs.controllable().isEmpty())
+                sb.append("    controllable = ").append(cs.controllable()).append("\n");
+            if (!cs.marking().isEmpty())
+                sb.append("    marking      = ").append(cs.marking()).append("\n");
+            if (cs.nonblocking())
+                sb.append("    nonblocking\n");
+            sb.append("  }");
+            return sb.toString();
+        });
+
+        if (!model.errors().isEmpty()) {
+            System.out.println("\n--- Parse Errors (" + model.errors().size() + ") ---");
+            model.errors().forEach(e -> System.out.println("  " + e));
+        }
+    }
+
+    private static void printProcesses(java.util.List<LTS> processes) {
+        System.out.println("\n--- Processes / LTS (" + processes.size() + ") ---");
+        for (LTS p : processes) {
+            System.out.println("\n  " + p.name() + "  (initial: " + p.initialState() + ")");
+            System.out.println("    States (" + p.states().size() + "): "
+                    + String.join(", ", p.states()));
+            System.out.println("    Actions (" + p.actions().size() + "): "
+                    + String.join(", ", p.actions()));
+            System.out.println("    Transitions (" + p.transitions().size() + "):");
+            for (Transition t : p.transitions()) {
+                System.out.println("      " + t.from() + " --[" + t.action() + "]--> " + t.to());
+            }
+        }
+    }
+
+    private static <T> void printSection(String title, java.util.List<T> items,
+                                         java.util.function.Function<T, String> fmt) {
+        System.out.println("\n--- " + title + " (" + items.size() + ") ---");
+        if (items.isEmpty()) {
+            System.out.println("  (none)");
+        } else {
+            items.forEach(item -> System.out.println("  " + fmt.apply(item)));
+        }
+    }
+
+    // ── assert resolution ─────────────────────────────────────────────────────
 
     /** Replaces each name in {@code names} with its assert alias target if one exists. */
     private static List<String> resolveAssertNames(List<String> names, Map<String, String> aliases) {
@@ -283,7 +392,7 @@ public class FSPParser {
         final Map<String, LTS>                 instances  = new LinkedHashMap<>();
         final List<ParallelCompositionLazy>    composites = new ArrayList<>();
         final List<LTS>               fluents         = new ArrayList<>();
-        final List<AssertDef>         asserts         = new ArrayList<>();
+        final List<LtlPropertyDef>    asserts         = new ArrayList<>();
         final List<LtlPropertyDef>    ltlProperties   = new ArrayList<>();
         final List<SetDef>            sets            = new ArrayList<>();
         final List<ControllerSpecDef> controllerSpecs = new ArrayList<>();
@@ -291,6 +400,8 @@ public class FSPParser {
         final List<RangeDef>          ranges          = new ArrayList<>();
         /** Maps assert name → single UPPER_ID it refers to (if assert is just an alias). */
         final Map<String, String>     simpleAssertMap = new LinkedHashMap<>();
+        /** Maps fluent/assert name → its LTS, for use when building compound assert LTSes. */
+        final Map<String, LTS>        propertyLTSMap  = new LinkedHashMap<>();
 
         // Resolved const values available for expression evaluation.
         // Keyed by base name so that later consts can reference earlier ones.
@@ -503,7 +614,7 @@ public class FSPParser {
             FSPGrammarParser.LocalProcessContext initLp = ctx.localProcess();
             if (initLp == null) {
                 resetProcessState();
-                return new LTS(instanceName, instanceName, List.of(), List.of(), List.of(), false);
+                return new LTS(instanceName, instanceName, List.of(), List.of(), List.of(), false, Set.of());
             }
 
             String initialState;
@@ -528,7 +639,7 @@ public class FSPParser {
 
             resetProcessState();
             return new LTS(instanceName, initialState,
-                    List.copyOf(states), List.copyOf(actions), List.copyOf(transitions), false);
+                    List.copyOf(states), List.copyOf(actions), List.copyOf(transitions), false, Set.of());
         }
 
         private void resetProcessState() {
@@ -1096,26 +1207,54 @@ public class FSPParser {
                 trans.add(new Transition("on",  t, "off"));  // on → off
                 trans.add(new Transition("off", t, "off"));  // already off: self-loop
             }
-            fluents.add(new LTS(
+            LTS fluentLTS = new LTS(
                     name, "off",
                     List.of("off", "on"),
                     List.copyOf(allActions),
                     trans,
-                    true));
+                    true, Set.of("on"));
+            fluents.add(fluentLTS);
+            propertyLTSMap.put(name, fluentLTS);
             return null;
         }
 
         // ── assert ───────────────────────────────────────────────────────────
-        // assert S1 = ([]<>F1 && []<>F2)
+        // assert S1 = F1             → copy of the fluent LTS
+        // assert S2 = (!FC && !FD)   → product LTS of negated fluents
+        // assert S1 = (FA || FB)     → product LTS (OR accepting condition)
 
         @Override
         public Void visitAssertDef(FSPGrammarParser.AssertDefContext ctx) {
             String name = ctx.UPPER_ID().getText();
-            asserts.add(new AssertDef(name));
+            LTS assertLTS = buildFltlLTS(ctx.fltlExpr(), name);
+            List<String> usedFluents = extractFluentsFromFltl(ctx.fltlExpr());
+            asserts.add(new LtlPropertyDef(name, usedFluents, assertLTS));
+            propertyLTSMap.put(name, assertLTS);
             // If the assert is a simple alias (e.g. "assert A = F"), remember the mapping.
             String simple = extractSimpleFltlRef(ctx.fltlExpr());
             if (simple != null) simpleAssertMap.put(name, simple);
             return null;
+        }
+
+        /** Collect all UPPER_ID references (fluent/property names) used in an FLTL expression. */
+        private List<String> extractFluentsFromFltl(FSPGrammarParser.FltlExprContext ctx) {
+            Set<String> names = new LinkedHashSet<>();
+            collectUpperIds(ctx, names);
+            return new ArrayList<>(names);
+        }
+
+        private void collectUpperIds(org.antlr.v4.runtime.tree.ParseTree tree, Set<String> names) {
+            if (tree instanceof org.antlr.v4.runtime.tree.TerminalNode) {
+                org.antlr.v4.runtime.Token tok =
+                        ((org.antlr.v4.runtime.tree.TerminalNode) tree).getSymbol();
+                if (tok.getType() == FSPGrammarLexer.UPPER_ID) {
+                    names.add(tok.getText());
+                }
+            } else {
+                for (int i = 0; i < tree.getChildCount(); i++) {
+                    collectUpperIds(tree.getChild(i), names);
+                }
+            }
         }
 
         /**
@@ -1135,12 +1274,202 @@ public class FSPParser {
             return baseCtx.UPPER_ID() != null ? baseCtx.UPPER_ID().getText() : null;
         }
 
+        // ── FLTL → LTS conversion ─────────────────────────────────────────────
+
+        /** Build an LTS from an FLTL expression. The resulting LTS name is {@code name}. */
+        private LTS buildFltlLTS(FSPGrammarParser.FltlExprContext ctx, String name) {
+            LTS result = evalFltlOr(ctx.fltlOrExpr());
+            // Rename to the declared assert name if provided.
+            if (name != null && !name.equals(result.name()))
+                result = new LTS(name, result.initialState(), result.states(),
+                        result.actions(), result.transitions(), false, result.acceptingStates());
+            return result;
+        }
+
+        private LTS evalFltlOr(FSPGrammarParser.FltlOrExprContext ctx) {
+            List<FSPGrammarParser.FltlBinExprContext> bins = ctx.fltlBinExpr();
+            LTS result = evalFltlBin(bins.get(0));
+            for (int i = 1; i < bins.size(); i++)
+                result = ltsOr(result, evalFltlBin(bins.get(i)));
+            return result;
+        }
+
+        private LTS evalFltlBin(FSPGrammarParser.FltlBinExprContext ctx) {
+            // Handles -> and <-> (A->B = !A||B, A<->B = (A&&B)||(!A&&!B)).
+            // For now fall back to the first operand if more complex.
+            List<FSPGrammarParser.FltlAndExprContext> ands = ctx.fltlAndExpr();
+            LTS result = evalFltlAnd(ands.get(0));
+            for (int i = 1; i < ands.size(); i++) {
+                LTS right = evalFltlAnd(ands.get(i));
+                String op = ctx.getChild(2 * i - 1).getText();
+                if (op.equals("->"))       result = ltsOr(ltsNeg(result), right);       // A->B = !A||B
+                else if (op.equals("<->")) result = ltsOr(ltsAnd(result, right),          // A<->B
+                                                          ltsAnd(ltsNeg(result), ltsNeg(right)));
+            }
+            return result;
+        }
+
+        private LTS evalFltlAnd(FSPGrammarParser.FltlAndExprContext ctx) {
+            List<FSPGrammarParser.FltlUnaryExprContext> unaries = ctx.fltlUnaryExpr();
+            LTS result = evalFltlUnary(unaries.get(0));
+            for (int i = 1; i < unaries.size(); i++)
+                result = ltsAnd(result, evalFltlUnary(unaries.get(i)));
+            return result;
+        }
+
+        private LTS evalFltlUnary(FSPGrammarParser.FltlUnaryExprContext ctx) {
+            if (ctx.fltlBaseExpr() != null) return evalFltlBase(ctx.fltlBaseExpr());
+            LTS inner = evalFltlUnary(ctx.fltlUnaryExpr());
+            String op = ctx.getChild(0).getText();
+            if (op.equals("!")) return ltsNeg(inner);
+            // [] (always) and <> (eventually) are temporal — pass through for now.
+            return inner;
+        }
+
+        private LTS evalFltlBase(FSPGrammarParser.FltlBaseExprContext ctx) {
+            if (ctx.UPPER_ID() != null) {
+                String refName = ctx.UPPER_ID().getText();
+                LTS ref = propertyLTSMap.get(refName);
+                if (ref != null) return ref;
+                // Unknown reference — return a stub LTS (should not happen in well-formed FSP).
+                return new LTS(refName, "off", List.of("off", "on"), List.of(),
+                        List.of(), false, Set.of("on"));
+            }
+            if (ctx.fltlExpr() != null) return buildFltlLTS(ctx.fltlExpr(), null);
+            // LOWER_ID → treat as a single-action inline fluent: on when this action fires,
+            // off for all other actions in the known alphabet.
+            String action = ctx.getStart().getText();
+            return buildActionFluent(action);
+        }
+
+        /**
+         * Build a 2-state inline fluent for an action label appearing in an FLTL expression.
+         * Equivalent to {@code fluent <action, All\{action}>}: on when {@code action} fires,
+         * off for every other action in the known alphabet (collected from defined sets and fluents).
+         */
+        private LTS buildActionFluent(String action) {
+            // Collect the full alphabet from set definitions and from already-defined fluents.
+            Set<String> alphabet = new LinkedHashSet<>();
+            for (SetDef s : sets)   alphabet.addAll(s.elements());
+            for (LTS    f : fluents) alphabet.addAll(f.actions());
+            alphabet.add(action); // guarantee the action itself is present
+
+            List<Transition> trans = new ArrayList<>();
+            // The action initiates the fluent (off→on) and re-initiates (on→on).
+            trans.add(new Transition("off", action, "on"));
+            trans.add(new Transition("on",  action, "on"));
+            // Every other known action terminates the fluent.
+            for (String a : alphabet) {
+                if (!a.equals(action)) {
+                    trans.add(new Transition("off", a, "off"));
+                    trans.add(new Transition("on",  a, "off"));
+                }
+            }
+            // isFluent=true so the synthesiser self-loops on actions outside our alphabet
+            // (self-loop in "off" is harmless; "on" should not self-loop but we have explicit
+            // transitions for all known actions, so unknown ones would be rare in practice).
+            return new LTS(action, "off", List.of("off", "on"),
+                    List.copyOf(alphabet), trans, true, Set.of("on"));
+        }
+
+        // ── LTS boolean combinators ───────────────────────────────────────────
+
+        /**
+         * Negate a property LTS: flip accepting ↔ non-accepting states.
+         * The transitions and alphabet are unchanged; only {@code acceptingStates} changes.
+         */
+        private LTS ltsNeg(LTS lts) {
+            Set<String> negAccepting = lts.states().stream()
+                    .filter(s -> !lts.acceptingStates().contains(s))
+                    .collect(Collectors.toSet());
+            return new LTS(lts.name(), lts.initialState(), lts.states(),
+                    lts.actions(), lts.transitions(), false, negAccepting);
+        }
+
+        /** AND product: accepting when BOTH component states are accepting. */
+        private LTS ltsAnd(LTS a, LTS b) {
+            return ltsProduct(a, b, (sa, sb) ->
+                    a.acceptingStates().contains(sa) && b.acceptingStates().contains(sb));
+        }
+
+        /** OR product: accepting when AT LEAST ONE component state is accepting. */
+        private LTS ltsOr(LTS a, LTS b) {
+            return ltsProduct(a, b, (sa, sb) ->
+                    a.acceptingStates().contains(sa) || b.acceptingStates().contains(sb));
+        }
+
+        /**
+         * Synchronous parallel composition of two property LTSes.
+         * <p>
+         * State names are joined with "|" (e.g. "on|off").
+         * For each action, if a component has no explicit transition from a given state,
+         * it self-loops (the action is not in its alphabet / no entry in transition map).
+         * </p>
+         */
+        private LTS ltsProduct(LTS a, LTS b,
+                               java.util.function.BiPredicate<String,String> isAccepting) {
+            // Build per-state transition maps: state → action → successor.
+            Map<String, Map<String, String>> aMap = buildTransMap(a);
+            Map<String, Map<String, String>> bMap = buildTransMap(b);
+
+            Set<String> allActions = new LinkedHashSet<>(a.actions());
+            allActions.addAll(b.actions());
+
+            List<String> productStates = new ArrayList<>();
+            List<Transition> productTrans = new ArrayList<>();
+            Set<String> accepting       = new LinkedHashSet<>();
+
+            for (String sa : a.states()) {
+                for (String sb : b.states()) {
+                    String from = sa + "_" + sb;
+                    productStates.add(from);
+                    if (isAccepting.test(sa, sb)) accepting.add(from);
+
+                    for (String act : allActions) {
+                        // Self-loop if no explicit outgoing transition.
+                        String sa2 = aMap.getOrDefault(sa, Map.of()).getOrDefault(act, sa);
+                        String sb2 = bMap.getOrDefault(sb, Map.of()).getOrDefault(act, sb);
+                        productTrans.add(new Transition(from, act, sa2 + "_" + sb2));
+                    }
+                }
+            }
+
+            String initialState = a.initialState() + "_" + b.initialState();
+            return new LTS(
+                    a.name() + "_" + b.name(),
+                    initialState,
+                    productStates,
+                    List.copyOf(allActions),
+                    productTrans,
+                    false, accepting);
+        }
+
+        /** Build a per-state, per-action transition map from an LTS (for product computation). */
+        private Map<String, Map<String, String>> buildTransMap(LTS lts) {
+            Map<String, Map<String, String>> map = new HashMap<>();
+            for (Transition t : lts.transitions())
+                map.computeIfAbsent(t.from(), k -> new LinkedHashMap<>())
+                   .putIfAbsent(t.action(), t.to());  // first wins (deterministic)
+            return map;
+        }
+
         // ── ltl_property ─────────────────────────────────────────────────────
         // ltl_property SAF = []NB
 
         @Override
         public Void visitLtlPropertyDef(FSPGrammarParser.LtlPropertyDefContext ctx) {
-            ltlProperties.add(new LtlPropertyDef(ctx.UPPER_ID().getText()));
+            // ltl_property P = expr
+            //
+            // For safety use (safety = {P}), the controller must ensure expr holds always.
+            // We build the LTS for `expr` (temporal operators [] / <> are stripped, they
+            // only add liveness/safety intent beyond what the LTS already captures).
+            // The resulting acceptingStates = states where expr is TRUE = SAFE states.
+            // States NOT in acceptingStates are the ILLEGAL states for this property.
+            String name = ctx.UPPER_ID().getText();
+            LTS safetyLTS = buildFltlLTS(ctx.fltlExpr(), name);
+            List<String> usedFluents = extractFluentsFromFltl(ctx.fltlExpr());
+            ltlProperties.add(new LtlPropertyDef(name, usedFluents, safetyLTS));
+            propertyLTSMap.put(name, safetyLTS);
             return null;
         }
 
@@ -1228,7 +1557,10 @@ public class FSPParser {
                 if (e.labelBase() != null) {
                     result.addAll(expandLabelBase(e.labelBase()));
                 } else if (e.UPPER_ID() != null) {
-                    result.add(e.UPPER_ID().getText());
+                    // Resolve named set; fall back to the name itself if not found
+                    List<String> resolved = resolveSetByName(e.UPPER_ID().getText());
+                    if (!resolved.isEmpty()) result.addAll(resolved);
+                    else result.add(e.UPPER_ID().getText());
                 } else if (e.INT() != null) {
                     result.add(e.INT().getText());
                 }

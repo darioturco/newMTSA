@@ -2,9 +2,14 @@ package newmtsa;
 
 import newmtsa.parser.FSPParser;
 import newmtsa.parser.ast.*;
+import newmtsa.synthesis.SynthesisResult;
+import newmtsa.synthesis.gr1.OTFDirectedControledSyntesisGR1;
+import newmtsa.synthesis.heuristics.RandomHeuristic;
+import newmtsa.synthesis.nonblocking.OTFDirectedControledSyntesisNonBlocking;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
-import java.util.stream.Collectors;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -17,12 +22,14 @@ public class Main {
         if(args.length > 0){
             file = Path.of(args[0]);
         }else{
-            //file = Path.of(".\\fsp\\Benchmark\\CM\\CM-2-2.fsp");
-            //file = Path.of(".\\fsp\\Benchmark\\DP\\DP-2-2.fsp");
-            //file = Path.of(".\\fsp\\Benchmark\\TL\\TL-2-2.fsp");
-            file = Path.of(".\\fsp\\Benchmark\\TA\\TA-2-2.fsp");
-            //file = Path.of(".\\fsp\\Benchmark\\AT\\AT-2-2.fsp");
-            //file = Path.of(".\\fsp\\Benchmark\\BW\\BW-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp");
+            file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
+            //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test1.lts");
         }
 
         FSPModel model = FSPParser.parse(file);
@@ -31,101 +38,92 @@ public class Main {
         System.out.println("  File: " + file.getFileName());
         System.out.println("===============================================");
 
-        printSection("Constants", model.constants(),
-                c -> c.name() + " = " + c.value());
+        FSPParser.printModel(model);
 
-        printSection("Ranges", model.ranges(),
-                r -> r.name() + " = " + r.init() + ".." + r.end()
-                        + "  (size: " + r.size() + ")");
-
-        printSection("Sets", model.sets(),
-                s -> s.name() + " = {" + String.join(", ", s.elements()) + "}");
-
-        printSection("Macros", model.macros(),
-                m -> m.name() + "(" + String.join(", ", m.params()) + ")"
-                        + " = " + m.body());
-
-        printSection("Actions", List.of(
-                model.actions().stream().sorted().collect(Collectors.joining(", ", "{ ", " }"))
-        ), a -> a);
-
-        printProcesses(model.processes()); // LTS
-
-        printSection("Composites (ParallelCompositionLazy)", model.composites(),
-                c -> c.name() + "  components: ["
-                        + c.components().stream().map(LTS::name)
-                               .reduce((a, b) -> a + ", " + b).orElse("unresolved")
-                        + "]");
-
-        printSection("Fluents", model.fluents(), f -> {
-            // Derive init/term sets from the fluent LTS transitions
-            List<String> init = f.transitions().stream()
-                    .filter(t -> t.from().equals("off") && t.to().equals("on"))
-                    .map(t -> t.action()).collect(java.util.stream.Collectors.toList());
-            List<String> term = f.transitions().stream()
-                    .filter(t -> t.from().equals("on") && t.to().equals("off"))
-                    .map(t -> t.action()).collect(java.util.stream.Collectors.toList());
-            return f.name() + " = <{" + String.join(", ", init) + "}, {" + String.join(", ", term) + "}>";
-        });
-
-        printSection("Asserts", model.asserts(),
-                a -> a.name());
-
-        printSection("LTL Properties", model.ltlProperties(),
-                p -> p.name());
-
-        printSection("Controller Specs", model.controllerSpecs(), cs -> {
-            StringBuilder sb = new StringBuilder(cs.name()).append(" {\n");
-            if (!cs.liveness().isEmpty())
-                sb.append("    liveness     = ").append(cs.liveness()).append("\n");
-            if (!cs.safety().isEmpty())
-                sb.append("    safety       = ").append(cs.safety()).append("\n");
-            if (!cs.assumption().isEmpty())
-                sb.append("    assumption   = ").append(cs.assumption()).append("\n");
-            if (!cs.controllable().isEmpty())
-                sb.append("    controllable = ").append(cs.controllable()).append("\n");
-            if (!cs.marking().isEmpty())
-                sb.append("    marking      = ").append(cs.marking()).append("\n");
-            if (cs.nonblocking())
-                sb.append("    nonblocking\n");
-            sb.append("  }");
-            return sb.toString();
-        });
-
-        if (!model.errors().isEmpty()) {
-            System.out.println("\n--- Parse Errors (" + model.errors().size() + ") ---");
-            model.errors().forEach(e -> System.out.println("  " + e));
-        }
+        runSynthesis(model, true);
     }
 
-    private static void printProcesses(List<LTS> processes) {
-        System.out.println("\n--- Processes / LTS (" + processes.size() + ") ---");
-        for (LTS p : processes) {
-            System.out.println("\n  " + p.name() + "  (initial: " + p.initialState() + ")");
-            System.out.println("    States (" + p.states().size() + "): "
-                    + String.join(", ", p.states()));
-            System.out.println("    Actions (" + p.actions().size() + "): "
-                    + String.join(", ", p.actions()));
-            System.out.println("    Transitions (" + p.transitions().size() + "):");
-            for (Transition t : p.transitions()) {
-                System.out.println("      " + t.from() + " --[" + t.action() + "]--> " + t.to());
+    private static void runSynthesis(FSPModel model, boolean verbose) {
+        List<ControllerSpecDef> specs = model.controllerSpecs();
+        if (specs.isEmpty()) {
+            System.err.println("Must be at least a Goal to use synthesis");
+            return;
+        }
+        ControllerSpecDef spec = specs.get(specs.size() - 1);
+
+        SynthesisResult result;
+        if (spec.nonblocking()) {
+            System.out.println("\n--- Non-Blocking DCS: " + spec.name() + " ---");
+            result = runNonBlocking(model, spec, verbose);
+        } else {
+            System.out.println("\n--- GR(1) Synthesis: " + spec.name() + " ---");
+            result = runGR1(model, spec, verbose);
+        }
+
+        System.out.println("  Result: " + (result.isRealizable() ? "REALIZABLE" : "UNREALIZABLE"));
+        System.out.println("  States explored     : " + result.statesExplored());
+        System.out.println("  Transitions expanded: " + result.transitionsExplored());
+    }
+
+    private static SynthesisResult runNonBlocking(FSPModel model, ControllerSpecDef spec, boolean verbose) {
+        List<LtlPropertyDef> safetyProps = new ArrayList<>();
+        for (String name : spec.safety()) {
+            model.ltlProperties().stream()
+                    .filter(p -> p.name().equals(name))
+                    .findFirst()
+                    .ifPresent(safetyProps::add);
+        }
+
+        return new OTFDirectedControledSyntesisNonBlocking(
+                new ArrayList<>(model.processes()),
+                safetyProps,
+                new HashSet<>(spec.marking()),
+                new HashSet<>(spec.controllable()),
+                new RandomHeuristic(22L),
+                verbose
+        ).run();
+    }
+
+    private static SynthesisResult runGR1(FSPModel model, ControllerSpecDef spec, boolean verbose) {
+        List<LtlPropertyDef> guarantees = new ArrayList<>();
+        for (String name : spec.liveness()) {
+            model.asserts().stream()
+                    .filter(p -> p.name().equals(name))
+                    .findFirst()
+                    .or(() -> model.fluents().stream()
+                            .filter(f -> f.name().equals(name))
+                            .map(f -> new LtlPropertyDef(f.name(), List.of(), f))
+                            .findFirst())
+                    .ifPresent(guarantees::add);
+        }
+
+        List<LtlPropertyDef> assumptions = new ArrayList<>();
+        for (String name : spec.assumption()) {
+            model.asserts().stream()
+                    .filter(p -> p.name().equals(name))
+                    .findFirst()
+                    .or(() -> model.fluents().stream()
+                            .filter(f -> f.name().equals(name))
+                            .map(f -> new LtlPropertyDef(f.name(), List.of(), f))
+                            .findFirst())
+                    .ifPresent(assumptions::add);
+        }
+
+        List<LTS> components = new ArrayList<>(model.processes());
+        for (LtlPropertyDef g : guarantees) {
+            components.add(g.lts());
+        }
+        for (LtlPropertyDef a : assumptions) {
+            if (components.stream().noneMatch(c -> c.name().equals(a.name()))) {
+                components.add(a.lts());
             }
         }
-    }
 
-    private static <T> void printSection(String title, List<T> items, Formatter<T> fmt) {
-        System.out.println("\n--- " + title + " (" + items.size() + ") ---");
-        if (items.isEmpty()) {
-            System.out.println("  (none)");
-        } else {
-            items.forEach(item -> System.out.println("  " + fmt.format(item)));
-        }
-    }
-
-    @FunctionalInterface
-    private interface Formatter<T> {
-        String format(T item);
+        return new OTFDirectedControledSyntesisGR1(
+                components, assumptions, guarantees,
+                new HashSet<>(spec.controllable()),
+                new RandomHeuristic(22L),
+                verbose
+        ).run();
     }
 }
-
-
