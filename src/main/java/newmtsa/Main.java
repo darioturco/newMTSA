@@ -4,7 +4,7 @@ import newmtsa.parser.FSPParser;
 import newmtsa.parser.ast.*;
 import newmtsa.synthesis.SynthesisResult;
 import newmtsa.synthesis.gr1.OTFDirectedControledSyntesisGR1;
-import newmtsa.synthesis.heuristics.RandomHeuristic;
+import newmtsa.synthesis.heuristics.HeuristicType;
 import newmtsa.synthesis.nonblocking.OTFDirectedControledSyntesisNonBlocking;
 
 import java.util.ArrayList;
@@ -17,18 +17,35 @@ import java.nio.file.Path;
 
 public class Main {
 
+    // ── Heuristic selection ───────────────────────────────────────────────────
+    // Change this constant to switch the exploration strategy for both
+    // Non-Blocking DCS and GR(1) synthesis.
+    //
+    //   FIRST    – always picks the first transition (deterministic)
+    //   RANDOM   – uniform random
+    //   BFS      – breadth-first layer-by-layer
+    //   HUMAN    – interactive: prompts the user on every step
+    //   RA       – Ready Abstraction (base)
+    //   RA_R     – RA + recompute on new marked states
+    //   RA_E     – RA + structure-aware tie-breaking
+    //   RA_ER    – RA.R + RA.E  (best overall combination)
+    //   RA_ERG   – RA.R + RA.E + Goals-as-targets (all improvements)
+    static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
+    //static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
+    //static final HeuristicType HEURISTIC = HeuristicType.HUMAN;
+
     public static void main(String[] args) throws IOException {
         Path file;
         if(args.length > 0){
             file = Path.of(args[0]);
         }else{
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-2.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-2-2.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp");
-            file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
+            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\CM\\CM-2-2.fsp");
+            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\DP\\DP-2-2.fsp");
+            file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TL\\TL-2-2.fsp");
+            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TA\\TA-2-2.fsp");
+            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\AT\\AT-2-2.fsp");
+            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\BW\\BW-2-2.fsp");
+            //file = Path.of(".\\fsp\\NonBlocking\\ControllableFSPs\\test21.lts");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test1.lts");
         }
 
@@ -79,7 +96,7 @@ public class Main {
                 safetyProps,
                 new HashSet<>(spec.marking()),
                 new HashSet<>(spec.controllable()),
-                new RandomHeuristic(22L),
+                HEURISTIC.create(),
                 verbose
         ).run();
     }
@@ -122,7 +139,7 @@ public class Main {
         return new OTFDirectedControledSyntesisGR1(
                 components, assumptions, guarantees,
                 new HashSet<>(spec.controllable()),
-                new RandomHeuristic(22L),
+                HEURISTIC.create(),
                 verbose
         ).run();
     }

@@ -7,6 +7,7 @@ import newmtsa.synthesis.Director;
 import newmtsa.synthesis.ExtendedTransition;
 import newmtsa.synthesis.SynthesisResult;
 import newmtsa.synthesis.heuristics.Heuristic;
+import newmtsa.synthesis.heuristics.SynthesisContext;
 
 import java.util.*;
 
@@ -88,6 +89,11 @@ public class OTFDirectedControledSyntesisNonBlocking {
     /** Reverse adjacency: parent states for backward propagation. */
     private final Map<String, Set<String>>              parents = new HashMap<>();
 
+    // ── budget ────────────────────────────────────────────────────────────────
+
+    /** Hard cap on transitions expanded. {@link Integer#MAX_VALUE} = unlimited. */
+    private final int expansionLimit;
+
     // ── stats ─────────────────────────────────────────────────────────────────
 
     private int transitionsExplored = 0;
@@ -115,6 +121,22 @@ public class OTFDirectedControledSyntesisNonBlocking {
                                                    Set<String>          controllable,
                                                    Heuristic            heuristic,
                                                    boolean              verbose) {
+        this(components, safetyProperties, markingActions, controllable,
+             heuristic, verbose, Integer.MAX_VALUE);
+    }
+
+    /**
+     * @param expansionLimit   stop and return UNREALIZABLE after this many
+     *                         transitions expanded (use {@link Integer#MAX_VALUE}
+     *                         for unlimited)
+     */
+    public OTFDirectedControledSyntesisNonBlocking(List<LTS>            components,
+                                                   List<LtlPropertyDef> safetyProperties,
+                                                   Set<String>          markingActions,
+                                                   Set<String>          controllable,
+                                                   Heuristic            heuristic,
+                                                   boolean              verbose,
+                                                   int                  expansionLimit) {
         if (controllable.isEmpty())
             throw new IllegalArgumentException(
                     "Non-blocking DCS requires at least one controllable action");
@@ -122,9 +144,10 @@ public class OTFDirectedControledSyntesisNonBlocking {
             throw new IllegalArgumentException(
                     "Non-blocking DCS requires at least one marking action");
 
-        this.controllable = Set.copyOf(controllable);
-        this.heuristic    = heuristic;
-        this.verbose      = verbose;
+        this.controllable    = Set.copyOf(controllable);
+        this.heuristic       = heuristic;
+        this.verbose         = verbose;
+        this.expansionLimit  = expansionLimit;
 
         compTrans      = new ArrayList<>();
         compAlpha      = new ArrayList<>();
@@ -136,23 +159,42 @@ public class OTFDirectedControledSyntesisNonBlocking {
         List<LTS> allComponents = new ArrayList<>(components);
         for (LtlPropertyDef prop : safetyProperties) {
             LTS monitor = prop.lts();
-            // Safety monitors are treated as fluents: they never block a transition
-            // whose event is not in their alphabet; missing transitions self-loop.
             if (!monitor.isFluent()) {
                 monitor = new LTS(monitor.name(), monitor.initialState(), monitor.states(),
                         monitor.actions(), monitor.transitions(), true /*isFluent*/,
-                        monitor.acceptingStates());
+                        monitor.acceptingStates(), monitor.stateIndex());
             }
             allComponents.add(monitor);
+        }
+
+        int numPlantComponents   = components.size();
+        int numSafetyMonitors    = safetyProperties.size();
+
+        // Compute the combined plant+safety alphabet before adding the marking fluent.
+        Set<String> plantAlpha = new LinkedHashSet<>();
+        for (LTS lts : allComponents) {
+            for (Transition t : lts.transitions()) plantAlpha.add(t.action());
+        }
+
+        // Add the marking fluent last (if marking actions are declared).
+        // The fluent is the sole source of marked states: it transitions to "on" on
+        // every marking action and back to "off" on every other action.  Plant
+        // components are given no explicit marking set (empty = all-marked convention),
+        // so a composite state is marked iff the fluent sub-state is "on".
+        if (!markingActions.isEmpty()) {
+            allComponents.add(buildMarkingFluent(markingActions, plantAlpha));
         }
         this.components = List.copyOf(allComponents);
 
         for (int idx = 0; idx < this.components.size(); idx++) {
             LTS lts = this.components.get(idx);
-            boolean isSafety = idx >= components.size(); // safety monitors come last
+            boolean isSafetyMonitor  = idx >= numPlantComponents
+                                    && idx <  numPlantComponents + numSafetyMonitors;
+            boolean isMarkingFluent  = !markingActions.isEmpty()
+                                    && idx == numPlantComponents + numSafetyMonitors;
 
             Map<String, Map<String, String>> actMap = new HashMap<>();
-            Set<String> acts = new LinkedHashSet<>();
+            Set<String> acts = new LinkedHashSet<>(lts.actions()); // include forced-alphabet actions
             for (Transition t : lts.transitions()) {
                 actMap.computeIfAbsent(t.action(), k -> new HashMap<>())
                       .put(t.from(), t.to());
@@ -164,29 +206,45 @@ public class OTFDirectedControledSyntesisNonBlocking {
 
             // Marked states for this component.
             Set<String> marked = new LinkedHashSet<>();
-            if (isSafety) {
-                // Safety monitors do not contribute to marking — treat all states as marked.
-                // (marking is defined only over the plant components)
-            } else if (!markingActions.isEmpty()) {
-                for (Transition t : lts.transitions()) {
-                    if (markingActions.contains(t.action())) marked.add(t.to());
-                }
-            } else {
+            if (isSafetyMonitor) {
+                // Safety monitors do not contribute to marking.
+            } else if (isMarkingFluent) {
+                // Only "on" is a marked state; the fluent defines the goal condition.
+                marked.add("on");
+            } else if (markingActions.isEmpty()) {
+                // No marking fluent: fall back to acceptingStates convention.
                 marked.addAll(lts.acceptingStates());
             }
+            // Plant component with marking actions: leave marked empty (all-states
+            // convention).  ERROR is already ruled out by isIllegal(), so the
+            // effective marked set is "all non-ERROR states", as required.
             compMarked.add(marked);
 
             // Safe states for this component.
             Set<String> safe = new LinkedHashSet<>();
-            if (isSafety) {
-                // acceptingStates of the safety monitor = states where the property holds.
-                // Empty acceptingStates means no constraint (all states safe).
+            if (isSafetyMonitor) {
                 safe.addAll(lts.acceptingStates());
             }
-            // For non-safety components, safe is empty = no safety constraint.
             compSafeStates.add(safe);
         }
         alphabet = Collections.unmodifiableSet(alpha);
+
+        // Provide context-aware heuristics (e.g. RAHeuristic) with a live,
+        // read-only view of the exploration state.  Stateless heuristics ignore this.
+        heuristic.init(new SynthesisContext() {
+            @Override public List<LTS> components() {
+                return OTFDirectedControledSyntesisNonBlocking.this.components;
+            }
+            @Override public List<Set<String>> componentMarked() { return compMarked; }
+            @Override public Set<String>       controllable()    {
+                return OTFDirectedControledSyntesisNonBlocking.this.controllable;
+            }
+            @Override public Set<String>              exploredStates()       { return succMap.keySet(); }
+            @Override public Set<String>              goals()                { return goals; }
+            @Override public List<ExtendedTransition> successorsOf(String s) {
+                return succMap.getOrDefault(s, List.of());
+            }
+        });
     }
 
     // ── public entry point ────────────────────────────────────────────────────
@@ -202,16 +260,13 @@ public class OTFDirectedControledSyntesisNonBlocking {
         log("Initial state: " + s0);
         expand(s0);
 
-        // Classify initial state immediately (Alg. lines 5-9).
+        // Classify initial state immediately.
+        // Deadlocks (terminal states) and illegal states are immediately losing.
+        // No state is immediately winning — Goals come only from winning loops.
         if (isLosing(s0)) {
-            log("Initial state is losing — UNREALIZABLE");
+            log("Initial state is losing (deadlock or illegal) — UNREALIZABLE");
             errors.add(s0);
             return SynthesisResult.unrealizable(succMap.size(), transitionsExplored);
-        }
-        if (isWinning(s0)) {
-            log("Initial state is winning (terminal marked) — REALIZABLE");
-            goals.add(s0);
-            return SynthesisResult.of(buildDirector(), succMap.size(), transitionsExplored);
         }
         none.add(s0);
 
@@ -257,13 +312,9 @@ public class OTFDirectedControledSyntesisNonBlocking {
                 addParent(eʹ, e);
 
                 if (isLosing(eʹ)) {
-                    log("    " + eʹ + " is losing (deadlock/unmarked)");
+                    log("    " + eʹ + " is losing (deadlock or illegal)");
                     errors.add(eʹ);
                     propagateError(Set.of(eʹ));
-                } else if (isWinning(eʹ)) {
-                    log("    " + eʹ + " is winning (terminal marked)");
-                    goals.add(eʹ);
-                    propagateGoal(Set.of(eʹ));
                 } else {
                     none.add(eʹ);
                     pending.addAll(succMap.getOrDefault(eʹ, List.of()));
@@ -280,6 +331,10 @@ public class OTFDirectedControledSyntesisNonBlocking {
                 log("s0 ∈ Errors — UNREALIZABLE"
                         + " | states=" + succMap.size()
                         + " transitions=" + transitionsExplored);
+                return SynthesisResult.unrealizable(succMap.size(), transitionsExplored);
+            }
+            if (transitionsExplored >= expansionLimit) {
+                log("Budget exhausted (" + expansionLimit + ") — aborting");
                 return SynthesisResult.unrealizable(succMap.size(), transitionsExplored);
             }
         }
@@ -306,6 +361,30 @@ public class OTFDirectedControledSyntesisNonBlocking {
         System.out.println("[DCS-NB] frontier (" + pending.size() + "):");
         for (ExtendedTransition ft : pending)
             System.out.println("        " + ft.from() + " --[" + ft.action() + "]--> " + ft.to());
+    }
+
+    // ── marking fluent factory ────────────────────────────────────────────────
+
+    /**
+     * Builds a two-state fluent LTS that encodes the marking objective:
+     * - "off" (initial): goal not yet achieved.
+     * - "on"           : last executed action was a marking action.
+     *
+     * Every marking action transitions to "on" from either state; every other
+     * action transitions to "off".  The fluent participates in all plant actions
+     * (isFluent = true so missing transitions self-loop during parallel composition).
+     */
+    private static LTS buildMarkingFluent(Set<String> markingActions, Set<String> plantAlpha) {
+        List<Transition> transitions = new ArrayList<>();
+        for (String action : plantAlpha) {
+            String target = markingActions.contains(action) ? "on" : "off";
+            transitions.add(new Transition("off", action, target));
+            transitions.add(new Transition("on",  action, target));
+        }
+        return new LTS("_marking_fluent", "off",
+                       List.of("off", "on"), new ArrayList<>(plantAlpha),
+                       transitions, true, Set.of("on"),
+                       LTS.buildIndex(List.of("off", "on"), "off"));
     }
 
     // ── state helpers ─────────────────────────────────────────────────────────
@@ -354,13 +433,19 @@ public class OTFDirectedControledSyntesisNonBlocking {
     // ── safety (SEI) ──────────────────────────────────────────────────────────
 
     /**
-     * A composite state is illegal (∈ SEI) iff any safety monitor component's
-     * current sub-state is NOT in that monitor's safe-state set.
+     * A composite state is illegal (∈ SEI) iff:
+     * <ul>
+     *   <li>any component sub-state is the FSP {@code ERROR} sink (safety violation), or</li>
+     *   <li>any safety monitor component's current sub-state is NOT in that
+     *       monitor's safe-state set.</li>
+     * </ul>
      * Components with an empty {@code compSafeStates} entry are unconstrained.
      */
     private boolean isIllegal(String s) {
         String[] parts = splitState(s);
         for (int i = 0; i < components.size(); i++) {
+            // FSP ERROR state: any component in ERROR means the composite state is unsafe.
+            if ("ERROR".equals(parts[i])) return true;
             Set<String> safe = compSafeStates.get(i);
             if (!safe.isEmpty() && !safe.contains(parts[i])) return true;
         }
@@ -370,24 +455,38 @@ public class OTFDirectedControledSyntesisNonBlocking {
     // ── state classification (Listing 4) ─────────────────────────────────────
 
     /**
-     * isLosing(s) = (E(s) = ∅ ∧ s ∉ ME) ∨ s ∈ SEI
-     * A state is losing when it is a deadlock without marking, OR it violates
-     * a safety property.
+     * isLosing(s) = E(s) = ∅ ∨ s ∈ SEI
+     *
+     * <p>A state is losing when it is a deadlock (any terminal state, whether
+     * marked or not) OR it violates a safety property.
+     *
+     * <p><b>Why deadlock → losing regardless of marking:</b> non-blocking DCS
+     * requires the controller to <em>always</em> be able to extend execution to
+     * a marked state — not just once, but perpetually.  A terminal state, even if
+     * currently marked, is a dead end: the system can never make another step from
+     * it, so it can never re-enter a marked state.  Therefore no terminal state can
+     * be a winning state; they are all immediately losing.
+     * (Floppy Mati thesis §4, Listing 4.4 — isDeadlock(s) → Error; no isWinning.)
      */
     private boolean isLosing(String s) {
         if (isIllegal(s)) return true;
         List<ExtendedTransition> succ = succMap.getOrDefault(s, List.of());
-        return succ.isEmpty() && !isMarked(s);
+        return succ.isEmpty();   // ALL deadlocks are losing, marked or not
     }
 
     /**
-     * isWinning(s) = E(s) = ∅ ∧ s ∈ ME ∧ s ∉ SEI
-     * Terminal state that is also marked and not illegal → immediately winning.
+     * No state is immediately winning.
+     *
+     * <p>For non-blocking DCS, a state can only be winning (Goal) if it belongs
+     * to a winning loop — a cycle that passes through a marked state and from
+     * which the controller cannot be forced out.  Terminal states can never be
+     * part of any loop.  All other unclassified states go to None and are
+     * promoted to Goals only via {@link #findNewGoalsIn}.
+     * (Floppy Mati thesis §4, Listing 4.1 — expandNext classifies only deadlocks
+     * as Errors; everything else goes to None until a winning loop is found.)
      */
     private boolean isWinning(String s) {
-        if (isIllegal(s)) return false;
-        List<ExtendedTransition> succ = succMap.getOrDefault(s, List.of());
-        return succ.isEmpty() && isMarked(s);
+        return false;
     }
 
     // ── expansion ─────────────────────────────────────────────────────────────
@@ -698,7 +797,14 @@ public class OTFDirectedControledSyntesisNonBlocking {
      * Backward-propagate losing status from {@code newErrors} through None states.
      *
      * <p>Finds all None-state ancestors, then repeatedly promotes states that are
-     * forced to Errors (all successors already errors) and cannot reach Goals.
+     * forced to Errors.  A state is forced to error when the environment can drive
+     * the system into an error regardless of the controller's strategy:
+     * <ul>
+     *   <li>An uncontrollable transition leads to an Error (the environment can
+     *       always fire it; the controller cannot prevent it), OR</li>
+     *   <li>No non-Error successor exists at all (every possible move leads to Error,
+     *       disabling controllable ones causes a deadlock — itself losing).</li>
+     * </ul>
      */
     private void propagateError(Set<String> newErrors) {
         Set<String> C = ancestorsNone(newErrors);
@@ -711,7 +817,7 @@ public class OTFDirectedControledSyntesisNonBlocking {
             Iterator<String> it = C.iterator();
             while (it.hasNext()) {
                 String s = it.next();
-                if (allSuccessorsAreErrors(s) && !canReachGoalIn(s, C)) {
+                if (isForcedToError(s)) {
                     errors.add(s); none.remove(s);
                     it.remove();
                     changed = true;
@@ -764,13 +870,35 @@ public class OTFDirectedControledSyntesisNonBlocking {
         if (added > 0) log("  promoted " + added + " states → Errors (total=" + errors.size() + ")");
     }
 
-    private boolean allSuccessorsAreErrors(String s) {
-        List<ExtendedTransition> succ = succMap.getOrDefault(s, List.of());
-        if (succ.isEmpty()) return true;
-        for (ExtendedTransition t : succ) {
-            if (!errors.contains(t.to())) return false;
+    /**
+     * Returns true when the environment can force state {@code s} into an error
+     * regardless of the controller's best strategy.
+     *
+     * <p>The controller's optimal safety strategy disables all controllable actions
+     * that lead to Error states and keeps those leading to non-Error states.  Under
+     * this strategy, state {@code s} is forced to error when:
+     * <ul>
+     *   <li>Some <em>uncontrollable</em> transition leads to an Error — the controller
+     *       cannot disable it, so the environment can always choose to take it, or</li>
+     *   <li>No non-Error successor exists at all — every action (after disabling
+     *       controllable→Error ones) either leads to Error or results in a deadlock,
+     *       which is itself a losing state.</li>
+     * </ul>
+     */
+    private boolean isForcedToError(String s) {
+        boolean hasNonErrorSuccessor = false;
+        for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
+            if (!controllable.contains(t.action()) && errors.contains(t.to())) {
+                // Uncontrollable transition to Error: the environment can always fire it.
+                return true;
+            }
+            if (!errors.contains(t.to())) {
+                hasNonErrorSuccessor = true;
+            }
         }
-        return true;
+        // If no non-error successor exists, disabling all controllable→Error transitions
+        // leaves the controller with no safe moves (deadlock or all-error).
+        return !hasNonErrorSuccessor;
     }
 
     // ── director construction (Listing 5) ────────────────────────────────────
@@ -785,7 +913,22 @@ public class OTFDirectedControledSyntesisNonBlocking {
      * action leading to the goal successor with the lowest rank.
      */
     private Director buildDirector() {
-        // Rank states: BFS from (Goals ∩ marked states).
+        // Build complete reverse adjacency restricted to goal states.
+        // We use succMap (which records ALL expanded transitions) rather than
+        // `parents` (which only has edges that were actually picked from pending).
+        // Early termination of the main loop leaves `parents` incomplete, so using
+        // it here would leave some goal states unranked (rank = MAX_VALUE) and the
+        // director would fail to actively guide those states toward marked.
+        Map<String, Set<String>> goalRevAdj = new HashMap<>();
+        for (String s : goals) {
+            for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
+                if (goals.contains(t.to())) {
+                    goalRevAdj.computeIfAbsent(t.to(), k -> new LinkedHashSet<>()).add(s);
+                }
+            }
+        }
+
+        // Rank states: BFS backward from (Goals ∩ marked states).
         Map<String, Integer> rank  = new HashMap<>();
         Queue<String>        queue = new ArrayDeque<>();
         for (String s : goals) {
@@ -794,8 +937,8 @@ public class OTFDirectedControledSyntesisNonBlocking {
         while (!queue.isEmpty()) {
             String s = queue.poll();
             int r = rank.get(s);
-            for (String p : parents.getOrDefault(s, Set.of())) {
-                if (goals.contains(p) && !rank.containsKey(p)) {
+            for (String p : goalRevAdj.getOrDefault(s, Set.of())) {
+                if (!rank.containsKey(p)) {
                     rank.put(p, r + 1); queue.add(p);
                 }
             }

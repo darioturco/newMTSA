@@ -1,0 +1,590 @@
+================================================================================
+  DCS & READY ABSTRACTION — ALGORITHM RESUME
+  Sources:
+    [Ciolek23] "On-the-fly informed search of non-blocking directed controllers"
+               Ciolek, Duran, Zanollo, Pazos, Braier, Braberman, D'Ippolito, Uchitel
+               Automatica 147 (2023) 110731
+    [FlopMati] "Síntesis Dirigida de Controladores No Maximales para Requerimientos
+               de tipo Non-Blocking" — Matías Duran, Florencia Zanollo (2021)
+    [NicoPazos] "Ready Abstraction: una heurística para la técnica de síntesis
+                On-The-Fly de directores Non-Blocking" — Nicolás Pazos (2023)
+================================================================================
+
+NOTE ON OUR IMPLEMENTATION:
+  The Java implementation in this project (NewMTSA) is based directly on
+  these papers. Key files:
+    - OTFDirectedControledSyntesisNonBlocking.java  → main DCS loop
+    - Heuristic.java / BFSHeuristic.java / HumanHeuristic.java → heuristic API
+    - synthesis/heuristics/ra/                       → Ready Abstraction impl.
+
+================================================================================
+1. FORMAL BACKGROUND
+================================================================================
+
+1.1 Deterministic Automaton
+  E = (S_E, A_E, δ_E, e₀, M_E)
+    S_E  : finite set of states
+    A_E  : finite event set
+    δ_E  : S_E × A_E → S_E   (partial transition function)
+    e₀   : initial state
+    M_E  : set of marked (accepting) states
+
+  Notation:
+    δ_E(e, α) = e'  written  e —α→_E e'  ("step")
+    Γ_E(e)  = { α ∈ A_E | ∃e'. e —α→_E e' }   (enabled events at e)
+    T_E = { e ∈ S_E | Γ_E(e) = ∅ }             (terminal/deadlock states)
+
+1.2 Director (Directed Controller)
+  Given:
+    E          : plant automaton
+    A_E^C      : controllable events
+    A_E^U      : uncontrollable events  (= A_E \ A_E^C)
+    A_E^D ⊆ A_E^U : disturbances (uncontrollable that cannot be relied on)
+
+  A Director φ : A_E* → 2^A_E satisfies:
+    • Controllable : A_E^U ⊆ φ(w)   for all w ∈ L_φ(E)
+    • Directed     : |φ(w) ∩ A_E^C| ≤ 1
+    • Eager        : if the plant is at state e after w and
+                       (i)  e ∈ M_E \ T_E  and  Γ_E(e) ∩ A_E^C ≠ ∅, OR
+                       (ii) Γ_E(e) ∩ A_E^C = ∅  and  Γ_E(e) ∩ (A_E^U \ A_E^D) = ∅
+                     then  |φ(w) ∩ A_E^C| = 1
+
+  Key insight: a director enables ALL uncontrollable events and AT MOST ONE
+  controllable event at each step. It is "active": it must keep choosing
+  the next action to ensure perpetual progress toward marked states.
+
+1.3 Control Problem
+  Monolithic: E = (E, A_E^C, S_E^I)
+    — E   : plant automaton
+    — S_E^I : illegal states (safety constraint)
+  Solution φ must be:
+    • Safe        : φ never reaches S_E^I
+    • Non-blocking: from any reachable state, a marked state is always reachable
+
+  Modular: E = ({E_0,...,E_n}, A_E^C, {S_0^I,...,S_n^I})
+    — Each E_i is a separate automaton; plant = E_0 ∥ ... ∥ E_n
+    — Illegal if ANY component is in its illegal set
+
+1.4 Parallel Composition
+  T ∥ Q = (S_T × S_Q, A_T ∪ A_Q, δ_TQ, ⟨t₀,q₀⟩, M_T × M_Q)
+  Transition rules:
+    (i)  α ∉ A_Q : ⟨t,q⟩ —α→ ⟨t',q⟩   (local to T)
+    (ii) α ∉ A_T : ⟨t,q⟩ —α→ ⟨t,q'⟩   (local to Q)
+    (iii) α ∈ A_T ∩ A_Q : ⟨t,q⟩ —α→ ⟨t',q'⟩  (synchronization)
+
+  State space can be exponential in the number of components.
+  Marked states = states where ALL components are simultaneously marked.
+
+1.5 Partial Exploration
+  ES ⊑ E : a partial exploration of E is a sub-automaton with fewer
+           transitions, modeling what has been explored so far.
+  ES⁺ ("optimistic"): unexplored transitions lead to a new winning sink state ⊤
+  ES⁻ ("pessimistic"): unexplored transitions lead to a new losing sink state ⊤
+
+  Key lemma (monotonicity):
+    ES ⊑ ES' ⟹ W_ES ⊆ W_ES'  and  L_ES ⊆ L_ES'
+  Meaning: as we explore more, we can only discover MORE winners/losers.
+
+================================================================================
+2. OTF-DCS ALGORITHM  [Ciolek23, FlopMati]
+================================================================================
+
+State classification:
+  Goals  : states proven winning in ES⁺  (can always reach a marked state)
+  Errors : states proven losing in ES⁻   (cannot guarantee reaching marked state)
+  None   : unclassified states
+
+  isWinning(s) ↔ s is a deadlock AND s ∈ M_E AND s ∉ S_E^I
+  isLosing(s)  ↔ (s is a deadlock AND s ∉ M_E) OR s ∈ S_E^I
+
+----------------------------------------------------------------------
+ALGORITHM 1: DCS / SCD — Main On-The-Fly Directed Control Synthesis
+----------------------------------------------------------------------
+function DCS(E = (E, A_E^C, S_E^I), heuristic):
+  e₀ = ⟨e₀⁰, ..., e₀ⁿ⟩                        // composite initial state
+  ES = ({e₀}, A_E, ∅, e₀, M_E ∩ {e₀})          // partial exploration = just e₀
+  Goals = Errors = ∅
+  None = {e₀}
+
+  if isLosing(e₀):
+    Errors = {e₀};  None = ∅
+  else if isWinning(e₀):
+    Goals = {e₀};   None = ∅
+
+  while e₀ ∉ Errors ∪ Goals:
+    (e, α, e') = expandNext(heuristic)           // pick next transition to expand
+    S_ES = S_ES ∪ {e'}
+    ES = (S_ES, A_E, δ_ES ∪ {e —α→ e'}, e₀, M_E ∩ S_ES)
+
+    if e' ∈ Errors:
+      propagateError({e'})
+    else if e' ∈ Goals:
+      propagateGoal({e'})
+    else if ∃w. e' —w→*_ES e  (e' can reach e, i.e., a loop is closed):
+      loops = getMaxLoop(e, e')
+      if canBeWinningLoop(loops):
+        C = findNewGoalsIn(loops)
+        Goals = Goals ∪ C;  None = None \ C
+        propagateGoal(C)
+      else:
+        P = findNewErrorsIn(loops)
+        Errors = Errors ∪ P;  None = None \ P
+        propagateError(P)
+
+    ES = ES                                      // advance exploration snapshot
+
+  if e₀ ∈ Goals:
+    r = rankStates(ES, C ∪ M_ES)                // rank winning states by distance
+    return φ : A_E* → 2^A_E  s.t.
+      for each state e reachable in ES:
+        φ(w) = A_E^U ∪ {bestControllable(e, r, ES)}  if e ∈ Goals
+  else:
+    return UNREALIZABLE
+
+----------------------------------------------------------------------
+ALGORITHM 2: expandNext — Choose Next Transition to Explore
+----------------------------------------------------------------------
+function expandNext(heuristic):
+  // Select the best pending transition (e, α, e') where:
+  //   • e ∈ S_ES  (source already in exploration)
+  //   • e —α→_E e' is a real plant transition not yet in ES
+  //   • e' ∈ None  (target is unclassified)
+  //   • (e, α, e') has the best heuristic score among all pending transitions
+
+  let (e, α, e') = argmin_{pending} heuristic(e, α, e')
+
+  if isLosing(e'):   Errors = Errors ∪ {e'}
+  if e' ∉ Errors ∪ Goals:  None = None ∪ {e'}
+  return (e, α, e')
+
+----------------------------------------------------------------------
+ALGORITHM 3: propagateGoal — Backward-propagate winning information
+----------------------------------------------------------------------
+function propagateGoal(newGoals):
+  C' = ∅;  C = ancestorsNone(newGoals)
+  while C ≠ C':
+    C' = C
+    C = C \ { s ∈ C |
+               forcedTo(s, S_ES \ (C ∪ Goals), ES⁺)     // forced out of C ∪ Goals
+               ∧ ¬canReachGoalIn(s, C, ES⁺) }            // cannot reach a goal staying in C
+  Goals = Goals ∪ C
+  None  = None  \ C
+
+// forcedTo(s, Dest, Z): s is forced to Dest in Z
+//   ↔ (∃α ∈ A_Z^U. ∃e ∈ Dest. s —α→_Z e)         (uncontrollable exits to Dest)
+//     ∨ (Γ_Z(s) ∩ A_Z^C = ∅ ∧ A_Z^D ≠ ∅)          (only disturbances or empty)
+//     ∨ (Γ_Z(s) ⊆ A_Z^C ∧ ∀e. s —_→_Z e ⟹ e ∈ Dest)  (all ctrl exits go to Dest)
+
+----------------------------------------------------------------------
+ALGORITHM 4: propagateError — Backward-propagate losing information
+----------------------------------------------------------------------
+procedure propagateError(newErrors):
+  P = ancestorsNone(newErrors)
+  C' = ∅;  C = P
+  while C ≠ C':
+    C' = C
+    C = C \ { s ∈ C |
+               forcedTo(s, Errors, ES⁻)                  // forced to Error states
+               ∧ ¬canReachGoalIn(s, C, ES⁻) }
+    NewErrors = C' \ C
+    P = P ∪ NewErrors
+  Errors = Errors ∪ P
+  None   = None   \ P
+
+----------------------------------------------------------------------
+ALGORITHM 5: findNewGoalsIn — Confirm winning loop
+----------------------------------------------------------------------
+function findNewGoalsIn(loops):
+  C' = ∅;  C = loops
+  while C ≠ C':
+    C' = C
+    inner_C' = ∅;  inner_C = C
+    while inner_C ≠ inner_C':
+      inner_C' = inner_C
+      // Remove states forced out of C ∪ Goals via ES⁺
+      inner_C = inner_C \ { s ∈ inner_C |
+                  forcedTo(s, S_ES \ (inner_C ∪ Goals), ES⁺)
+                  ∧ ¬canBeReached(s, inner_C) }   // s has no predecessor in inner_C
+    C = inner_C
+    // Remove states from which no goal or marked state is reachable within C
+    C = C \ { s ∈ C | ¬canReachGoalOrMarkedIn(s, C) }
+  return C
+
+----------------------------------------------------------------------
+ALGORITHM 6: findNewErrorsIn — Confirm losing loop
+----------------------------------------------------------------------
+function findNewErrorsIn(loops):
+  // A loop is losing if every exit goes to an Error state
+  if ∃s,s'. s —_→_ES s'  ∧  (s ∉ loops  ∨  s' ∉ loops ∪ Errors):
+    // There is a way out to a non-Error state → loop is not fully losing
+    return ∅
+  else:
+    return loops
+
+----------------------------------------------------------------------
+ALGORITHM 7: getMaxLoop — Find the maximal set of None-states in a loop
+----------------------------------------------------------------------
+function getMaxLoop(e, e'):
+  // Returns all states s reachable from e' that can also reach e,
+  // using only None states (not Goals or Errors), and following ES transitions
+  return { s | ∃w,w'. e' —w→*_ES s  ∧  s —w'→*_ES e
+               ∧ ∀c ∈ states(w) ∪ states(w'). c ∉ Goals ∪ Errors
+               ∧ s ≠ e  ∧ s ∉ Goals ∪ Errors }
+
+----------------------------------------------------------------------
+ALGORITHM 8: canBeWinningLoop — Check if a loop can be winning
+----------------------------------------------------------------------
+function canBeWinningLoop(loop):
+  return (∃eₘ ∈ loop. eₘ ∈ M_ES)                    // loop contains a marked state
+       ∨ (∃s ∈ loop. canReachInOneStep(s, Goals))    // loop can reach a Goal in 1 step
+
+----------------------------------------------------------------------
+ALGORITHM 9: ancestorsNone — Backward reachable None-ancestors
+----------------------------------------------------------------------
+function ancestorsNone(targets):
+  return { e ∈ ES | ∃w. e —w→*_ES e'  for some e' ∈ targets
+                       ∧ ∀s visited on the way. s ∉ Goals ∪ Errors }
+
+----------------------------------------------------------------------
+ALGORITHM 10: rankStates — Assign ranking to winning states
+----------------------------------------------------------------------
+function rankStates(ES, Targets):
+  r = 0;  W' = Targets;  W = ∅
+  while W' ≠ ∅:
+    for w ∈ W': rank(w) = r
+    W = W ∪ W'
+    W' = { s ∈ (Goals \ W) | ∃s'. s —_→_ES s'  ∧ s' ∈ W }
+    r = r + 1
+  return rank
+
+// Ranks states by BFS distance from already-ranked marked/goal states.
+// Used to build the director: always enable the controllable event that
+// leads to the lowest-ranked successor.
+
+function bestControllable(e, r, ES):
+  return α ∈ A_E^C  s.t.  e —α→_ES e'
+         and ∀α' ∈ A_E^C. e —α'→_ES e'':  r(e') ≤ r(e'')
+  // Pick the controllable event leading to the closest goal/marked state
+
+----------------------------------------------------------------------
+KEY INVARIANT (maintained throughout the main loop):
+  ES ⊑ E
+  ∀s ∈ ES:
+    s ∈ Goals  ↔  s ∈ W_ES⁺   (winning under optimistic view)
+    s ∈ Errors ↔  s ∈ L_ES⁻   (losing under pessimistic view)
+    s ∉ Goals ∪ Errors  ↔  s ∈ None
+
+COMPLEXITY: O(|S_E|³ · |A_E|²) where S_E, A_E are from the full composed plant.
+  In practice much better because only a fraction of the plant is explored.
+
+================================================================================
+3. READY ABSTRACTION (RA) HEURISTIC  [Ciolek23, NicoPazos]
+================================================================================
+
+Goal: estimate, for each enabled transition at a frontier state e, how many
+steps it would take to reach a marked state. Use this estimate to guide
+expandNext toward promising transitions.
+
+3.1 Gap
+------
+  Given events α, β ∈ A_E (α ≠ β), the GAP from state e is:
+    G_e^E(α, β) = max_{j ∈ J} ( |r_j(α,β)| - 1 )
+
+  where:
+    J         = { j | α,β ∈ A_{E_j}  ∧  α ∈ Γ_{E_j}(e_j) }
+                  (components where α is ready and β exists)
+    r_j(α,β)  = shortest sequence in Γ*(e_j) of the form α,...,β
+                  (undefined / ∞ if no such sequence exists)
+
+  Interpretation: G_e^E(α,β) estimates how many steps after taking α we
+  need before β becomes enabled, looking at each component separately.
+  It is an UNDERESTIMATE (optimistic) because synchronization may require more.
+
+  If J = ∅, G_e^E(α,β) is undefined.
+
+3.2 Ready Abstraction (RA)
+--------------------------
+  For plant E = {E_0,...,E_n} and composite state e = ⟨e_0,...,e_n⟩:
+
+  RA_e^E = (V, D, w)  — weighted directed graph
+
+    V = { α | ∃j. α ∈ Γ_{E_j}(e_j) }
+        ("ready" events: enabled in at least one component)
+
+    D = { (α,β) | α ≠ β
+                  ∧ G_e^E(α,β) ≠ ∞
+                  ∧ ∃j. ∃ path e_j —α→ ... in E_j not starting with a self-loop }
+        (edge = causal dependency: taking α can eventually enable β)
+
+    w(α,β) = G_e^E(α,β)   (edge weight = gap)
+
+  NOTE: Edges starting from self-loops in any E_j are EXCLUDED.
+  A self-loop does not change the component state, so it cannot help enable
+  other events. Including them would give misleading estimates.
+
+  Interpretation of paths:
+    A path α₀ → α₁ → ... → αₖ in RA_e^E with total weight W means:
+    "if we take α₀ from e, we expect to enable αₖ in about W further steps."
+
+3.3 Extended Ready Abstraction (ERA)
+-------------------------------------
+  The ERA adds marked states of each component as extra vertices:
+
+  ERA_e^E = (V', D', w')   (supergraph of RA_e^E)
+
+    V' = V_RA ∪ ⋃_j M_{E_j}
+
+    D' = D_RA
+         ∪ ⋃_j { (α, eⱼ') | eⱼ' ∈ M_{E_j}
+                              ∧ ∃ shortest path r: e_j —r→* eⱼ'  starting with α
+                              ∧ r does not start with a self-loop }
+         ∪ ⋃_j { (α, eⱼ') | eⱼ' ∈ M_{E_j}  ∧  e_j —α→_{E_j} eⱼ' }
+                              // α directly leads to a marked state
+
+    w'(α,β)  = w_RA(α,β)    for edges already in RA
+    w'(α,eⱼ') = |r|         where r is the shortest path from e_j starting with α
+
+  Interpretation: the ERA captures reachability to marked states in each
+  component. An edge α —d→ eⱼ' means "taking α from e moves E_j toward
+  its marked state eⱼ' in about d steps."
+
+3.4 RA Event Estimate
+----------------------
+  Given:
+    M ⊆ ⋃_j M_{E_j}  : set of already-visited marked states
+    α ∈ Γ_E(e)        : an enabled event
+
+  Define the RA estimate for α at e:
+    RA_e^E(α) = ⟨m_0,d_0, ..., m_n,d_n⟩  ∈ ({-1,0,1,2} × (ℕ∪{∞}))^{n+1}
+
+  For each component E_j, the tuple mⱼ,dⱼ is determined by the FIRST
+  matching case:
+
+    Let R_v^j = { eⱼ' ∈ M_{E_j} | eⱼ' reachable from v in ERA_e^E }
+    Let d(v,u) = shortest-path distance in ERA_e^E
+
+    [With Goals improvement (NicoPazos §6.1):]
+    Case 0:  -1, min{d(α,m) | m ∈ R_α^j ∩ Goals_j}
+             if R_α^j ∩ Goals_j ≠ ∅
+             (α leads toward a Goal state in component j — best option)
+
+    Case 1:   0, min{d(α,m) | m ∈ R_α^j ∩ M}
+             if R_α^j ∩ M ≠ ∅
+             (α leads toward an already-visited marked state → try to close loop)
+
+    Case 2:   1, min{d(α,m) | m ∈ R_α^j}
+             if R_α^j ≠ ∅
+             (α leads toward some marked state, not yet visited)
+
+    Case 3:   0, 1
+             if α ∉ A_{E_j}  (α doesn't affect E_j)
+             AND  e_j ∈ M_{E_j} ∩ M   (E_j currently at a visited marked state)
+
+    Case 4:   1, 1
+             if α ∉ A_{E_j}
+             AND  e_j ∈ M_{E_j}   (E_j at an unvisited marked state)
+
+    Case 5:   0, min{1 + d(β,m) | β ∈ V_RA, m ∈ R_β^j ∩ M}
+             if α ∉ A_{E_j} (or α is self-loop)
+             AND ∃β ∈ V_RA. R_β^j ∩ M ≠ ∅
+             (indirect: α doesn't move E_j, but from current e_j some β reaches M)
+
+    Case 6:   1, min{1 + d(β,m) | β ∈ V_RA, m ∈ R_β^j}
+             if α ∉ A_{E_j}
+             AND ∃β ∈ V_RA. R_β^j ≠ ∅
+
+    Case 7:   2, ∞
+             (α leads E_j to a state from which no marked state is reachable
+              — this is CERTAIN based on the ERA structure)
+
+  The estimate is a tuple over all n+1 components.
+
+  EARLY ERROR DETECTION optimization:
+    If any component's tuple is ⟨2,∞⟩, the transition can be
+    immediately classified as leading to an unrealizable sub-problem.
+    Formally proven not to break correctness of DCS [NicoPazos §5.1].
+
+3.5 RA Estimate Comparison (Priority Ordering)
+-----------------------------------------------
+  To order two estimates RA_e^E(α) and RA_e^E(β):
+    1. Sort each estimate's component-tuples in DESCENDING lexicographic order.
+    2. Compare the sorted sequences:
+       — If α ∈ A_E^U (uncontrollable) and β ∈ A_E^C (controllable):
+           α has HIGHER priority (explored first)
+       — Both uncontrollable: prefer α if its sorted estimate is LEXICOGRAPHICALLY
+           GREATER (= farther from marked states → explore worst-case first,
+           to fail fast if no director exists)
+       — Both controllable: prefer α if its sorted estimate is LEXICOGRAPHICALLY
+           SMALLER (= closer to marked states → goal-directed)
+
+  Formal definition:
+    RA_e^E(α) < RA_e^E(β)   [α preferred over β]  iff  one of:
+      • α ∈ A_E^U and β ∈ A_E^C
+      • both in A_E^C and sort(RA(α)) <_lex sort(RA(β))
+      • both in A_E^U and sort(RA(α)) >_lex sort(RA(β))
+
+3.6 RA Computation (per newly discovered state)
+------------------------------------------------
+function computeRA(e, M, Goals):
+  1. Build ERA_e^E:
+     a. Collect ready events V = {α | ∃j. α ∈ Γ_{E_j}(e_j)}
+     b. For each pair (α,β) with α ≠ β: compute G_e^E(α,β)
+        (run shortest-path BFS/Dijkstra in each component E_j from e_j)
+     c. Add marked states of each component as vertices
+     d. Add edges from ready events to reachable marked states with weights
+  2. Compute RA estimates for all enabled events α ∈ Γ_E(e):
+     For each α and each component j, evaluate the 7 cases above.
+  3. Insert all outgoing transitions (e, α, —) into global priority queue,
+     keyed by RA_e^E(α) under the comparison in §3.5.
+
+  NOTE: Estimates computed ONCE per state. Not recomputed when M grows.
+  (Unless using the RA.R variant from NicoPazos §6.2 which recomputes
+   when a new marked state or Goal is found — can improve performance.)
+
+  Size of ERA_e^E: O(|A_E| + Σ_j |M_{E_j}|) vertices — POLYNOMIAL.
+  No state-space explosion for the heuristic itself.
+
+================================================================================
+4. IMPROVEMENTS FROM NICOPAZOS THESIS [NicoPazos]
+================================================================================
+
+NicoPazos proposes several improvements over the original RA from [Ciolek23].
+All are validated empirically. The final combined variant is called RA.ERG.
+
+4.1 RA.E — Using DCS exploration information (Goals)
+-----------------------------------------------------
+  PROBLEM: original RA only targets marked states. Goals are strictly more
+  informative because a Goal state guarantees non-blocking, while a marked
+  state alone does not.
+
+  IMPROVEMENT: Extend the ERA with Goal states of each component:
+    Goals_j = { eⱼ | ∃ state ⟨...,eⱼ,...⟩ ∈ Goals }
+
+  Modify estimate cases to check Goals first (case 0 in §3.4 above).
+  Add case 2b: ⟨-1, 1⟩ if α doesn't change E_j and e_j ∈ Goals_j.
+  Add case 4b: guide toward Goals_j similarly to cases 5/6.
+
+  RESULT: consistently better than baseline RA in most benchmarks.
+
+4.2 RA.R — Recomputing estimates
+---------------------------------
+  PROBLEM: when M (visited marked states) grows, old estimates are stale
+  but are never updated. This can send exploration down wrong paths.
+
+  IMPROVEMENT: Recompute all frontier estimates when:
+    • A new marked state is visited (M grows), or
+    • A new Goal is found (if using RA.E)
+  The ERA graph for a given state can be reused (M doesn't affect the graph,
+  only the estimate computation).
+
+  Trade-off: costs more time per iteration, but fewer iterations overall.
+  Empirical results: mixed improvement, depends heavily on problem structure.
+
+4.3 RA.G — Structural awareness (preferring structurally useful transitions)
+-----------------------------------------------------------------------------
+  PROBLEM: RA ignores the structure of the exploration tree. Two transitions
+  can have identical distance estimates but one may be far more useful because
+  it helps close a winning cycle for the root, while the other closes a cycle
+  in an isolated branch.
+
+  IMPROVEMENT: As a tiebreaker on controllable transitions:
+    Priority 1: prefer transitions from "controllable states" — states
+                with NO uncontrollable outgoing transitions. These states
+                are completely under the controller's discretion.
+    Priority 2: among equal-priority transitions, prefer those from states
+                whose outgoing transitions have NOT YET been explored at all.
+
+  Intuition from game theory (And-Or trees, Minimax): resolving a subproblem
+  that directly contributes to the root problem is more valuable than
+  resolving one in an isolated branch.
+
+4.4 Combined variants (empirically evaluated):
+  RA         : original (baseline from [Ciolek23])
+  RA.R       : baseline + recompute estimates
+  RA.E       : baseline + Goals in ERA
+  RA.ER      : baseline + recompute + Goals
+  RA.G       : baseline + structural tiebreaker
+  RA.ERG     : all improvements combined (best overall in NicoPazos experiments)
+
+  Self-loops EXCLUDED from RA/ERA edges (confirmed correct by NicoPazos §4.4).
+  Including them reduces performance — they don't change component state so
+  their "gap" measurements are misleading.
+
+================================================================================
+5. BFS HEURISTIC (baseline)
+================================================================================
+
+  Simply assigns priority by BFS distance from the initial state.
+  Equivalent to breadth-first expansion of the composition.
+  Used as a baseline comparison in experiments.
+  Implemented in BFSHeuristic.java in our codebase.
+
+================================================================================
+6. MONOLITHIC APPROACH (reference implementation from Huang & Kumar 2008)
+================================================================================
+
+  Build full plant E = E_0 ∥ ... ∥ E_n first, then apply:
+  1. Remove illegal states S_E^I and all states from which marked states
+     are unreachable (standard non-blocking trimming).
+  2. Fix-point: remove states where no director action exists.
+  3. Extract director using rankStates + bestControllable.
+
+  Complexity: PTIME in |S_E|, but |S_E| is exponential in |components|.
+  Used as the "monolithic" baseline in experiments.
+
+================================================================================
+7. KEY EXPERIMENTAL RESULTS SUMMARY [Ciolek23]
+================================================================================
+
+Benchmarks (6 scalable problems):
+  TL (Transfer Line), DP (Dining Philosophers), CM (Cat and Mouse),
+  AT (Air Traffic), BW (Bidding Workflow), TA (Travel Agency)
+  — each scaled by n (components) and k (states/component), 1..15
+
+Methods compared:
+  Monolithic, OTF-BFS, OTF-MA (monotonic abstraction), OTF-RA
+
+Results:
+  • OTF-RA solves the most instances overall
+  • Monolithic exhausts memory; OTF approaches hit time limits instead
+  • OTF-RA ≫ Monolithic on TL (5×), DP (2×), AT
+  • OTF-RA < Monolithic on TA, CM, BW (RA not always optimal)
+  • RA explores only a small % of total states for some problems (TA: ~5%)
+  • findNewGoals triggered often but rarely produces new winners (TA, BW):
+    room for improvement in heuristic quality
+
+RA.ERG (NicoPazos) improves further:
+  • Consistently better than original RA across most benchmarks
+  • RA.E alone is already the most impactful single improvement
+
+================================================================================
+8. CONNECTION TO OUR JAVA IMPLEMENTATION
+================================================================================
+
+Class/File                                   | Algorithm
+---------------------------------------------|-----------------------------------
+OTFDirectedControledSyntesisNonBlocking.java | Algorithm 1 (DCS main loop)
+  → while loop + expandNext call             | §2 main loop
+  → propagateGoal / propagateError           | Algorithms 3,4
+  → findNewGoalsIn / findNewErrorsIn         | Algorithms 5,6
+  → getMaxLoop / canBeWinningLoop            | Algorithms 7,8
+  → rankStates / bestControllable            | Algorithm 10
+Heuristic.java                               | Abstract heuristic interface
+BFSHeuristic.java                            | §5 BFS heuristic
+HumanHeuristic.java                          | Manual/custom heuristic
+synthesis/heuristics/ra/                     | §3 Ready Abstraction
+  → Gap computation                          | §3.1
+  → RA graph construction                    | §3.2
+  → ERA construction                         | §3.3
+  → estimate computation (7 cases)           | §3.4
+  → comparison / priority queue              | §3.5
+SynthesisContext.java                        | Context shared between DCS + heuristic
+HeuristicType.java                           | Enum to select heuristic variant
+
+The heuristic receives (e, α, e') and returns a priority value.
+expandNext always picks the transition with the LOWEST priority value
+(best-first search).
+
+================================================================================
+END OF RESUME
+================================================================================

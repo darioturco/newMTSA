@@ -13,6 +13,14 @@ import java.util.stream.Collectors;
 
 public class FSPParser {
 
+    /**
+     * When {@code true}, state labels in {@link #printModel} output show integer IDs.
+     * When {@code false}, state names are shown instead.
+     * The initial state is always ID 0; remaining states are numbered 1..n-1 in
+     * declaration order.
+     */
+    public static boolean PRINT_STATE_IDS = true;
+
     public static FSPModel parse(Path file) throws IOException {
         // Pre-process: expand macros before feeding source to ANTLR.
         MacroPreprocessor.Result preprocessed =
@@ -55,21 +63,26 @@ public class FSPParser {
         // Processes are now instantiated on demand during composite visits;
         // the instances map holds the results in insertion order.
         List<LTS> resolvedProcesses = visitor.instances.values().stream()
-                .map(lts -> new LTS(
-                        lts.name(), lts.initialState(),
-                        lts.states().stream()
-                                .map(s -> substituteConsts(s, env, List.of()))
-                                .collect(Collectors.toList()),
-                        lts.actions().stream()
-                                .map(a -> substituteConsts(a, env, List.of()))
-                                .distinct().collect(Collectors.toList()),
-                        lts.transitions().stream()
-                                .map(t -> new Transition(
-                                        substituteConsts(t.from(), env, List.of()),
-                                        substituteConsts(t.action(), env, List.of()),
-                                        substituteConsts(t.to(), env, List.of())))
-                                .collect(Collectors.toList()),
-                        false, Set.of()))
+                .map(lts -> {
+                    List<String> newStates = lts.states().stream()
+                            .map(s -> substituteConsts(s, env, List.of()))
+                            .collect(Collectors.toList());
+                    String newInitial = substituteConsts(lts.initialState(), env, List.of());
+                    return new LTS(
+                            lts.name(), newInitial,
+                            newStates,
+                            lts.actions().stream()
+                                    .map(a -> substituteConsts(a, env, List.of()))
+                                    .distinct().collect(Collectors.toList()),
+                            lts.transitions().stream()
+                                    .map(t -> new Transition(
+                                            substituteConsts(t.from(), env, List.of()),
+                                            substituteConsts(t.action(), env, List.of()),
+                                            substituteConsts(t.to(), env, List.of())))
+                                    .collect(Collectors.toList()),
+                            false, Set.of(),
+                            LTS.buildIndex(newStates, newInitial));
+                })
                 .collect(Collectors.toList());
 
         Set<String> actions = resolvedProcesses.stream()
@@ -188,17 +201,29 @@ public class FSPParser {
         }
     }
 
+    /** Returns the display label for {@code state}: its integer ID or its name, per {@link #PRINT_STATE_IDS}. */
+    public static String stateLabel(LTS lts, String state) {
+        if (PRINT_STATE_IDS) {
+            Integer id = lts.stateIndex().get(state);
+            return id != null ? String.valueOf(id) : state;
+        }
+        return state;
+    }
+
     private static void printProcesses(java.util.List<LTS> processes) {
         System.out.println("\n--- Processes / LTS (" + processes.size() + ") ---");
         for (LTS p : processes) {
-            System.out.println("\n  " + p.name() + "  (initial: " + p.initialState() + ")");
+            System.out.println("\n  " + p.name() + "  (initial: " + stateLabel(p, p.initialState()) + ")");
             System.out.println("    States (" + p.states().size() + "): "
-                    + String.join(", ", p.states()));
+                    + p.states().stream()
+                            .map(s -> stateLabel(p, s))
+                            .collect(java.util.stream.Collectors.joining(", ")));
             System.out.println("    Actions (" + p.actions().size() + "): "
                     + String.join(", ", p.actions()));
             System.out.println("    Transitions (" + p.transitions().size() + "):");
             for (Transition t : p.transitions()) {
-                System.out.println("      " + t.from() + " --[" + t.action() + "]--> " + t.to());
+                System.out.println("      " + stateLabel(p, t.from())
+                        + " --[" + t.action() + "]--> " + stateLabel(p, t.to()));
             }
         }
     }
@@ -614,7 +639,8 @@ public class FSPParser {
             FSPGrammarParser.LocalProcessContext initLp = ctx.localProcess();
             if (initLp == null) {
                 resetProcessState();
-                return new LTS(instanceName, instanceName, List.of(), List.of(), List.of(), false, Set.of());
+                return new LTS(instanceName, instanceName, List.of(instanceName), List.of(), List.of(), false, Set.of(),
+                        LTS.buildIndex(List.of(instanceName), instanceName));
             }
 
             String initialState;
@@ -638,8 +664,10 @@ public class FSPParser {
                 expandLocalProcessDef(lpd, states, actions, transitions, counter);
 
             resetProcessState();
+            List<String> stateList = List.copyOf(states);
             return new LTS(instanceName, initialState,
-                    List.copyOf(states), List.copyOf(actions), List.copyOf(transitions), false, Set.of());
+                    stateList, List.copyOf(actions), List.copyOf(transitions), false, Set.of(),
+                    LTS.buildIndex(stateList, initialState));
         }
 
         private void resetProcessState() {
@@ -807,6 +835,8 @@ public class FSPParser {
             }
             if (lp.choice() == null) return;
             extractFromChoice(fromState, lp.choice(), states, actions, transitions, counter);
+            if (lp.alphabetExt() != null)
+                actions.addAll(extractExtSetElements(lp.alphabetExt().extSetElements()));
         }
 
         private void extractFromChoice(
@@ -945,6 +975,8 @@ public class FSPParser {
                 String inter = "_" + fromState + "_" + counter[0]++;
                 states.add(inter);
                 extractFromChoice(inter, lp.choice(), states, actions, transitions, counter);
+                if (lp.alphabetExt() != null)
+                    actions.addAll(extractExtSetElements(lp.alphabetExt().extSetElements()));
                 return inter;
             }
             return null;
@@ -1212,7 +1244,8 @@ public class FSPParser {
                     List.of("off", "on"),
                     List.copyOf(allActions),
                     trans,
-                    true, Set.of("on"));
+                    true, Set.of("on"),
+                    LTS.buildIndex(List.of("off", "on"), "off"));
             fluents.add(fluentLTS);
             propertyLTSMap.put(name, fluentLTS);
             return null;
@@ -1282,7 +1315,8 @@ public class FSPParser {
             // Rename to the declared assert name if provided.
             if (name != null && !name.equals(result.name()))
                 result = new LTS(name, result.initialState(), result.states(),
-                        result.actions(), result.transitions(), false, result.acceptingStates());
+                        result.actions(), result.transitions(), false, result.acceptingStates(),
+                        result.stateIndex());
             return result;
         }
 
@@ -1333,7 +1367,8 @@ public class FSPParser {
                 if (ref != null) return ref;
                 // Unknown reference — return a stub LTS (should not happen in well-formed FSP).
                 return new LTS(refName, "off", List.of("off", "on"), List.of(),
-                        List.of(), false, Set.of("on"));
+                        List.of(), false, Set.of("on"),
+                        LTS.buildIndex(List.of("off", "on"), "off"));
             }
             if (ctx.fltlExpr() != null) return buildFltlLTS(ctx.fltlExpr(), null);
             // LOWER_ID → treat as a single-action inline fluent: on when this action fires,
@@ -1369,7 +1404,8 @@ public class FSPParser {
             // (self-loop in "off" is harmless; "on" should not self-loop but we have explicit
             // transitions for all known actions, so unknown ones would be rare in practice).
             return new LTS(action, "off", List.of("off", "on"),
-                    List.copyOf(alphabet), trans, true, Set.of("on"));
+                    List.copyOf(alphabet), trans, true, Set.of("on"),
+                    LTS.buildIndex(List.of("off", "on"), "off"));
         }
 
         // ── LTS boolean combinators ───────────────────────────────────────────
@@ -1383,7 +1419,8 @@ public class FSPParser {
                     .filter(s -> !lts.acceptingStates().contains(s))
                     .collect(Collectors.toSet());
             return new LTS(lts.name(), lts.initialState(), lts.states(),
-                    lts.actions(), lts.transitions(), false, negAccepting);
+                    lts.actions(), lts.transitions(), false, negAccepting,
+                    lts.stateIndex());
         }
 
         /** AND product: accepting when BOTH component states are accepting. */
@@ -1441,7 +1478,8 @@ public class FSPParser {
                     productStates,
                     List.copyOf(allActions),
                     productTrans,
-                    false, accepting);
+                    false, accepting,
+                    LTS.buildIndex(productStates, initialState));
         }
 
         /** Build a per-state, per-action transition map from an LTS (for product computation). */
@@ -1662,3 +1700,8 @@ public class FSPParser {
         }
     }
 }
+
+
+
+
+

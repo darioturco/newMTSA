@@ -3,6 +3,7 @@ target/
 *.class
 *.jar
 *.war
+original-dcs-cli.java
 
 # IDE files
 .idea/
@@ -21,3 +22,6 @@ Thumbs.db
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
+
+# Claude
+.claude/
