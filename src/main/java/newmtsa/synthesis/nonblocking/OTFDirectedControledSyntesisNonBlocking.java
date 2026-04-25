@@ -275,6 +275,11 @@ public class OTFDirectedControledSyntesisNonBlocking {
 
         // Main loop (Alg. line 10).
         while (!pending.isEmpty()) {
+            // Prune transitions whose source state was classified via propagation
+            // since they were added — the reference keeps pending as None-only.
+            pending.removeIf(tr -> !none.contains(tr.from()));
+            if (pending.isEmpty()) break;
+
             logFrontier(pending);
 
             ExtendedTransition t = heuristic.pick(pending);
@@ -359,8 +364,10 @@ public class OTFDirectedControledSyntesisNonBlocking {
     private void logFrontier(List<ExtendedTransition> pending) {
         if (!verbose) return;
         System.out.println("[DCS-NB] frontier (" + pending.size() + "):");
-        for (ExtendedTransition ft : pending)
-            System.out.println("        " + ft.from() + " --[" + ft.action() + "]--> " + ft.to());
+        for (int i=0 ;i<pending.size();i++){
+            ExtendedTransition ft = pending.get(i);
+            System.out.println("        " + i + " | " + ft.from() + " --[" + ft.action() + "]--> " + ft.to());
+        }
     }
 
     // ── marking fluent factory ────────────────────────────────────────────────

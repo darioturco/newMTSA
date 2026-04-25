@@ -6,6 +6,7 @@ import newmtsa.synthesis.heuristics.Heuristic;
 import newmtsa.synthesis.heuristics.SynthesisContext;
 
 import java.util.*;
+import java.util.Arrays;
 
 /**
  * Ready Abstraction (RA) heuristic for non-blocking OTF-DCS.
@@ -49,9 +50,10 @@ import java.util.*;
 public class RAHeuristic implements Heuristic {
 
     // ── configuration ─────────────────────────────────────────────────────────
-    private final boolean useR;   // RA.R: recompute estimates on new marked-state discoveries
-    private final boolean useE;   // RA.E: structure-aware tie-breaking
-    private final boolean useG;   // RA.G: use Goals as additional targets
+    private final boolean useR;         // RA.R: recompute estimates on new marked-state discoveries
+    private final boolean useE;         // RA.E: structure-aware tie-breaking
+    private final boolean useG;         // RA.G: use Goals as additional targets
+    private final boolean useOpenQueue; // RA.Open: restrict picks to open states only
 
     // ── per-component data (built in init()) ──────────────────────────────────
     private List<ComponentData> compData;
@@ -84,22 +86,47 @@ public class RAHeuristic implements Heuristic {
 
     // ── private constructor + static factories ────────────────────────────────
 
-    private RAHeuristic(boolean useR, boolean useE, boolean useG) {
-        this.useR = useR;
-        this.useE = useE;
-        this.useG = useG;
+    private RAHeuristic(boolean useR, boolean useE, boolean useG, boolean useOpenQueue) {
+        this.useR          = useR;
+        this.useE          = useE;
+        this.useG          = useG;
+        this.useOpenQueue  = useOpenQueue;
     }
 
-    /** Plain RA — corrected formulation. */
-    public static RAHeuristic base()    { return new RAHeuristic(false, false, false); }
+    /** Plain RA — corrected formulation (Pazos 2024). */
+    public static RAHeuristic base()    { return new RAHeuristic(false, false, false, false); }
     /** RA.R — recompute estimates when new marked states are discovered. */
-    public static RAHeuristic withR()   { return new RAHeuristic(true,  false, false); }
+    public static RAHeuristic withR()   { return new RAHeuristic(true,  false, false, false); }
     /** RA.E — structure-aware tie-breaking. */
-    public static RAHeuristic withE()   { return new RAHeuristic(false, true,  false); }
+    public static RAHeuristic withE()   { return new RAHeuristic(false, true,  false, false); }
     /** RA.ER — recompute + structure-aware (best single-improvement combination). */
-    public static RAHeuristic withER()  { return new RAHeuristic(true,  true,  false); }
+    public static RAHeuristic withER()  { return new RAHeuristic(true,  true,  false, false); }
     /** RA.ERG — all improvements enabled. */
-    public static RAHeuristic withERG() { return new RAHeuristic(true,  true,  true);  }
+    public static RAHeuristic withERG() { return new RAHeuristic(true,  true,  true,  false); }
+
+    /**
+     * Returns a new instance identical to this one but with the open queue enabled.
+     *
+     * <p>The open queue (from Ciolek's original OTF-DCS, §5.1.3) restricts the
+     * heuristic's pick to transitions from <em>open</em> states only.  A state is
+     * open when all its remaining pending transitions are controllable; a state
+     * with at least one pending uncontrollable transition is <em>closed</em> until
+     * its descendants are classified (Goal/Error) or a cycle returns to it —
+     * at which point it naturally reopens as those transitions leave {@code pending}.
+     *
+     * <p>This implements a depth-first bias: after exploring a branch from state A,
+     * if A still has uncontrollable transitions, they are deferred until the current
+     * branch is resolved.  States with only controllable remaining stay open
+     * (competing with their descendants) because the controller can freely choose
+     * not to take those branches — no confirmation is needed.
+     *
+     * <p>Pazos (2024) chose not to include the open queue in the corrected RA
+     * (preferring simplicity and the RA.E improvement which subsumes much of its
+     * benefit), but evaluated it as the {@code RA.Open} variant in §7.
+     */
+    public RAHeuristic withOpenQueue() {
+        return new RAHeuristic(useR, useE, useG, true);
+    }
 
     // ── Heuristic lifecycle ───────────────────────────────────────────────────
 
@@ -136,14 +163,100 @@ public class RAHeuristic implements Heuristic {
         refreshVisitedStates();
         if (useG) refreshGoalStates();
 
+        // Restrict to open states when the open-queue flag is enabled.
+        List<ExtendedTransition> candidates = useOpenQueue ? openQueueCandidates(pending) : pending;
+        if (candidates.isEmpty()) candidates = pending;  // fallback: all closed, use full pending
+
+        // Rebuild RA graph estimates for the candidate set before comparing.
+        applyRAGraphPropagation(candidates);
+
         // Linear scan: find the transition that is "smallest" under the RA ordering.
         ExtendedTransition best = null;
-        for (ExtendedTransition t : pending) {
+        for (ExtendedTransition t : candidates) {
             if (best == null || compareTransitions(t, best) < 0) {
                 best = t;
             }
         }
+        lastPicked = best;
         return best;
+    }
+
+    // ── open queue ───────────────────────────────────────────────────────────
+
+    /**
+     * States that are currently <em>closed</em> (excluded from picks).
+     *
+     * <p>A state is closed when the heuristic last picked a transition from it
+     * and it still had at least one uncontrollable transition remaining in
+     * {@code pending}.  It reopens naturally once all its uncontrollable
+     * transitions leave {@code pending} (because the synthesis engine classified
+     * their source or target states and the pruning step removed them).
+     */
+    private final Set<String> closedStates = new HashSet<>();
+
+    /** The transition returned by the most recent {@link #pick} call. */
+    private ExtendedTransition lastPicked = null;
+
+    /**
+     * Maintains the open/closed state sets and returns the open-queue view of
+     * {@code pending} (transitions from states not in {@link #closedStates}).
+     *
+     * <p><b>Closing rule</b> (Ciolek §5.1.3, Pazos §2.3.1): after picking from
+     * state A, if A still has at least one uncontrollable transition in
+     * {@code pending}, A is closed.  The environment could force those
+     * transitions, so the algorithm defers them until the current branch is
+     * resolved.  If A has only controllable transitions remaining, it stays open
+     * — the controller can freely choose not to take them.
+     *
+     * <p><b>Reopening rule</b>: a closed state reopens when all its uncontrollable
+     * transitions have left {@code pending}.  This happens implicitly whenever the
+     * synthesis engine's classification-and-prune step removes those transitions
+     * (their source or target became a Goal or Error).
+     *
+     * @return transitions from open states; falls back to full {@code pending} if
+     *         every state is closed (prevents deadlock)
+     */
+    private List<ExtendedTransition> openQueueCandidates(List<ExtendedTransition> pending) {
+        // Step 1: close the source of the last picked transition if it still has
+        // uncontrollable transitions in pending.
+        if (lastPicked != null) {
+            String src = lastPicked.from();
+            for (ExtendedTransition t : pending) {
+                if (t.from().equals(src) && !controllable.contains(t.action())) {
+                    closedStates.add(src);
+                    break;
+                }
+            }
+        }
+
+        // Step 2: reopen closed states whose uncontrollable transitions have all
+        // left pending (classification pruning removed them).
+        closedStates.removeIf(s -> {
+            for (ExtendedTransition t : pending) {
+                if (t.from().equals(s) && !controllable.contains(t.action())) return false;
+            }
+            return true;  // no uncontrollable remaining → reopen
+        });
+
+        // Step 3: build the open-queue view.
+        List<ExtendedTransition> open = new ArrayList<>();
+        for (ExtendedTransition t : pending) {
+            if (!closedStates.contains(t.from())) open.add(t);
+        }
+        return open;
+    }
+
+    /**
+     * Returns the current open-queue size for the given {@code pending} list.
+     * Useful for testing and instrumentation; does not modify internal state.
+     */
+    public int openQueueSize(List<ExtendedTransition> pending) {
+        if (!useOpenQueue) return pending.size();
+        // Count transitions from states with no pending uncontrollable (closed or not).
+        Set<String> closed = new HashSet<>(closedStates);
+        return (int) pending.stream()
+                .filter(t -> !closed.contains(t.from()))
+                .count();
     }
 
     // ── lazy state refresh ────────────────────────────────────────────────────
@@ -294,7 +407,7 @@ public class RAHeuristic implements Heuristic {
         return true;
     }
 
-    // ── estimate computation ──────────────────────────────────────────────────
+    // ── estimate computation (RA graph + gap + fixpoint) ─────────────────────
 
     /** Returns the cached estimate, computing it on first access. */
     private List<EstimateTuple> getOrComputeEstimate(ExtendedTransition t) {
@@ -305,72 +418,244 @@ public class RAHeuristic implements Heuristic {
     }
 
     /**
-     * Computes the full estimate for {@code action} from composite state
-     * {@code compositeState}: one {@link EstimateTuple} per component with a
-     * non-empty marking set.
+     * Computes the RA estimate for {@code action} from {@code compositeState}
+     * using the full RA graph + gap function + fixpoint propagation.
+     *
+     * Steps:
+     *  1. Direct estimate: per-component distance to marked after firing action.
+     *  2. RA graph: build enabling edges among all actions currently in the
+     *     frontier (from pending, available via the cached estimateCache keys).
+     *  3. Fixpoint: propagate via gap function until stable.
      */
     private List<EstimateTuple> computeEstimate(String compositeState, String action) {
+        // Direct per-component estimate (same as before, forms Phase 1 baseline).
+        return directEstimate(compositeState, action);
+    }
+
+    /**
+     * Called once per pick() invocation to propagate RA graph estimates across
+     * the entire frontier before individual transitions are compared.
+     *
+     * We rebuild estimates for all actions in {@code pending} using:
+     *  Phase 1 — direct component estimates (as before).
+     *  Phase 2 — RA graph edges l->t + gap function + Bellman-Ford fixpoint.
+     */
+    private void applyRAGraphPropagation(List<ExtendedTransition> pending) {
+        // Collect unique (compositeState, action) pairs in the frontier.
+        Set<String> frontierActions = new LinkedHashSet<>();
+        Set<String> frontierStates  = new LinkedHashSet<>();
+        for (ExtendedTransition t : pending) {
+            frontierActions.add(t.action());
+            frontierStates.add(t.from());
+        }
+
+        // We work at the level of individual actions globally (not per from-state).
+        // For each action in the frontier, pick one representative from-state to
+        // derive the current component sub-states.  We use the first occurrence.
+        Map<String, String> actionToState = new LinkedHashMap<>();
+        for (ExtendedTransition t : pending) {
+            actionToState.putIfAbsent(t.action(), t.from());
+        }
+
+        // Phase 1: compute direct estimates for every frontier action.
+        // These may already be cached; directEstimate is cheap.
+        Map<String, int[]> estPerComp = new LinkedHashMap<>(); // action -> per-component distance array
+        Map<String, int[]> mPerComp   = new LinkedHashMap<>(); // action -> per-component m flag
+        for (String act : actionToState.keySet()) {
+            String cs = actionToState.get(act);
+            String[] parts = splitCompositeState(cs);
+            int[] ds = new int[numComponents];
+            int[] ms = new int[numComponents];
+            Arrays.fill(ds, Integer.MAX_VALUE / 2);
+            Arrays.fill(ms, 2);
+            for (int j = 0; j < numComponents; j++) {
+                ComponentData cd = compData.get(j);
+                if (cd.markedStates.isEmpty()) continue;
+                String e_j = (j < parts.length) ? parts[j] : null;
+                if (e_j == null) continue;
+                EstimateTuple et = directComponentEstimate(j, e_j, act);
+                ms[j] = et.m();
+                ds[j] = et.d();
+            }
+            estPerComp.put(act, ds);
+            mPerComp.put(act, ms);
+        }
+
+        // Phase 2: RA graph — find enabling edges l->t.
+        // Edge l->t exists when, for some component j, t is NOT enabled at e_j
+        // but l's successor in j can reach a state where t is enabled.
+        List<String> actions = new ArrayList<>(actionToState.keySet());
+        // adjacency: action -> list of actions it enables (predecessor edges: t -> list of l)
+        Map<String, List<String>> predecessors = new HashMap<>();
+        for (String act : actions) predecessors.put(act, new ArrayList<>());
+
+        for (int li = 0; li < actions.size(); li++) {
+            String l = actions.get(li);
+            String cs_l = actionToState.get(l);
+            String[] parts_l = splitCompositeState(cs_l);
+
+            for (int ti = 0; ti < actions.size(); ti++) {
+                if (li == ti) continue;
+                String t = actions.get(ti);
+                if (isEnablingEdge(l, t, parts_l)) {
+                    predecessors.get(t).add(l);
+                }
+            }
+        }
+
+        // Phase 3: Bellman-Ford fixpoint propagation.
+        // estimate_j(l) = min(estimate_j(l), gap_j(l, t) + estimate_j(t))
+        Queue<String> workQueue = new ArrayDeque<>(actions);
+        Set<String>   inQueue   = new HashSet<>(actions);
+        int maxIter = actions.size() * actions.size() + 1;
+        while (!workQueue.isEmpty() && maxIter-- > 0) {
+            String t = workQueue.poll();
+            inQueue.remove(t);
+            int[] est_t = estPerComp.get(t);
+            int[] m_t   = mPerComp.get(t);
+            String cs_t = actionToState.get(t);
+            String[] parts_t = splitCompositeState(cs_t);
+
+            for (String l : predecessors.get(t)) {
+                String cs_l = actionToState.get(l);
+                String[] parts_l = splitCompositeState(cs_l);
+                int[] est_l = estPerComp.get(l);
+                int[] m_l   = mPerComp.get(l);
+                boolean improved = false;
+
+                for (int j = 0; j < numComponents; j++) {
+                    ComponentData cd = compData.get(j);
+                    if (cd.markedStates.isEmpty()) continue;
+                    String e_j = (j < parts_l.length) ? parts_l[j] : null;
+                    if (e_j == null) continue;
+
+                    // gap_j(l, t): steps in component j to enable t after firing l.
+                    int gap = gapComponent(j, e_j, l, t);
+                    if (gap == Integer.MAX_VALUE / 2) continue;
+
+                    int candidate_d = saturatingAdd(gap, est_t[j]);
+                    int candidate_m = m_t[j]; // inherit marking confidence from t
+                    if (candidate_m < m_l[j]
+                            || (candidate_m == m_l[j] && candidate_d < est_l[j])) {
+                        est_l[j] = candidate_d;
+                        m_l[j]   = candidate_m;
+                        improved  = true;
+                    }
+                }
+                if (improved && !inQueue.contains(l)) {
+                    workQueue.add(l); inQueue.add(l);
+                }
+            }
+        }
+
+        // Write back to estimate cache.
+        for (String act : actionToState.keySet()) {
+            String cs = actionToState.get(act);
+            int[] ds = estPerComp.get(act);
+            int[] ms = mPerComp.get(act);
+            List<EstimateTuple> tuples = new ArrayList<>();
+            for (int j = 0; j < numComponents; j++) {
+                if (compData.get(j).markedStates.isEmpty()) continue;
+                tuples.add(ds[j] >= Integer.MAX_VALUE / 2
+                        ? EstimateTuple.UNREACHABLE
+                        : new EstimateTuple(ms[j], ds[j]));
+            }
+            estimateCache.computeIfAbsent(cs, k -> new HashMap<>()).put(act, tuples);
+        }
+    }
+
+    /**
+     * Returns true iff action {@code l} is an enabling predecessor of {@code t}
+     * in some component: specifically, l's successor in component j can reach a
+     * state where t is enabled, but t is not currently enabled at e_j.
+     */
+    private boolean isEnablingEdge(String l, String t, String[] parts_l) {
+        for (int j = 0; j < numComponents; j++) {
+            ComponentData cd = compData.get(j);
+            String e_j = (j < parts_l.length) ? parts_l[j] : null;
+            if (e_j == null) continue;
+            // t must NOT be enabled at e_j already.
+            if (cd.enabledAt.getOrDefault(e_j, Set.of()).contains(t)) continue;
+            // l must fire in component j (non-self-loop).
+            String succ_l = cd.trans.getOrDefault(l, Map.of()).get(e_j);
+            if (succ_l == null || succ_l.equals(e_j)) continue;
+            // From succ_l, can t eventually become enabled?
+            Set<String> reachable = cd.reachableFromState.getOrDefault(succ_l, Set.of());
+            for (String rs : reachable) {
+                if (cd.enabledAt.getOrDefault(rs, Set.of()).contains(t)) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Gap cost for component {@code j} when firing {@code l} to eventually enable {@code t}.
+     *
+     * = (steps from l's successor to the nearest state where t is enabled)
+     *   + (BFS distance from that t-enabling state to the nearest marked state in j).
+     *
+     * Returns {@code Integer.MAX_VALUE / 2} if t cannot be enabled from l's successor.
+     */
+    private int gapComponent(int j, String e_j, String l, String t) {
+        ComponentData cd = compData.get(j);
+        String succ_l = cd.trans.getOrDefault(l, Map.of()).get(e_j);
+        if (succ_l == null || succ_l.equals(e_j)) return Integer.MAX_VALUE / 2;
+
+        Integer stepsToT = cd.stepsToEnableAction.getOrDefault(t, Map.of()).get(succ_l);
+        if (stepsToT == null) return Integer.MAX_VALUE / 2;
+
+        // Find the nearest t-enabling state reachable from succ_l and get its dist to marked.
+        // We approximate: use bestDistanceToMarked from succ_l then add stepsToT.
+        // (An exact computation would BFS to the t-enabling state, but this is a valid upper bound.)
+        EstimateTuple distToMarked = bestDistanceToMarked(j, succ_l);
+        if (distToMarked == EstimateTuple.UNREACHABLE) return Integer.MAX_VALUE / 2;
+
+        return saturatingAdd(stepsToT, distToMarked.d());
+    }
+
+    private static int saturatingAdd(int a, int b) {
+        long r = (long) a + b;
+        return r >= Integer.MAX_VALUE / 2 ? Integer.MAX_VALUE / 2 : (int) r;
+    }
+
+    /** Direct per-component estimate without RA graph propagation. */
+    private List<EstimateTuple> directEstimate(String compositeState, String action) {
         String[]            parts  = splitCompositeState(compositeState);
         List<EstimateTuple> result = new ArrayList<>();
-
         for (int j = 0; j < numComponents; j++) {
             if (compData.get(j).markedStates.isEmpty()) continue;
             String e_j = (j < parts.length) ? parts[j] : null;
-            if (e_j == null) {
-                result.add(EstimateTuple.UNREACHABLE);
-                continue;
-            }
-            result.add(computeComponentEstimate(j, e_j, action));
+            result.add(e_j == null ? EstimateTuple.UNREACHABLE
+                                   : directComponentEstimate(j, e_j, action));
         }
         return result;
     }
 
     /**
-     * Per-component estimate for {@code action} from sub-state {@code e_j} in
-     * component {@code j}.
-     *
-     * <p>Case tree (follows Definition 8 of Pazos 2024):
-     * <ol>
-     *   <li>Action fires in E_j and changes state → BFS distance from successor
-     *       to nearest marked state.</li>
-     *   <li>Action is a self-loop or absent from A_j (E_j stays at e_j):
-     *     <ul>
-     *       <li>If e_j itself is marked → {@code ⟨m, 1⟩}.</li>
-     *       <li>Otherwise scan ready events {@code ℓ''} at e_j that make
-     *           progress; return {@code ⟨m, 1 + dist(succ_j'', marked)⟩}
-     *           for the best such event.</li>
-     *     </ul>
-     *   </li>
-     * </ol>
+     * Per-component estimate for {@code action} from sub-state {@code e_j}
+     * (Definition 8 of Pazos 2024 — direct BFS only, no RA graph).
      */
-    private EstimateTuple computeComponentEstimate(int j, String e_j, String action) {
+    private EstimateTuple directComponentEstimate(int j, String e_j, String action) {
         ComponentData cd = compData.get(j);
 
-        String  e_j_succ           = cd.trans.getOrDefault(action, Map.of()).get(e_j);
-        boolean isSelfloopOrAbsent = (e_j_succ == null || e_j_succ.equals(e_j));
+        String  succ               = cd.trans.getOrDefault(action, Map.of()).get(e_j);
+        boolean isSelfloopOrAbsent = (succ == null || succ.equals(e_j));
 
         if (!isSelfloopOrAbsent) {
-            // Case 1: action fires and advances E_j.
-            return bestDistanceToMarked(j, e_j_succ);
+            return bestDistanceToMarked(j, succ);
         }
 
-        // Cases 2+: E_j stays at e_j after firing action.
         if (cd.markedStates.contains(e_j)) {
-            // e_j is already a marked state; one composite step is enough.
             return new EstimateTuple(mFlag(j, e_j), 1);
         }
 
-        // Look for any ready event ℓ'' at e_j that advances E_j toward a marked state.
         EstimateTuple best = EstimateTuple.UNREACHABLE;
         for (String alt : cd.enabledAt.getOrDefault(e_j, Set.of())) {
             if (alt.equals(action)) continue;
             String alt_succ = cd.trans.getOrDefault(alt, Map.of()).get(e_j);
-            if (alt_succ == null || alt_succ.equals(e_j)) continue;  // skip self-loops
-
+            if (alt_succ == null || alt_succ.equals(e_j)) continue;
             EstimateTuple reached = bestDistanceToMarked(j, alt_succ);
             if (reached == EstimateTuple.UNREACHABLE) continue;
-
-            // +1 for the composite step that fires ℓ'' to advance E_j.
             EstimateTuple candidate = new EstimateTuple(reached.m(), reached.d() + 1);
             if (candidate.compareTo(best) < 0) best = candidate;
         }

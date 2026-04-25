@@ -30,8 +30,8 @@ public class Main {
     //   RA_E     – RA + structure-aware tie-breaking
     //   RA_ER    – RA.R + RA.E  (best overall combination)
     //   RA_ERG   – RA.R + RA.E + Goals-as-targets (all improvements)
-    static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
-    //static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
+    //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
+    static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
     //static final HeuristicType HEURISTIC = HeuristicType.HUMAN;
 
     public static void main(String[] args) throws IOException {
@@ -41,12 +41,13 @@ public class Main {
         }else{
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\CM\\CM-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\DP\\DP-2-2.fsp");
-            file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TL\\TL-2-2.fsp");
+            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TL\\TL-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TA\\TA-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\AT\\AT-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\BW\\BW-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\ControllableFSPs\\test21.lts");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test1.lts");
+            file = Path.of("E:\\Code\\Java\\NewMTSA\\fsp\\NonBlocking\\Test\\FloppyTesis.fsp");
         }
 
         FSPModel model = FSPParser.parse(file);
