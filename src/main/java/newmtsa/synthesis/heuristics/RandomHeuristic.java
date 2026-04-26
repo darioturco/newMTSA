@@ -58,8 +58,6 @@ public class RandomHeuristic implements Heuristic {
             System.err.println("[RandomHeuristic] WARNING: scripted index " + idx
                     + " is out of bounds for frontier of size " + pending.size()
                     + " at step " + (step - 1) + " — falling back to random.");
-        } else {
-            step++;
         }
         return pending.get(rng.nextInt(pending.size()));
     }

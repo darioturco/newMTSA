@@ -109,7 +109,7 @@ class FSPParserTest {
      */
     @Test
     void benchmarkDP_parsesWithoutErrors() throws IOException {
-        Path file = Paths.get("fsp/Benchmark/DP/DP-2-2.fsp");
+        Path file = Paths.get("fsp/NonBlocking/Benchmark/DP/DP-2-2.fsp");
         FSPModel model = FSPParser.parse(file);
         assertTrue(
                 model.errors().isEmpty(),
@@ -119,7 +119,7 @@ class FSPParserTest {
 
     @Test
     void benchmarkDP_hasCorrectTopLevelDefinitions() throws IOException {
-        Path file = Paths.get("fsp/Benchmark/DP/DP-2-2.fsp");
+        Path file = Paths.get("fsp/NonBlocking/Benchmark/DP/DP-2-2.fsp");
         FSPModel model = FSPParser.parse(file);
 
         // Phil = 0..1 → 2 instances of each of the 3 process templates = 6 instances.
@@ -152,7 +152,7 @@ class FSPParserTest {
      */
     @Test
     void benchmarkTL_parsesWithoutErrors() throws IOException {
-        Path file = Paths.get("fsp/Benchmark/TL/TL-2-2.fsp");
+        Path file = Paths.get("fsp/NonBlocking/Benchmark/TL/TL-2-2.fsp");
         FSPModel model = FSPParser.parse(file);
         assertTrue(
                 model.errors().isEmpty(),
@@ -162,7 +162,7 @@ class FSPParserTest {
 
     @Test
     void benchmarkTL_hasCorrectTopLevelDefinitions() throws IOException {
-        Path file = Paths.get("fsp/Benchmark/TL/TL-2-2.fsp");
+        Path file = Paths.get("fsp/NonBlocking/Benchmark/TL/TL-2-2.fsp");
         FSPModel model = FSPParser.parse(file);
 
         assertEquals(5, model.processes().size());
@@ -195,7 +195,7 @@ class FSPParserTest {
      */
     @Test
     void benchmarkCM_constantsHaveCorrectValues() throws IOException {
-        Path file = Paths.get("fsp/Benchmark/CM/CM-2-2.fsp");
+        Path file = Paths.get("fsp/NonBlocking/Benchmark/CM/CM-2-2.fsp");
         FSPModel model = FSPParser.parse(file);
 
         assertTrue(model.errors().isEmpty(),

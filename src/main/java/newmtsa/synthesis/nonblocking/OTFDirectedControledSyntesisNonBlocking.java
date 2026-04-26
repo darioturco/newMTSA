@@ -7,6 +7,7 @@ import newmtsa.synthesis.Director;
 import newmtsa.synthesis.ExtendedTransition;
 import newmtsa.synthesis.SynthesisResult;
 import newmtsa.synthesis.heuristics.Heuristic;
+import newmtsa.synthesis.heuristics.SimpleSynthesisContext;
 import newmtsa.synthesis.heuristics.SynthesisContext;
 
 import java.util.*;
@@ -231,20 +232,15 @@ public class OTFDirectedControledSyntesisNonBlocking {
 
         // Provide context-aware heuristics (e.g. RAHeuristic) with a live,
         // read-only view of the exploration state.  Stateless heuristics ignore this.
-        heuristic.init(new SynthesisContext() {
-            @Override public List<LTS> components() {
-                return OTFDirectedControledSyntesisNonBlocking.this.components;
-            }
-            @Override public List<Set<String>> componentMarked() { return compMarked; }
-            @Override public Set<String>       controllable()    {
-                return OTFDirectedControledSyntesisNonBlocking.this.controllable;
-            }
+        SimpleSynthesisContext ctx = new SimpleSynthesisContext(
+                this.components, compMarked, this.controllable) {
             @Override public Set<String>              exploredStates()       { return succMap.keySet(); }
             @Override public Set<String>              goals()                { return goals; }
             @Override public List<ExtendedTransition> successorsOf(String s) {
                 return succMap.getOrDefault(s, List.of());
             }
-        });
+        };
+        heuristic.init(ctx);
     }
 
     // ── public entry point ────────────────────────────────────────────────────

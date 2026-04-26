@@ -334,7 +334,9 @@ public class RAHeuristic implements Heuristic {
         if (!aCtrl &&  bCtrl) return -1;   // a uncontrollable, b controllable → a first
         if ( aCtrl && !bCtrl) return +1;   // a controllable, b uncontrollable → b first
 
-        // RA.E: structural tie-breaking for controllable transitions.
+        // RA.E: structural tie-breaking applies only to controllable transitions — by design
+        // (Pazos 2024 §4.2): for uncontrollable transitions the environment decides, so
+        // structure-awareness on the controller side is not meaningful.
         if (useE && aCtrl) {
             int sp = compareStructural(a, b);
             if (sp != 0) return sp;
@@ -436,34 +438,30 @@ public class RAHeuristic implements Heuristic {
      * Called once per pick() invocation to propagate RA graph estimates across
      * the entire frontier before individual transitions are compared.
      *
-     * We rebuild estimates for all actions in {@code pending} using:
-     *  Phase 1 — direct component estimates (as before).
-     *  Phase 2 — RA graph edges l->t + gap function + Bellman-Ford fixpoint.
+     * We rebuild estimates for all (compositeState, action) pairs in {@code pending}:
+     *  Phase 1 — direct component estimates (baseline per pair).
+     *  Phase 2 — RA graph enabling edges (s_l, l) → (s_t, t) + gap function.
+     *  Phase 3 — Bellman-Ford fixpoint: estimate(l) = min(estimate(l), gap(l,t) + estimate(t)).
+     *
+     * Key format: compositeState + "\0" + action. One entry per (state, action) occurrence,
+     * so that the same action at different composite states is handled independently —
+     * each occurrence has its own component sub-states and enabling relationships.
      */
     private void applyRAGraphPropagation(List<ExtendedTransition> pending) {
-        // Collect unique (compositeState, action) pairs in the frontier.
-        Set<String> frontierActions = new LinkedHashSet<>();
-        Set<String> frontierStates  = new LinkedHashSet<>();
+        // Collect unique (compositeState, action) pairs and pre-split their parts.
+        Map<String, String[]> keyToParts = new LinkedHashMap<>();
         for (ExtendedTransition t : pending) {
-            frontierActions.add(t.action());
-            frontierStates.add(t.from());
+            String key = t.from() + "\0" + t.action();
+            keyToParts.putIfAbsent(key, splitCompositeState(t.from()));
         }
+        List<String> keys = new ArrayList<>(keyToParts.keySet());
 
-        // We work at the level of individual actions globally (not per from-state).
-        // For each action in the frontier, pick one representative from-state to
-        // derive the current component sub-states.  We use the first occurrence.
-        Map<String, String> actionToState = new LinkedHashMap<>();
-        for (ExtendedTransition t : pending) {
-            actionToState.putIfAbsent(t.action(), t.from());
-        }
-
-        // Phase 1: compute direct estimates for every frontier action.
-        // These may already be cached; directEstimate is cheap.
-        Map<String, int[]> estPerComp = new LinkedHashMap<>(); // action -> per-component distance array
-        Map<String, int[]> mPerComp   = new LinkedHashMap<>(); // action -> per-component m flag
-        for (String act : actionToState.keySet()) {
-            String cs = actionToState.get(act);
-            String[] parts = splitCompositeState(cs);
+        // Phase 1: direct per-component estimates for every (compositeState, action) pair.
+        Map<String, int[]> estPerComp = new LinkedHashMap<>();
+        Map<String, int[]> mPerComp   = new LinkedHashMap<>();
+        for (String key : keys) {
+            String[] parts  = keyToParts.get(key);
+            String   action = key.substring(key.indexOf('\0') + 1);
             int[] ds = new int[numComponents];
             int[] ms = new int[numComponents];
             Arrays.fill(ds, Integer.MAX_VALUE / 2);
@@ -473,68 +471,62 @@ public class RAHeuristic implements Heuristic {
                 if (cd.markedStates.isEmpty()) continue;
                 String e_j = (j < parts.length) ? parts[j] : null;
                 if (e_j == null) continue;
-                EstimateTuple et = directComponentEstimate(j, e_j, act);
+                EstimateTuple et = directComponentEstimate(j, e_j, action);
                 ms[j] = et.m();
                 ds[j] = et.d();
             }
-            estPerComp.put(act, ds);
-            mPerComp.put(act, ms);
+            estPerComp.put(key, ds);
+            mPerComp.put(key, ms);
         }
 
-        // Phase 2: RA graph — find enabling edges l->t.
-        // Edge l->t exists when, for some component j, t is NOT enabled at e_j
-        // but l's successor in j can reach a state where t is enabled.
-        List<String> actions = new ArrayList<>(actionToState.keySet());
-        // adjacency: action -> list of actions it enables (predecessor edges: t -> list of l)
+        // Phase 2: RA graph — enabling edges (s_l, l) → (s_t, t).
+        // Edge exists when, from the specific sub-states of s_l, firing l can eventually enable t.
         Map<String, List<String>> predecessors = new HashMap<>();
-        for (String act : actions) predecessors.put(act, new ArrayList<>());
+        for (String key : keys) predecessors.put(key, new ArrayList<>());
 
-        for (int li = 0; li < actions.size(); li++) {
-            String l = actions.get(li);
-            String cs_l = actionToState.get(l);
-            String[] parts_l = splitCompositeState(cs_l);
-
-            for (int ti = 0; ti < actions.size(); ti++) {
+        for (int li = 0; li < keys.size(); li++) {
+            String   keyL   = keys.get(li);
+            String[] partsL = keyToParts.get(keyL);
+            String   actL   = keyL.substring(keyL.indexOf('\0') + 1);
+            for (int ti = 0; ti < keys.size(); ti++) {
                 if (li == ti) continue;
-                String t = actions.get(ti);
-                if (isEnablingEdge(l, t, parts_l)) {
-                    predecessors.get(t).add(l);
+                String keyT = keys.get(ti);
+                String actT = keyT.substring(keyT.indexOf('\0') + 1);
+                if (isEnablingEdge(actL, actT, partsL)) {
+                    predecessors.get(keyT).add(keyL);
                 }
             }
         }
 
         // Phase 3: Bellman-Ford fixpoint propagation.
-        // estimate_j(l) = min(estimate_j(l), gap_j(l, t) + estimate_j(t))
-        Queue<String> workQueue = new ArrayDeque<>(actions);
-        Set<String>   inQueue   = new HashSet<>(actions);
-        int maxIter = actions.size() * actions.size() + 1;
+        Queue<String> workQueue = new ArrayDeque<>(keys);
+        Set<String>   inQueue   = new HashSet<>(keys);
+        int maxIter = keys.size() * keys.size() + 1;
         while (!workQueue.isEmpty() && maxIter-- > 0) {
-            String t = workQueue.poll();
-            inQueue.remove(t);
-            int[] est_t = estPerComp.get(t);
-            int[] m_t   = mPerComp.get(t);
-            String cs_t = actionToState.get(t);
-            String[] parts_t = splitCompositeState(cs_t);
+            String keyT = workQueue.poll();
+            inQueue.remove(keyT);
+            int[]  est_t = estPerComp.get(keyT);
+            int[]  m_t   = mPerComp.get(keyT);
+            String actT  = keyT.substring(keyT.indexOf('\0') + 1);
 
-            for (String l : predecessors.get(t)) {
-                String cs_l = actionToState.get(l);
-                String[] parts_l = splitCompositeState(cs_l);
-                int[] est_l = estPerComp.get(l);
-                int[] m_l   = mPerComp.get(l);
+            for (String keyL : predecessors.get(keyT)) {
+                String[] partsL = keyToParts.get(keyL);
+                String   actL   = keyL.substring(keyL.indexOf('\0') + 1);
+                int[] est_l = estPerComp.get(keyL);
+                int[] m_l   = mPerComp.get(keyL);
                 boolean improved = false;
 
                 for (int j = 0; j < numComponents; j++) {
                     ComponentData cd = compData.get(j);
                     if (cd.markedStates.isEmpty()) continue;
-                    String e_j = (j < parts_l.length) ? parts_l[j] : null;
+                    String e_j = (j < partsL.length) ? partsL[j] : null;
                     if (e_j == null) continue;
 
-                    // gap_j(l, t): steps in component j to enable t after firing l.
-                    int gap = gapComponent(j, e_j, l, t);
+                    int gap = gapComponent(j, e_j, actL, actT);
                     if (gap == Integer.MAX_VALUE / 2) continue;
 
                     int candidate_d = saturatingAdd(gap, est_t[j]);
-                    int candidate_m = m_t[j]; // inherit marking confidence from t
+                    int candidate_m = m_t[j];
                     if (candidate_m < m_l[j]
                             || (candidate_m == m_l[j] && candidate_d < est_l[j])) {
                         est_l[j] = candidate_d;
@@ -542,17 +534,19 @@ public class RAHeuristic implements Heuristic {
                         improved  = true;
                     }
                 }
-                if (improved && !inQueue.contains(l)) {
-                    workQueue.add(l); inQueue.add(l);
+                if (improved && !inQueue.contains(keyL)) {
+                    workQueue.add(keyL); inQueue.add(keyL);
                 }
             }
         }
 
         // Write back to estimate cache.
-        for (String act : actionToState.keySet()) {
-            String cs = actionToState.get(act);
-            int[] ds = estPerComp.get(act);
-            int[] ms = mPerComp.get(act);
+        for (String key : keys) {
+            int    sep    = key.indexOf('\0');
+            String cs     = key.substring(0, sep);
+            String action = key.substring(sep + 1);
+            int[]  ds     = estPerComp.get(key);
+            int[]  ms     = mPerComp.get(key);
             List<EstimateTuple> tuples = new ArrayList<>();
             for (int j = 0; j < numComponents; j++) {
                 if (compData.get(j).markedStates.isEmpty()) continue;
@@ -560,7 +554,7 @@ public class RAHeuristic implements Heuristic {
                         ? EstimateTuple.UNREACHABLE
                         : new EstimateTuple(ms[j], ds[j]));
             }
-            estimateCache.computeIfAbsent(cs, k -> new HashMap<>()).put(act, tuples);
+            estimateCache.computeIfAbsent(cs, k -> new HashMap<>()).put(action, tuples);
         }
     }
 
@@ -591,8 +585,11 @@ public class RAHeuristic implements Heuristic {
     /**
      * Gap cost for component {@code j} when firing {@code l} to eventually enable {@code t}.
      *
-     * = (steps from l's successor to the nearest state where t is enabled)
-     *   + (BFS distance from that t-enabling state to the nearest marked state in j).
+     * = stepsToT (steps from l's successor to the nearest t-enabling state)
+     *   + dist(t-enabling state → nearest marked state in j).
+     *
+     * We iterate over all t-enabling states reachable from l's successor and take the
+     * minimum dist-to-marked, then add stepsToT as the shared approach cost.
      *
      * Returns {@code Integer.MAX_VALUE / 2} if t cannot be enabled from l's successor.
      */
@@ -604,13 +601,19 @@ public class RAHeuristic implements Heuristic {
         Integer stepsToT = cd.stepsToEnableAction.getOrDefault(t, Map.of()).get(succ_l);
         if (stepsToT == null) return Integer.MAX_VALUE / 2;
 
-        // Find the nearest t-enabling state reachable from succ_l and get its dist to marked.
-        // We approximate: use bestDistanceToMarked from succ_l then add stepsToT.
-        // (An exact computation would BFS to the t-enabling state, but this is a valid upper bound.)
-        EstimateTuple distToMarked = bestDistanceToMarked(j, succ_l);
-        if (distToMarked == EstimateTuple.UNREACHABLE) return Integer.MAX_VALUE / 2;
-
-        return saturatingAdd(stepsToT, distToMarked.d());
+        // Iterate over t-enabling states reachable from succ_l; use the one with the
+        // best (minimum) distance to marked. gap = stepsToT + dist(t-enabling state → marked).
+        Set<String> reachable = cd.reachableFromState.getOrDefault(succ_l, Set.of());
+        int bestDist = Integer.MAX_VALUE / 2;
+        for (Map.Entry<String, Set<String>> entry : cd.enabledAt.entrySet()) {
+            String s = entry.getKey();
+            if (!entry.getValue().contains(t)) continue;
+            if (!reachable.contains(s)) continue;
+            EstimateTuple dt = bestDistanceToMarked(j, s);
+            if (dt != EstimateTuple.UNREACHABLE && dt.d() < bestDist) bestDist = dt.d();
+        }
+        if (bestDist == Integer.MAX_VALUE / 2) return Integer.MAX_VALUE / 2;
+        return saturatingAdd(stepsToT, bestDist);
     }
 
     private static int saturatingAdd(int a, int b) {
@@ -642,13 +645,23 @@ public class RAHeuristic implements Heuristic {
         boolean isSelfloopOrAbsent = (succ == null || succ.equals(e_j));
 
         if (!isSelfloopOrAbsent) {
-            return bestDistanceToMarked(j, succ);
+            // ERA edge weight = |trace starting with action from e_j reaching marked|
+            // = 1 (for action itself) + BFS dist from succ to marked.
+            EstimateTuple base = bestDistanceToMarked(j, succ);
+            return base == EstimateTuple.UNREACHABLE
+                   ? EstimateTuple.UNREACHABLE
+                   : new EstimateTuple(base.m(), base.d() + 1);
         }
 
+        // Cases 3/4 (Def. 8 Pazos 2024): action absent/self-loop in j, already at marked.
+        // d=1 because one composite step (firing action) keeps us at the marked state.
         if (cd.markedStates.contains(e_j)) {
             return new EstimateTuple(mFlag(j, e_j), 1);
         }
 
+        // Cases 5/6: action absent/self-loop, use best alternative event β enabled at e_j.
+        // Formula: 1 (for firing action) + d(β, m) in ERA.
+        // d(β, m) in ERA = 1 (for β) + BFS dist from succ_β to m  →  total = 2 + BFS dist.
         EstimateTuple best = EstimateTuple.UNREACHABLE;
         for (String alt : cd.enabledAt.getOrDefault(e_j, Set.of())) {
             if (alt.equals(action)) continue;
@@ -656,7 +669,7 @@ public class RAHeuristic implements Heuristic {
             if (alt_succ == null || alt_succ.equals(e_j)) continue;
             EstimateTuple reached = bestDistanceToMarked(j, alt_succ);
             if (reached == EstimateTuple.UNREACHABLE) continue;
-            EstimateTuple candidate = new EstimateTuple(reached.m(), reached.d() + 1);
+            EstimateTuple candidate = new EstimateTuple(reached.m(), reached.d() + 2);
             if (candidate.compareTo(best) < 0) best = candidate;
         }
         return best;
@@ -691,6 +704,24 @@ public class RAHeuristic implements Heuristic {
         if (useG && goalCompStates.get(j).contains(componentState)) return -1;
         if (visitedCompStates.get(j).contains(componentState)) return 0;
         return 1;
+    }
+
+    // ── test / inspection API ────────────────────────────────────────────────
+
+    /**
+     * Returns the RA estimate for the given {@code (compositeState, action)} pair,
+     * including full RA graph propagation across the single-transition frontier.
+     * Intended for unit tests and diagnostic inspection.
+     *
+     * <p>Requires {@link #init(SynthesisContext)} to have been called first.
+     */
+    public List<EstimateTuple> estimateFor(String compositeState, String action) {
+        refreshVisitedStates();
+        if (useG) refreshGoalStates();
+        ExtendedTransition t = new ExtendedTransition(compositeState, action, "?");
+        applyRAGraphPropagation(List.of(t));
+        return estimateCache.getOrDefault(compositeState, Map.of())
+                            .getOrDefault(action, List.of());
     }
 
     // ── utility ───────────────────────────────────────────────────────────────
@@ -729,6 +760,8 @@ public class RAHeuristic implements Heuristic {
             int c = a.get(i).compareTo(b.get(i));
             if (c != 0) return c;
         }
+        // TODO: the correct tie-breaking when lists have different lengths is unclear —
+        // Pazos 2024 does not specify this case. Currently shorter = better; revisit once clarified.
         return Integer.compare(a.size(), b.size());
     }
 }

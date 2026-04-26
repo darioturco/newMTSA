@@ -4,7 +4,9 @@ import newmtsa.parser.FSPParser;
 import newmtsa.parser.ast.*;
 import newmtsa.synthesis.SynthesisResult;
 import newmtsa.synthesis.gr1.OTFDirectedControledSyntesisGR1;
+import newmtsa.synthesis.heuristics.Heuristic;
 import newmtsa.synthesis.heuristics.HeuristicType;
+import newmtsa.synthesis.heuristics.RandomHeuristic;
 import newmtsa.synthesis.nonblocking.OTFDirectedControledSyntesisNonBlocking;
 
 import java.util.ArrayList;
@@ -18,21 +20,35 @@ import java.nio.file.Path;
 public class Main {
 
     // ── Heuristic selection ───────────────────────────────────────────────────
-    // Change this constant to switch the exploration strategy for both
-    // Non-Blocking DCS and GR(1) synthesis.
+    // Change HEURISTIC to switch strategy. For Non-Blocking DCS, RANDOM also
+    // uses SCRIPT (see below); all other heuristics ignore SCRIPT.
     //
-    //   FIRST    – always picks the first transition (deterministic)
-    //   RANDOM   – uniform random
-    //   BFS      – breadth-first layer-by-layer
-    //   HUMAN    – interactive: prompts the user on every step
-    //   RA       – Ready Abstraction (base)
-    //   RA_R     – RA + recompute on new marked states
+    //   FIRST    – always picks the first transition in the frontier (deterministic)
+    //   RANDOM   – uniform random; uses SCRIPT indices first, then falls back to random
+    //   BFS      – breadth-first layer-by-layer expansion
+    //   HUMAN    – interactive: prints the frontier and asks the user to choose
+    //   RA       – Ready Abstraction (base, Pazos 2024)
+    //   RA_R     – RA + recompute estimates when new marked states are discovered
     //   RA_E     – RA + structure-aware tie-breaking
-    //   RA_ER    – RA.R + RA.E  (best overall combination)
+    //   RA_ER    – RA.R + RA.E combined
     //   RA_ERG   – RA.R + RA.E + Goals-as-targets (all improvements)
-    //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
-    static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
+    static final HeuristicType HEURISTIC = HeuristicType.RA;
+    //static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
+    //static final HeuristicType HEURISTIC = HeuristicType.FIRST;
+    //static final HeuristicType HEURISTIC = HeuristicType.BFS;
     //static final HeuristicType HEURISTIC = HeuristicType.HUMAN;
+    //static final HeuristicType HEURISTIC = HeuristicType.RA_R;
+    //static final HeuristicType HEURISTIC = HeuristicType.RA_E;
+    //static final HeuristicType HEURISTIC = HeuristicType.RA_ER;
+    //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
+
+    // Scripted frontier indices used when HEURISTIC = RANDOM.
+    // At step k picks pending.get(SCRIPT[k]); falls back to random once exhausted.
+    // List.of() = pure random from the start.
+    // [0,0,0,1] selects actions a[1], a[3], a[2], a[8] for FloppyTesis.fsp.
+    //static final List<Integer> SCRIPT = List.of(0, 0, 3, 0, 1);
+    //static final List<Integer> SCRIPT = List.of(0, 1, 2, 3);
+    static final List<Integer> SCRIPT = List.of();   // unused when HEURISTIC != RANDOM
 
     public static void main(String[] args) throws IOException {
         Path file;
@@ -47,7 +63,8 @@ public class Main {
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\BW\\BW-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\ControllableFSPs\\test21.lts");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test1.lts");
-            file = Path.of("E:\\Code\\Java\\NewMTSA\\fsp\\NonBlocking\\Test\\FloppyTesis.fsp");
+            //file = Path.of("E:\\Code\\Java\\NewMTSA\\fsp\\NonBlocking\\Test\\FloppyTesis.fsp");
+            file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\CM\\CM-2-2.fsp");
         }
 
         FSPModel model = FSPParser.parse(file);
@@ -92,12 +109,16 @@ public class Main {
                     .ifPresent(safetyProps::add);
         }
 
+        Heuristic h = (HEURISTIC == HeuristicType.RANDOM)
+                ? new RandomHeuristic(SCRIPT)
+                : HEURISTIC.create();
+
         return new OTFDirectedControledSyntesisNonBlocking(
                 new ArrayList<>(model.processes()),
                 safetyProps,
                 new HashSet<>(spec.marking()),
                 new HashSet<>(spec.controllable()),
-                HEURISTIC.create(),
+                h,
                 verbose
         ).run();
     }
