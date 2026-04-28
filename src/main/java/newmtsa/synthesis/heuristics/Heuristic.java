@@ -1,17 +1,16 @@
 package newmtsa.synthesis.heuristics;
 
 import newmtsa.synthesis.ExtendedTransition;
-
 import java.util.List;
 
 /** Strategy for picking the next transition to explore from the pending frontier. */
 public interface Heuristic {
 
     /**
-     * Pick one transition from the pending list.
-     * The returned transition must be present in {@code pending}.
+     * Pick one transition from the pending list and return its 0-based index.
+     * The returned value must be in [0, pending.size()).
      */
-    ExtendedTransition pick(List<ExtendedTransition> pending);
+    int pick(List<ExtendedTransition> pending);
 
     /**
      * Called once by the synthesis engine after it is fully initialised,

@@ -32,8 +32,8 @@ public class Main {
     //   RA_E     – RA + structure-aware tie-breaking
     //   RA_ER    – RA.R + RA.E combined
     //   RA_ERG   – RA.R + RA.E + Goals-as-targets (all improvements)
-    static final HeuristicType HEURISTIC = HeuristicType.RA;
-    //static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
+    //static final HeuristicType HEURISTIC = HeuristicType.RA;
+    static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
     //static final HeuristicType HEURISTIC = HeuristicType.FIRST;
     //static final HeuristicType HEURISTIC = HeuristicType.BFS;
     //static final HeuristicType HEURISTIC = HeuristicType.HUMAN;
@@ -62,9 +62,8 @@ public class Main {
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\AT\\AT-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\BW\\BW-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\ControllableFSPs\\test21.lts");
-            //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test1.lts");
-            //file = Path.of("E:\\Code\\Java\\NewMTSA\\fsp\\NonBlocking\\Test\\FloppyTesis.fsp");
-            file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\CM\\CM-2-2.fsp");
+            file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
+            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\CM\\CM-2-2.fsp");
         }
 
         FSPModel model = FSPParser.parse(file);

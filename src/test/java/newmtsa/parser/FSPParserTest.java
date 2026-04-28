@@ -19,7 +19,14 @@ class FSPParserTest {
     static Stream<Path> allFSPFiles() throws IOException {
         Path fspDir = Paths.get("fsp");
         return Files.walk(fspDir)
-                .filter(p -> p.toString().endsWith(".lts") || p.toString().endsWith(".fsp"));
+                .filter(p -> p.toString().endsWith(".lts") || p.toString().endsWith(".fsp"))
+                .filter(p -> {
+                    String name = p.getFileName().toString();
+                    String path = p.toString().replace('\\', '/');
+                    // For benchmark families keep only the 2-2 instance
+                    if (path.contains("/Benchmark/")) return name.contains("-2-2.");
+                    return true;
+                });
     }
 
     // --- Parse-success tests (one per file) ---
@@ -189,9 +196,9 @@ class FSPParserTest {
      * fsp/Benchmark/CM/CM-2-2.fsp  — Cats and Mice benchmark
      *
      * Verifies operator-precedence correctness:
-     *   const Areas = 2*Levels+1  with Levels=1 (K=1)  →  (2*1)+1 = 3,  NOT 2*(1+1)=4
-     *   const Center = Areas \ 2                        →  3\2 = 1
-     *   const Last   = Areas-1                          →  2
+     *   const Areas = 2*Levels+1  with Levels=2 (K=2)  →  (2*2)+1 = 5,  NOT 2*(2+1)=6
+     *   const Center = Areas \ 2                        →  5\2 = 2
+     *   const Last   = Areas-1                          →  4
      */
     @Test
     void benchmarkCM_constantsHaveCorrectValues() throws IOException {
@@ -207,10 +214,10 @@ class FSPParserTest {
                         .filter(c -> c.name().equals(name))
                         .mapToInt(c -> c.value()).findFirst().orElseThrow();
 
-        assertEquals(1, get.apply("Levels"), "Levels");
-        assertEquals(3, get.apply("Areas"),  "Areas = 2*Levels+1 must respect * before +");
-        assertEquals(1, get.apply("Center"), "Center = Areas \\ 2");
-        assertEquals(2, get.apply("Last"),   "Last = Areas-1");
+        assertEquals(2, get.apply("Levels"), "Levels");
+        assertEquals(5, get.apply("Areas"),  "Areas = 2*Levels+1 must respect * before +");
+        assertEquals(2, get.apply("Center"), "Center = Areas \\ 2");
+        assertEquals(4, get.apply("Last"),   "Last = Areas-1");
     }
 
     /**

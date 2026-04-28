@@ -18,7 +18,7 @@ public class HumanHeuristic implements Heuristic {
     }
 
     @Override
-    public ExtendedTransition pick(List<ExtendedTransition> pending) {
+    public int pick(List<ExtendedTransition> pending) {
         System.out.println("[HumanHeuristic] Current frontier (" + pending.size() + " transitions):");
         for (int i = 0; i < pending.size(); i++) {
             ExtendedTransition t = pending.get(i);
@@ -38,6 +38,6 @@ public class HumanHeuristic implements Heuristic {
                 System.out.println("  Not a number. Try again.");
             }
         }
-        return pending.get(choice);
+        return choice;
     }
 }

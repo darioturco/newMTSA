@@ -20,18 +20,18 @@ class DebugTL22 {
         Heuristic h = new Heuristic() {
             int step = 0;
             String[] script = {"get[0]", "put[1]"};
-            public ExtendedTransition pick(List<ExtendedTransition> pending) {
+            public int pick(List<ExtendedTransition> pending) {
                 System.out.println("Step " + (step+1) + " frontier (" + pending.size() + "):");
                 for (ExtendedTransition t : pending)
                     System.out.println("  " + t.from().substring(0, Math.min(50, t.from().length()))
                         + " --[" + t.action() + "]--> " + t.to().substring(0, Math.min(20,t.to().length())));
                 if (step < script.length) {
                     String want = script[step++];
-                    for (ExtendedTransition t : pending)
-                        if (t.action().equals(want)) return t;
+                    for (int i = 0; i < pending.size(); i++)
+                        if (pending.get(i).action().equals(want)) return i;
                     System.out.println("  ** scripted action '" + want + "' NOT FOUND, fallback");
                 }
-                return pending.get(0);
+                return 0;
             }
         };
         new OTFDirectedControledSyntesisNonBlocking(

@@ -7,99 +7,184 @@ import newmtsa.synthesis.Director;
 import newmtsa.synthesis.ExtendedTransition;
 import newmtsa.synthesis.SynthesisResult;
 import newmtsa.synthesis.heuristics.Heuristic;
+import newmtsa.synthesis.heuristics.SimpleSynthesisContext;
 
 import java.util.*;
 
 /**
- * OTF DCS algorithm adapted for GR(1) synthesis (with optional assumptions).
+ * On-the-fly Directed Controller Synthesis for GR(1) liveness objectives.
  *
- * <p>Extended state: {@code "s1|s2|...|sk|j"} where s1..sk are the current states
- * of each component LTS (processes + guarantee fluents + assumption fluents) and
- * j is the current obligation index (0..n-1).
+ * <p>Winning condition: ∧_i ([]<>G_i) — the controller must guarantee that
+ * every liveness property G_0, G_1, ..., G_{k-1} is visited infinitely often.
  *
- * <p>Obligation j advances to (j+1)%n when the newly reached state has guarantee
- * fluent g_j in its accepting state.
+ * <p><b>Reduction to single Büchi</b>: the k-guarantee game is converted to a
+ * single Büchi game via a round-robin phase counter. The extended state is
+ * {@code (plant_state, phase)} with {@code phase ∈ {0, …, k-1}}.  State
+ * {@code (s, i)} is Büchi-accepting iff G_i holds at {@code s}.  When the
+ * controller departs a marked state the phase advances: {@code (i+1) mod k}.
  *
- * <p>A loop is winning iff:
- * <ul>
- *   <li>For every j in {0,...,n-1} the loop contains at least one state where g_j
- *       is satisfied (the standard guarantee completion condition), OR</li>
- *   <li>For some assumption a_i, no state in the loop has a_i in its accepting
- *       state (the assumption is violated throughout the loop — vacuous win).</li>
- * </ul>
+ * <p>The DCS exploration/propagation algorithm is identical to the non-blocking
+ * variant; only the state space and the marking predicate differ.
  *
- * <p>The winning region within a loop is found via a grow-then-trim fixpoint.
- * The grow phase runs to convergence first, then the trim phase runs to
- * convergence; the outer loop repeats until stable. This ordering ensures that
- * mutually-reachable states within a cycle are discovered before any are trimmed.
+ * <p><b>State encoding</b>: {@code "c0|c1|…|cN|phase"} — component states
+ * joined by {@code "|"} followed by the integer phase.  Compound-assert state
+ * names use {@code "_"} as their internal separator, so there is no ambiguity
+ * when splitting on {@code "|"}.
  */
 public class OTFDirectedControledSyntesisGR1 {
 
     // ── inputs ────────────────────────────────────────────────────────────────
 
-    private final List<LTS> components;
-    private final List<Integer> guaranteeIndices;  // index in components for each g_j
-    private final int n;                           // number of guarantees
-    private final List<Integer> assumptionIndices; // index in components for each a_i
+    private final List<LTS>   components;
     private final Set<String> controllable;
-    private final Heuristic heuristic;
-    private final boolean verbose;
+    public  final Heuristic   heuristic;
+    private final boolean     verbose;
+    private final boolean     useNumericIds;
 
-    // ── pre-computed per-component transition maps ────────────────────────────
+    // ── GR(1) liveness data ───────────────────────────────────────────────────
+    //
+    // The GR(1) game is reduced to a single Büchi game via a round-robin phase
+    // counter j ∈ {0, …, numPhases-1}.  The phase is an algorithmic construct,
+    // NOT an LTS component in the parallel composition.
+    //
+    // Node identity in this algorithm: "c0|c1|…|cN#j"
+    //   • "c0|c1|…|cN" is the plant state (parallel composition of components)
+    //   • "#j" is the phase suffix, separated by '#' to distinguish it from the
+    //     '|'-separated component states.
+    //
+    // Previously the phase was appended as "|j", making it look like an extra
+    // component in the composition.  The '#' separator makes the boundary explicit.
+    //
+    // Use plantPart(nodeId) to get the plant state and phaseOf(nodeId) to get j.
 
-    private final List<Map<String, Map<String, String>>> compTrans; // action → (from → to)
-    private final List<Set<String>> compAlpha;
-    private final Set<String> alphabet;
+    private final int   numGuarantees;
+    private final int[] guaranteeIndices;  // index into components for each G_i
+    private final int   numAssumptions;
+    private final int[] assumptionIndices; // index into components for each A_i
+    private final int   numPhases;         // numAssumptions + numGuarantees
+    private final int[] phaseComponentIndex; // phaseComponentIndex[j] = component index for phase j
 
-    // ── exploration state ─────────────────────────────────────────────────────
+    // ── per-component data ────────────────────────────────────────────────────
+
+    private final List<Map<String, Map<String, String>>> compTrans;
+    private final List<Set<String>>                      compAlpha;
+    private final Set<String>                            alphabet;
+
+    // ── state classification ──────────────────────────────────────────────────
 
     private final Set<String> goals  = new LinkedHashSet<>();
     private final Set<String> errors = new LinkedHashSet<>();
     private final Set<String> none   = new LinkedHashSet<>();
 
+    // ── exploration structure ─────────────────────────────────────────────────
+
     private final Map<String, List<ExtendedTransition>> succMap = new HashMap<>();
-    private final Map<String, Set<String>> parents = new HashMap<>();
+    private final Map<String, Set<String>>              parents = new HashMap<>();
 
-    // ── stats ─────────────────────────────────────────────────────────────────
+    // ── main-loop state ───────────────────────────────────────────────────────
 
-    private int transitionsExplored = 0;
+    private final String                   s0;
+    private       List<ExtendedTransition> pending;
+    private       boolean                  explorationEnded;
+    private       int                      transitionsExplored = 0;
 
     // ── constructor ───────────────────────────────────────────────────────────
 
-    public OTFDirectedControledSyntesisGR1(List<LTS> components,
-                                           List<LtlPropertyDef> assumptions,
-                                           List<LtlPropertyDef> guarantees,
-                                           Set<String> controllable,
-                                           Heuristic heuristic,
-                                           boolean verbose) {
-        this.components   = List.copyOf(components);
-        this.controllable = Set.copyOf(controllable);
-        this.heuristic    = heuristic;
-        this.verbose      = verbose;
-        this.n            = guarantees.size();
+    /**
+     * @param components   plant processes + guarantee fluents + assumption fluents
+     *                     (in that order, as assembled by the test/caller)
+     * @param assumptions  environment liveness assumptions (reserved; only guarantee
+     *                     liveness is enforced in this implementation)
+     * @param guarantees   liveness guarantees G_0 .. G_{k-1}; each LTS must appear
+     *                     in {@code components}
+     * @param controllable set of controllable event labels
+     * @param heuristic    frontier selection strategy
+     * @param verbose      print trace to stdout when {@code true}
+     */
+    public OTFDirectedControledSyntesisGR1(List<LTS>            components,
+                                            List<LtlPropertyDef> assumptions,
+                                            List<LtlPropertyDef> guarantees,
+                                            Set<String>          controllable,
+                                            Heuristic            heuristic,
+                                            boolean              verbose) {
+        this(components, assumptions, guarantees, controllable, heuristic, verbose, false);
+    }
 
-        List<Integer> gIdx = new ArrayList<>();
-        for (LtlPropertyDef g : guarantees) {
-            for (int i = 0; i < components.size(); i++) {
-                if (components.get(i).name().equals(g.name())) { gIdx.add(i); break; }
+    public OTFDirectedControledSyntesisGR1(List<LTS>            components,
+                                            List<LtlPropertyDef> assumptions,
+                                            List<LtlPropertyDef> guarantees,
+                                            Set<String>          controllable,
+                                            Heuristic            heuristic,
+                                            boolean              verbose,
+                                            boolean              useNumericIds) {
+        if (controllable.isEmpty())
+            throw new IllegalArgumentException("DCS requires at least one controllable action");
+
+        this.controllable   = Set.copyOf(controllable);
+        this.heuristic      = heuristic;
+        this.verbose        = verbose;
+        this.useNumericIds  = useNumericIds;
+        this.numGuarantees  = guarantees.size();
+        this.numAssumptions = assumptions.size();
+        this.numPhases      = numAssumptions + numGuarantees;
+        this.guaranteeIndices    = new int[numGuarantees];
+        this.assumptionIndices   = new int[numAssumptions];
+        this.phaseComponentIndex = new int[numPhases];
+
+        // Guarantee/assumption LTS created from compound asserts have isFluent=false
+        // (parser limitation). Force isFluent=true so they self-loop on unknown actions
+        // instead of blocking the parallel composition.
+        Set<String> livNames = new LinkedHashSet<>();
+        for (LtlPropertyDef g : guarantees) livNames.add(g.lts().name());
+        for (LtlPropertyDef a : assumptions) livNames.add(a.lts().name());
+
+        List<LTS> modComponents = new ArrayList<>(components.size());
+        for (LTS lts : components) {
+            if (livNames.contains(lts.name()) && !lts.isFluent()) {
+                lts = new LTS(lts.name(), lts.initialState(), lts.states(),
+                        lts.actions(), lts.transitions(), true,
+                        lts.acceptingStates(), lts.stateIndex());
             }
+            modComponents.add(lts);
         }
-        this.guaranteeIndices = List.copyOf(gIdx);
+        this.components = List.copyOf(modComponents);
 
-        List<Integer> aIdx = new ArrayList<>();
-        for (LtlPropertyDef a : assumptions) {
-            for (int i = 0; i < components.size(); i++) {
-                if (components.get(i).name().equals(a.name())) { aIdx.add(i); break; }
+        // phases 0..numAssumptions-1 → assumption LTS indices
+        // phases numAssumptions..numPhases-1 → guarantee LTS indices
+        for (int i = 0; i < numAssumptions; i++) {
+            String name = assumptions.get(i).lts().name();
+            boolean found = false;
+            for (int j = 0; j < this.components.size(); j++) {
+                if (this.components.get(j).name().equals(name)) {
+                    assumptionIndices[i] = j;
+                    phaseComponentIndex[i] = j;
+                    found = true; break;
+                }
             }
+            if (!found)
+                throw new IllegalArgumentException("Assumption LTS '" + name + "' not found in components");
         }
-        this.assumptionIndices = List.copyOf(aIdx);
+        for (int i = 0; i < numGuarantees; i++) {
+            String name = guarantees.get(i).lts().name();
+            boolean found = false;
+            for (int j = 0; j < this.components.size(); j++) {
+                if (this.components.get(j).name().equals(name)) {
+                    guaranteeIndices[i] = j;
+                    phaseComponentIndex[numAssumptions + i] = j;
+                    found = true; break;
+                }
+            }
+            if (!found)
+                throw new IllegalArgumentException("Guarantee LTS '" + name + "' not found in components");
+        }
 
+        // Build per-component transition maps and alphabet.
         compTrans = new ArrayList<>();
         compAlpha = new ArrayList<>();
         Set<String> alpha = new LinkedHashSet<>();
         for (LTS lts : this.components) {
             Map<String, Map<String, String>> actMap = new HashMap<>();
-            Set<String> acts = new LinkedHashSet<>();
+            Set<String> acts = new LinkedHashSet<>(lts.actions());
             for (Transition t : lts.transitions()) {
                 actMap.computeIfAbsent(t.action(), k -> new HashMap<>()).put(t.from(), t.to());
                 acts.add(t.action());
@@ -109,111 +194,168 @@ public class OTFDirectedControledSyntesisGR1 {
             alpha.addAll(acts);
         }
         alphabet = Collections.unmodifiableSet(alpha);
+
+        // Provide heuristic with a live view of this engine's state.
+        List<Set<String>> compMarked = new ArrayList<>();
+        for (int i = 0; i < this.components.size(); i++) compMarked.add(new LinkedHashSet<>());
+        for (int i = 0; i < numGuarantees; i++)
+            compMarked.get(guaranteeIndices[i]).addAll(this.components.get(guaranteeIndices[i]).acceptingStates());
+        heuristic.init(new SimpleSynthesisContext(this.components, compMarked, this.controllable) {
+            @Override public Set<String>              exploredStates()            { return succMap.keySet(); }
+            @Override public Set<String>              goals()                     { return goals; }
+            @Override public List<ExtendedTransition> successorsOf(String s)      { return succMap.getOrDefault(s, List.of()); }
+            @Override public String                   plantStateKey(String nodeId) { return plantPart(nodeId); }
+        });
+
+        // Expand and classify the initial state.
+        s0 = initialState();
+        exploreState(s0);
+
+        if (isLosing(s0)) {
+            errors.add(s0);
+            pending          = new ArrayList<>();
+            explorationEnded = true;
+        } else {
+            none.add(s0);
+            pending          = new ArrayList<>(succMap.getOrDefault(s0, List.of()));
+            explorationEnded = false;
+        }
     }
 
     // ── public entry point ────────────────────────────────────────────────────
 
+    /**
+     * Runs the otf-dcs-GR(1) algorithm.
+     *
+     * @return {@link SynthesisResult#isRealizable()} true iff a GR(1) controller
+     *         exists from the initial state.
+     */
     public SynthesisResult run() {
-        if (n == 0 && assumptionIndices.isEmpty()) {
-            log("No guarantees and no assumptions — trivially unrealizable");
-            return SynthesisResult.UNREALIZABLE;
+        log("Initial state explored | states=" + succMap.size());
+
+        if (explorationEnded) {
+            log("Initial state is losing — UNREALIZABLE");
+            return getSynthesisResult();
         }
 
-        String s0 = initialState();
-        log("Initial state: " + s0);
-        expand(s0);
+        while (!isExplorationEnded()) {
+            List<ExtendedTransition> frontier = getFrontier();
+            if (frontier.isEmpty()) break;
 
-        if (isLosing(s0)) {
-            log("Initial state is a deadlock — UNREALIZABLE");
-            errors.add(s0);
-            return SynthesisResult.UNREALIZABLE;
-        }
-        none.add(s0);
-
-        List<ExtendedTransition> pending = new ArrayList<>(succMap.getOrDefault(s0, List.of()));
-        log("Initial pending: " + pending.size() + " transitions");
-
-        while (!pending.isEmpty()) {
-            // Fix: encapsulate in a void function
-            if (verbose) {
-                System.out.println("[DCS] frontier (" + pending.size() + "):");
-                for (ExtendedTransition ft : pending) {
-                    System.out.println("        " + ft.from() + " --[" + ft.action() + "]--> " + ft.to());
-                }
+            int index = heuristic.pick(frontier);
+            if (index < 0 || index >= frontier.size()) {
+                System.err.println("[DCS-GR1] WARNING: heuristic returned invalid index " + index
+                        + " for frontier of size " + frontier.size() + " — using nearest valid index");
+                index = Math.max(0, Math.min(index, frontier.size() - 1));
             }
+            ExtendedTransition t = frontier.get(index);
 
-            ExtendedTransition t = heuristic.pick(pending);
-            pending.remove(t);
-            transitionsExplored++;
+            log("  step " + (transitionsExplored + 1)
+                    + " | " + displayNodeId(t.from()) + " --[" + t.action() + "]--> " + displayNodeId(t.to()));
 
-            log("  step " + transitionsExplored
-                    + " | expanding: " + t.from() + " --[" + t.action() + "]--> " + t.to());
-
-            String tgt = t.to();
-
-            if (isVisited(tgt)) {
-                addParent(tgt, t.from());
-
-                Set<String> loop = findLoop(t.from(), tgt);
-                if (!loop.isEmpty()) {
-                    boolean winning = canBeWinningLoop(loop);
-                    log("    loop " + loop.size() + " states"
-                            + " → " + (winning ? "WINNING" : "non-winning"));
-                    if (winning) {
-                        findNewGoalsIn(loop);
-                    } else {
-                        findNewErrorsIn(loop);
-                    }
-                }
-
-            } else {
-                expand(tgt);
-                addParent(tgt, t.from());
-
-                if (isLosing(tgt)) {
-                    log("    deadlock → Errors");
-                    errors.add(tgt);
-                    propagateError(tgt);
-
-                    // Fix: Must check the winning condition also!!!
-                } else {
-                    none.add(tgt);
-                    pending.addAll(succMap.getOrDefault(tgt, List.of()));
-                }
-            }
+            expand(index);
 
             if (goals.contains(s0)) {
-                log("s0 ∈ Goals — REALIZABLE"
-                        + " | states=" + succMap.size()
+                log("s0 ∈ Goals — REALIZABLE | states=" + succMap.size()
                         + " transitions=" + transitionsExplored);
-                return SynthesisResult.of(buildDirector(), succMap.size(), transitionsExplored);
+                logExplorationSummary();
+                return getSynthesisResult();
             }
-            if (errors.contains(s0)) {
-                log("s0 ∈ Errors — UNREALIZABLE"
-                        + " | states=" + succMap.size()
+            if (explorationEnded) {
+                log("s0 ∈ Errors — UNREALIZABLE | states=" + succMap.size()
                         + " transitions=" + transitionsExplored);
-                return SynthesisResult.unrealizable(succMap.size(), transitionsExplored);
+                logExplorationSummary();
+                return getSynthesisResult();
             }
         }
 
         log("Exploration complete | states=" + succMap.size()
-                + " transitions=" + transitionsExplored
-                + " goals=" + goals.size()
-                + " errors=" + errors.size()
-                + " none=" + none.size());
+                + " transitions=" + transitionsExplored);
+        logExplorationSummary();
+        return getSynthesisResult();
+    }
 
+    // ── step interface ────────────────────────────────────────────────────────
+
+    public List<ExtendedTransition> getFrontier() {
+        prunePending();
+        return Collections.unmodifiableList(pending);
+    }
+
+    public boolean isExplorationEnded() {
+        if (explorationEnded) return true;
+        prunePending();
+        if (pending.isEmpty()) explorationEnded = true;
+        return explorationEnded;
+    }
+
+    /**
+     * Expands the transition at {@code index} in the current frontier (one DCS step).
+     *
+     * @param index 0-based index into {@link #getFrontier()}
+     */
+    public void expand(int index) {
+        if (isExplorationEnded())
+            throw new IllegalStateException("Exploration has already ended");
+
+        ExtendedTransition t = pending.remove(index);
+        transitionsExplored++;
+
+        String e  = t.from();
+        String eʹ = t.to();
+
+        if (isVisited(eʹ)) {
+            addParent(eʹ, e);
+            Set<String> loop = getMaxLoop(e, eʹ);
+            if (!loop.isEmpty()) {
+                if (canBeWinningLoop(loop)) {
+                    Set<String> C = findNewGoalsIn(loop);
+                    promoteToGoals(C);
+                    propagateGoal(C);
+                } else {
+                    Set<String> P = findNewErrorsIn(loop);
+                    promoteToErrors(P);
+                    propagateError(P);
+                }
+            }
+        } else {
+            exploreState(eʹ);
+            addParent(eʹ, e);
+            if (isLosing(eʹ)) {
+                errors.add(eʹ);
+                propagateError(Set.of(eʹ));
+            } else {
+                none.add(eʹ);
+                pending.addAll(succMap.getOrDefault(eʹ, List.of()));
+            }
+        }
+
+        if (goals.contains(s0) || errors.contains(s0)) explorationEnded = true;
+    }
+
+    public boolean isRealizable()          { return goals.contains(s0); }
+    public int     getStatesExplored()      { return succMap.size(); }
+    public int     getTransitionsExplored() { return transitionsExplored; }
+
+    public SynthesisResult getSynthesisResult() {
         if (goals.contains(s0))
             return SynthesisResult.of(buildDirector(), succMap.size(), transitionsExplored);
         return SynthesisResult.unrealizable(succMap.size(), transitionsExplored);
     }
 
-    // ── verbose helper ────────────────────────────────────────────────────────
+    // ── state helpers ─────────────────────────────────────────────────────────
 
-    private void log(String msg) {
-        if (verbose) System.out.println("[DCS] " + msg);
+    /** Returns the plant-state portion of a node ID (everything before {@code '#'}). */
+    private String plantPart(String nodeId) {
+        int h = nodeId.lastIndexOf('#');
+        return h >= 0 ? nodeId.substring(0, h) : nodeId;
     }
 
-    // ── state helpers ─────────────────────────────────────────────────────────
+    /** Returns the phase counter embedded in a node ID (the number after {@code '#'}). */
+    private int phaseOf(String nodeId) {
+        int h = nodeId.lastIndexOf('#');
+        return h >= 0 ? Integer.parseInt(nodeId.substring(h + 1)) : 0;
+    }
 
     private String initialState() {
         StringBuilder sb = new StringBuilder();
@@ -221,16 +363,80 @@ public class OTFDirectedControledSyntesisGR1 {
             if (i > 0) sb.append('|');
             sb.append(components.get(i).initialState());
         }
-        sb.append('|').append(0);
-        return sb.toString();
+        return sb.append("#0").toString();
     }
 
-    private String[] splitState(String ext) {
-        return ext.split("\\|", components.size() + 1);
+    /** Splits the plant-state portion of {@code nodeId} into per-component states. */
+    private String[] splitState(String nodeId) {
+        return plantPart(nodeId).split("\\|", -1);
     }
 
-    private int obligation(String[] parts) {
-        return Integer.parseInt(parts[components.size()]);
+    /**
+     * A state is Büchi-accepting for the controller under the unified-phase rule:
+     * <ul>
+     *   <li>Assumption phase j &lt; numAssumptions: marked when A_j does NOT hold
+     *       (environment violated its liveness obligation → controller wins
+     *       vacuously under GR(1) semantics).</li>
+     *   <li>Guarantee phase j ≥ numAssumptions: marked when G_{j-numAssumptions}
+     *       holds (controller satisfied its current liveness goal).</li>
+     * </ul>
+     */
+    /**
+     * Büchi acceptance under GR(1):
+     * <ul>
+     *   <li>Assumption phase (j &lt; numAssumptions): marked when A_j does NOT hold —
+     *       env is failing its obligation, controller wins vacuously.</li>
+     *   <li>Guarantee phase (j ≥ numAssumptions): marked when G_{j-numAssumptions} holds,
+     *       OR when some assumption A_i is violated AND the controller cannot force A_i
+     *       back to ON (no controllable successor makes A_i accepting). The second condition
+     *       catches cycles where the environment sustains an assumption violation while the
+     *       controller has no controllable actions that could resolve it — giving the
+     *       controller a vacuous win without needing to return to assumption phase.</li>
+     * </ul>
+     */
+    private boolean isMarked(String nodeId) {
+        if (numPhases == 0) return true;
+        String[] parts = splitState(nodeId);
+        int j = phaseOf(nodeId);
+        int cIdx = phaseComponentIndex[j];
+        boolean inAccepting = components.get(cIdx).acceptingStates().contains(parts[cIdx]);
+        if (j < numAssumptions) return !inAccepting; // assumption phase
+        if (inAccepting) return true;                 // guarantee phase, goal satisfied
+        // Guarantee phase, goal not satisfied: check for unresolvable assumption violation.
+        for (int i = 0; i < numAssumptions; i++) {
+            int aCIdx = assumptionIndices[i];
+            if (!components.get(aCIdx).acceptingStates().contains(parts[aCIdx])
+                    && !controllerCanSatisfyAssumption(nodeId, aCIdx))
+                return true;
+        }
+        return false;
+    }
+
+    /**
+     * Returns true if any controllable successor of {@code nodeId} has assumption
+     * component {@code assumptionComponentIdx} in its accepting state.
+     */
+    private boolean controllerCanSatisfyAssumption(String nodeId, int assumptionComponentIdx) {
+        for (ExtendedTransition t : succMap.getOrDefault(nodeId, List.of())) {
+            if (controllable.contains(t.action())) {
+                String[] sp = splitState(t.to());
+                if (components.get(assumptionComponentIdx).acceptingStates().contains(sp[assumptionComponentIdx]))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isIllegal(String s) {
+        String[] parts = splitState(s);
+        for (int i = 0; i < components.size(); i++) {
+            if ("ERROR".equals(parts[i])) return true;
+        }
+        return false;
+    }
+
+    private boolean isLosing(String s) {
+        return isIllegal(s) || succMap.getOrDefault(s, List.of()).isEmpty();
     }
 
     private boolean isVisited(String s) {
@@ -241,17 +447,34 @@ public class OTFDirectedControledSyntesisGR1 {
         parents.computeIfAbsent(child, k -> new LinkedHashSet<>()).add(parent);
     }
 
-    // ── expansion ─────────────────────────────────────────────────────────────
+    // ── state exploration with phase update ───────────────────────────────────
 
-    private void expand(String s) {
-        if (succMap.containsKey(s)) return;
-        String[] parts = splitState(s);
-        int j = obligation(parts);
+    /**
+     * Computes all outgoing transitions from {@code s}, applying the round-robin
+     * phase rule: the phase advances when G_{phase} holds at the <em>source</em>
+     * state (departing a marked state).
+     */
+    private void exploreState(String nodeId) {
+        if (succMap.containsKey(nodeId)) return;
+        String[] parts = splitState(nodeId);
+        int j = phaseOf(nodeId);
+
+        // Phase advances when the current phase's LTS is in its accepting state:
+        //   assumption phase j<numAssumptions: advances when A_j holds (env met its obligation)
+        //   guarantee phase j>=numAssumptions: advances when G_{j-numAssumptions} holds
+        int nextJ = j;
+        if (numPhases > 0) {
+            int cIdx = phaseComponentIndex[j];
+            if (components.get(cIdx).acceptingStates().contains(parts[cIdx]))
+                nextJ = (j + 1) % numPhases;
+        }
 
         List<ExtendedTransition> succ = new ArrayList<>();
+
         for (String action : alphabet) {
             String[] newParts = new String[components.size()];
             boolean valid = true;
+
             for (int i = 0; i < components.size(); i++) {
                 String cur = parts[i];
                 if (compAlpha.get(i).contains(action)) {
@@ -259,62 +482,44 @@ public class OTFDirectedControledSyntesisGR1 {
                     if (next != null) {
                         newParts[i] = next;
                     } else if (components.get(i).isFluent()) {
-                        newParts[i] = cur; // fluents never block; missing transition = self-loop
+                        newParts[i] = cur;
                     } else {
                         valid = false;
                         break;
                     }
                 } else {
-                    newParts[i] = cur; // self-loop for non-participating components
+                    newParts[i] = cur;
                 }
             }
             if (!valid) continue;
-
-            // Advance obligation when g_j is satisfied at the new state
-            int newJ = j;
-            if (!guaranteeIndices.isEmpty()) {
-                int gIdx = guaranteeIndices.get(j);
-                if (components.get(gIdx).acceptingStates().contains(newParts[gIdx])) {
-                    newJ = (j + 1) % n;
-                }
-            }
 
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < components.size(); i++) {
                 if (i > 0) sb.append('|');
                 sb.append(newParts[i]);
             }
-            sb.append('|').append(newJ);
-            succ.add(new ExtendedTransition(s, action, sb.toString()));
+            sb.append('#').append(nextJ); // phase suffix, not a component
+            succ.add(new ExtendedTransition(nodeId, action, sb.toString()));
         }
-        succMap.put(s, succ);
+        succMap.put(nodeId, succ);
     }
 
-    // ── classification ────────────────────────────────────────────────────────
+    // ── loop analysis ─────────────────────────────────────────────────────────
 
-    /** A deadlock (no outgoing transitions) is always losing for GR(1). */
-    private boolean isLosing(String s) {
-        // Fix: Must also check the accomplish of the guaranties if the assumption is false in this state.
-        return succMap.getOrDefault(s, List.of()).isEmpty();
-    }
-
-    // ── loop detection ────────────────────────────────────────────────────────
-
-    private Set<String> findLoop(String loopEnd, String loopStart) {
-        Set<String> forward  = bfsForward(loopStart, null);
-        Set<String> backward = bfsBackward(loopStart, forward);
-        forward.retainAll(backward);
-        forward.removeIf(s -> errors.contains(s) || goals.contains(s));
-        return forward;
+    private Set<String> getMaxLoop(String loopEnd, String loopStart) {
+        Set<String> fwd = bfsForward(loopStart, null);
+        Set<String> bwd = bfsBackward(loopStart, fwd);
+        fwd.retainAll(bwd);
+        fwd.removeIf(s -> errors.contains(s) || goals.contains(s));
+        return fwd;
     }
 
     private Set<String> bfsForward(String start, Set<String> limit) {
-        Set<String> visited = new LinkedHashSet<>();
-        Queue<String> queue = new ArrayDeque<>();
+        Set<String>   visited = new LinkedHashSet<>();
+        Queue<String> queue   = new ArrayDeque<>();
         queue.add(start); visited.add(start);
         while (!queue.isEmpty()) {
-            String s = queue.poll();
-            for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
+            for (ExtendedTransition t : succMap.getOrDefault(queue.poll(), List.of())) {
                 String tgt = t.to();
                 if (!visited.contains(tgt) && (limit == null || limit.contains(tgt))) {
                     visited.add(tgt); queue.add(tgt);
@@ -325,12 +530,11 @@ public class OTFDirectedControledSyntesisGR1 {
     }
 
     private Set<String> bfsBackward(String start, Set<String> limit) {
-        Set<String> visited = new LinkedHashSet<>();
-        Queue<String> queue = new ArrayDeque<>();
+        Set<String>   visited = new LinkedHashSet<>();
+        Queue<String> queue   = new ArrayDeque<>();
         queue.add(start); visited.add(start);
         while (!queue.isEmpty()) {
-            String s = queue.poll();
-            for (String p : parents.getOrDefault(s, Set.of())) {
+            for (String p : parents.getOrDefault(queue.poll(), Set.of())) {
                 if (!visited.contains(p) && (limit == null || limit.contains(p))) {
                     visited.add(p); queue.add(p);
                 }
@@ -339,471 +543,279 @@ public class OTFDirectedControledSyntesisGR1 {
         return visited;
     }
 
-    // ── winning loop check ────────────────────────────────────────────────────
-
-    /**
-     * A loop is potentially winning iff:
-     * <ul>
-     *   <li>For some assumption a_i the controller can enforce a sub-loop where a_i is
-     *       never satisfied — the environment fails its liveness obligation so the GR(1)
-     *       spec is vacuously true (see {@link #findAssumptionViolationTrap}), OR</li>
-     *   <li>For every obligation j the loop contains at least one transition (from a
-     *       state with obligation j) where g_j is satisfied at the target, meaning the
-     *       obligation index can advance.</li>
-     * </ul>
-     */
     private boolean canBeWinningLoop(Set<String> loop) {
-        // Assumption-violation check: controller can enforce a sub-loop where
-        // some assumption is never satisfied.
-        for (int aIdx : assumptionIndices) {
-            if (!findAssumptionViolationTrap(loop, aIdx).isEmpty()) return true;
-        }
-
-        // Guarantee check: for every obligation j, there must exist at least one
-        // loop-internal (or goals-exiting) transition from a j-state that satisfies g_j.
-        for (int j = 0; j < n; j++) {
-            int gIdx = guaranteeIndices.get(j);
-            boolean hasAdvance = false;
-            outer:
-            for (String s : loop) {
-                if (obligation(splitState(s)) != j) continue;
-                for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-                    if (!loop.contains(t.to()) && !goals.contains(t.to())) continue;
-                    String[] toParts = splitState(t.to());
-                    if (components.get(gIdx).acceptingStates().contains(toParts[gIdx])) {
-                        hasAdvance = true;
-                        break outer;
-                    }
-                }
-            }
-            if (!hasAdvance) return false;
-        }
-        return true; // all n obligations can advance (n==0 is vacuously true)
-    }
-
-    /**
-     * Find the maximal subset S ⊆ loop where:
-     * <ol>
-     *   <li>No state in S has assumption {@code aIdx} in its accepting state.</li>
-     *   <li>No uncontrollable transition from any state in S leaves S (the environment
-     *       cannot be forced out of S by uncontrollable actions within the loop).</li>
-     *   <li>Every state in S has at least one successor (controllable or uncontrollable)
-     *       also in S (the controller can keep the system in S indefinitely).</li>
-     * </ol>
-     * A non-empty result means the controller can disable appropriate controllable
-     * actions to trap the system in S forever, violating assumption {@code aIdx}
-     * — making the GR(1) spec vacuously true.
-     */
-    private Set<String> findAssumptionViolationTrap(Set<String> loop, int aIdx) {
-        // Seed: loop states where the assumption is not satisfied.
-        Set<String> candidate = new LinkedHashSet<>();
         for (String s : loop) {
-            String[] parts = splitState(s);
-            if (!components.get(aIdx).acceptingStates().contains(parts[aIdx])) {
-                candidate.add(s);
-            }
-        }
-        // Trim to fixpoint: remove states that cannot stay inside the candidate.
-        boolean changed = true;
-        while (changed) {
-            changed = false;
-            Iterator<String> it = candidate.iterator();
-            while (it.hasNext()) {
-                String s = it.next();
-                boolean unsafeUnc         = false;
-                boolean hasSuccInCandidate = false;
-                for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-                    boolean inCand = candidate.contains(t.to());
-                    if (!controllable.contains(t.action()) && !inCand) {
-                        unsafeUnc = true; // uncontrollable escapes candidate
-                    }
-                    if (inCand) hasSuccInCandidate = true;
-                }
-                if (unsafeUnc || !hasSuccInCandidate) {
-                    it.remove();
-                    changed = true;
-                }
-            }
-        }
-        return candidate;
-    }
-
-    // ── goal/error propagation ────────────────────────────────────────────────
-
-    /**
-     * Find the winning region within a loop.
-     *
-     * <p>There are two ways a loop can be winning:
-     * <ol>
-     *   <li><b>Guarantee completion</b>: the obligation cycle completes for every j.
-     *       Seed = states where the obligation just advanced. Grow and trim to find
-     *       the maximal trap from which the controller can force obligation completion.</li>
-     *   <li><b>Assumption violation</b>: for some assumption a_i, no state in the loop
-     *       ever satisfies a_i. The winning region is any trap within the loop (the
-     *       environment is forever failing its obligation, so the spec is vacuously true).
-     *       Seed = entire loop.</li>
-     * </ol>
-     *
-     * <p>The fixpoint uses <b>grow-then-trim</b> ordering: the grow phase runs to
-     * convergence before the trim phase runs, preventing premature removal of states
-     * that belong together in a cyclic goal region.
-     */
-    private void findNewGoalsIn(Set<String> loop) {
-        Set<String> goalIn = buildSeed(loop);
-        log("    findNewGoalsIn: seed=" + goalIn.size() + " / loop=" + loop.size());
-
-        goalIn = growThenTrim(goalIn, loop);
-
-        promoteToGoals(goalIn);
-    }
-
-    /**
-     * Build the seed set for {@link #findNewGoalsIn}.
-     *
-     * <p><b>Assumption-violation path</b>: if the controller can enforce a sub-loop
-     * where some assumption is never satisfied, that sub-loop trap is the seed.
-     * {@link #growThenTrim} may then expand it (e.g. to include states that are
-     * uncontrollably forced into the trap and thus also winning).
-     *
-     * <p><b>Guarantee path</b>: the seed is the set of states that have at least one
-     * <em>direct</em> obligation-advancing transition — i.e. a successor (in the loop
-     * or already in Goals) where g_j is satisfied, causing the obligation index to
-     * advance from j to (j+1)%n.  This is the correct backward-attractor seed: states
-     * from which the obligation can advance in a single step, from which we then grow
-     * the winning region by adding predecessor states that can force reaching the seed.
-     */
-    private Set<String> buildSeed(Set<String> loop) {
-        // Assumption-violation: use the enforcement trap as seed.
-        for (int aIdx : assumptionIndices) {
-            Set<String> trap = findAssumptionViolationTrap(loop, aIdx);
-            if (!trap.isEmpty()) return trap;
-        }
-
-        // Trivially winning when there are no guarantees.
-        if (n == 0) return new LinkedHashSet<>(loop);
-
-        // Guarantee path: seed = states from which the controller can force g_j
-        // satisfaction in one step regardless of the environment.
-        //
-        // A state s (with obligation j) is in the seed if:
-        //   1. EVERY uncontrollable transition from s satisfies g_j at its target
-        //      (the environment cannot "race ahead" and avoid obligation advancement), AND
-        //   2. At least one transition (ctrl or unctrl) from s satisfies g_j at a target
-        //      that is already in loop ∪ goals (so we make actual progress in the region).
-        //
-        // Condition 1 is vacuously true when s has no uncontrollable actions.
-        Set<String> seed = new LinkedHashSet<>();
-        for (String s : loop) {
-            String[] parts = splitState(s);
-            int j    = obligation(parts);
-            int gIdx = guaranteeIndices.get(j);
-            boolean allUnctrSatisfy  = true;
-            boolean anyInScopeAdvance = false;
+            if (isMarked(s)) return true;
             for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-                String tgt    = t.to();
-                String[] tParts = splitState(tgt);
-                boolean gSat  = components.get(gIdx).acceptingStates().contains(tParts[gIdx]);
-                if (!controllable.contains(t.action())) {
-                    // Every uncontrollable must satisfy g_j (env cannot block us).
-                    if (!gSat) { allUnctrSatisfy = false; break; }
-                }
-                if (gSat && (loop.contains(tgt) || goals.contains(tgt))) {
-                    anyInScopeAdvance = true;
-                }
+                if (goals.contains(t.to())) return true;
             }
-            if (allUnctrSatisfy && anyInScopeAdvance) seed.add(s);
-        }
-        return seed;
-    }
-
-    /**
-     * Iterates grow-to-fixpoint then trim-to-fixpoint until stable.
-     *
-     * <p>Running grow to completion before trimming prevents the ordering artifact
-     * where a state is trimmed before its predecessor (which would have made it
-     * safe) has been added to the region.
-     */
-    private Set<String> growThenTrim(Set<String> goalIn, Set<String> loop) {
-        boolean outerChanged = true;
-        while (outerChanged) {
-            outerChanged = false;
-
-            // Grow phase: keep adding states that satisfy the goal-region condition
-            boolean grew = true;
-            while (grew) {
-                grew = false;
-                for (String s : loop) {
-                    if (!goalIn.contains(s) && inGoalRegion(s, goalIn)) {
-                        goalIn.add(s);
-                        grew = true;
-                        outerChanged = true;
-                    }
-                }
-            }
-
-            // Trim phase: remove states that no longer satisfy the condition
-            boolean trimmed = true;
-            while (trimmed) {
-                trimmed = false;
-                Iterator<String> it = goalIn.iterator();
-                while (it.hasNext()) {
-                    String s = it.next();
-                    if (!inGoalRegion(s, goalIn)) {
-                        it.remove();
-                        trimmed = true;
-                        outerChanged = true;
-                    }
-                }
-            }
-        }
-        return goalIn;
-    }
-
-    /** Promote all states in {@code goalIn} to Goals and propagate. */
-    private void promoteToGoals(Set<String> goalIn) {
-        int before = goals.size();
-        for (String s : goalIn) {
-            if (!goals.contains(s)) { goals.add(s); none.remove(s); }
-        }
-        int added = goals.size() - before;
-        if (added > 0) {
-            log("    findNewGoalsIn: promoted " + added + " states to Goals");
-            for (String g : goalIn) propagateGoal(g);
-        } else {
-            log("    findNewGoalsIn: fixpoint produced no new goals");
-        }
-    }
-
-    /**
-     * A state s can remain in / join GoalIn when:
-     * <ul>
-     *   <li>No uncontrollable successor escapes GoalIn ∪ Goals.</li>
-     *   <li>At least one action stays inside GoalIn ∪ Goals after the controller
-     *       disables controllable escapes: either an uncontrollable (always
-     *       available, forced inside) or a controllable in GoalIn.</li>
-     * </ul>
-     */
-    private boolean inGoalRegion(String s, Set<String> goalIn) {
-        boolean unsafeUnc          = false;
-        boolean hasUnc             = false;
-        boolean hasCtrlInGoalIn    = false;
-
-        for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-            if (controllable.contains(t.action())) {
-                if (goalIn.contains(t.to()) || goals.contains(t.to())) {
-                    hasCtrlInGoalIn = true;
-                }
-            } else {
-                hasUnc = true;
-                if (!goalIn.contains(t.to()) && !goals.contains(t.to())) {
-                    unsafeUnc = true;
-                }
-            }
-        }
-        return !unsafeUnc && (hasUnc || hasCtrlInGoalIn);
-    }
-
-    private void findNewErrorsIn(Set<String> loop) {
-        // Mark loop as Errors only if every state is trapped (no escape outside loop to
-        // a non-Error state).
-        boolean trapped = true;
-        for (String s : loop) {
-            for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-                if (!errors.contains(t.to()) && !loop.contains(t.to())) {
-                    trapped = false; break;
-                }
-            }
-            if (!trapped) break;
-        }
-        if (trapped) {
-            log("    findNewErrorsIn: loop of " + loop.size() + " is fully trapped → Errors");
-            for (String s : loop) { errors.add(s); none.remove(s); }
-            for (String s : loop) propagateError(s);
-        }
-    }
-
-    /**
-     * Backward-propagate Goal: a state can be a goal if the controller can force
-     * remaining in the goal region — all uncontrollable successors must already be
-     * goals, and at least one action remains available.
-     *
-     * <p>For states that cannot be directly promoted (because some uncontrollable
-     * successor is still in {@code none}), we check whether the state is part of
-     * a loop of {@code none}-states.  If so, we re-run {@code findNewGoalsIn} on
-     * that loop — newly-promoted goals may have made a previously-failing loop
-     * winning now.
-     */
-    private void propagateGoal(String newGoal) {
-        Queue<String> queue = new ArrayDeque<>();
-        queue.add(newGoal);
-        // States that failed direct promotion but may be in a now-winning loop
-        Set<String> toCheckLoop = new LinkedHashSet<>();
-
-        while (!queue.isEmpty() || !toCheckLoop.isEmpty()) {
-            while (!queue.isEmpty()) {
-                String s = queue.poll();
-                for (String p : parents.getOrDefault(s, Set.of())) {
-                    if (!none.contains(p)) continue;
-                    if (canBeGoal(p)) {
-                        log("    propagateGoal: promoted " + p);
-                        goals.add(p); none.remove(p);
-                        queue.add(p);
-                        toCheckLoop.remove(p);
-                    } else {
-                        toCheckLoop.add(p);
-                    }
-                }
-            }
-
-            if (!toCheckLoop.isEmpty()) {
-                String candidate = toCheckLoop.iterator().next();
-                toCheckLoop.remove(candidate);
-                if (!none.contains(candidate)) continue; // already classified
-
-                // Find a loop of none-states that includes this candidate
-                Set<String> loop = findNoneLoop(candidate);
-                if (!loop.isEmpty() && canBeWinningLoop(loop)) {
-                    Set<String> goalIn = buildSeed(loop);
-                    goalIn = growThenTrim(goalIn, loop);
-                    if (!goalIn.isEmpty()) {
-                        int before = goals.size();
-                        for (String g : goalIn) {
-                            if (!goals.contains(g)) { goals.add(g); none.remove(g); }
-                        }
-                        if (goals.size() > before) {
-                            for (String g : goalIn) queue.add(g);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Find a loop of {@code none}-states reachable from and back to {@code start}.
-     * Returns the SCC containing {@code start} restricted to {@code none} states,
-     * or an empty set if no such loop exists.
-     */
-    private Set<String> findNoneLoop(String start) {
-        // Forward reachable none-states from start
-        Set<String> forward = new LinkedHashSet<>();
-        Queue<String> q = new ArrayDeque<>();
-        q.add(start); forward.add(start);
-        while (!q.isEmpty()) {
-            String s = q.poll();
-            for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-                String tgt = t.to();
-                if (none.contains(tgt) && !forward.contains(tgt)) {
-                    forward.add(tgt); q.add(tgt);
-                }
-            }
-        }
-        // Backward reachable none-states from start (within forward set)
-        Set<String> backward = new LinkedHashSet<>();
-        q.add(start); backward.add(start);
-        while (!q.isEmpty()) {
-            String s = q.poll();
-            for (String p : parents.getOrDefault(s, Set.of())) {
-                if (forward.contains(p) && !backward.contains(p)) {
-                    backward.add(p); q.add(p);
-                }
-            }
-        }
-        forward.retainAll(backward);
-        if (forward.size() <= 1 && !hasSelfLoop(start)) forward.clear();
-        return forward;
-    }
-
-    private boolean hasSelfLoop(String s) {
-        for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-            if (t.to().equals(s)) return true;
         }
         return false;
     }
 
-    /**
-     * A state can be promoted to Goals when:
-     * <ul>
-     *   <li>All uncontrollable successors are in Goals (can't be disabled).</li>
-     *   <li>At least one action remains after disabling out-of-Goals controllable
-     *       actions: either an uncontrollable successor exists (and is in Goals),
-     *       or a controllable successor is in Goals.</li>
-     * </ul>
-     */
-    private boolean canBeGoal(String s) {
-        boolean unsafeUncontrollable   = false;
-        boolean hasUncontrollable       = false;
-        boolean hasControllableInGoals  = false;
-
-        for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-            if (controllable.contains(t.action())) {
-                if (goals.contains(t.to())) hasControllableInGoals = true;
-            } else {
-                hasUncontrollable = true;
-                if (!goals.contains(t.to())) { unsafeUncontrollable = true; break; }
+    private Set<String> findNewGoalsIn(Set<String> loop) {
+        Set<String> C = new LinkedHashSet<>(loop);
+        boolean outerChanged = true;
+        while (outerChanged) {
+            outerChanged = false;
+            boolean innerChanged = true;
+            while (innerChanged) {
+                innerChanged = false;
+                Iterator<String> it = C.iterator();
+                while (it.hasNext()) {
+                    if (!safeInRegion(it.next(), C)) {
+                        it.remove(); innerChanged = true; outerChanged = true;
+                    }
+                }
+            }
+            Iterator<String> it = C.iterator();
+            while (it.hasNext()) {
+                if (!canReachGoalOrMarkedIn(it.next(), C)) {
+                    it.remove(); outerChanged = true;
+                }
             }
         }
-        return !unsafeUncontrollable && (hasUncontrollable || hasControllableInGoals);
+        return C;
     }
 
-    private void propagateError(String newError) {
-        Queue<String> queue = new ArrayDeque<>();
-        queue.add(newError);
-        while (!queue.isEmpty()) {
-            String s = queue.poll();
-            for (String p : parents.getOrDefault(s, Set.of())) {
-                if (none.contains(p) && allSuccessorsAreErrors(p)) {
-                    log("    propagateError: " + p + " → Errors");
-                    errors.add(p); none.remove(p); queue.add(p);
+    private Set<String> findNewErrorsIn(Set<String> loop) {
+        for (String s : loop) {
+            for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
+                if (!errors.contains(t.to()) && !loop.contains(t.to())) return Set.of();
+            }
+        }
+        return loop;
+    }
+
+    private boolean safeInRegion(String s, Set<String> C) {
+        boolean unsafeUnc = false, hasInRegion = false;
+        for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
+            boolean inRegion = C.contains(t.to()) || goals.contains(t.to());
+            if (!controllable.contains(t.action())) {
+                if (!inRegion) { unsafeUnc = true; break; }
+                hasInRegion = true;
+            } else {
+                if (inRegion) hasInRegion = true;
+            }
+        }
+        return !unsafeUnc && hasInRegion;
+    }
+
+    private boolean canReachGoalOrMarkedIn(String s, Set<String> C) {
+        Set<String> targets = new LinkedHashSet<>();
+        for (String cs : C) if (isMarked(cs)) targets.add(cs);
+        return computeAttractor(targets, C).contains(s);
+    }
+
+    private boolean canReachGoalIn(String s, Set<String> C) {
+        return computeAttractor(goals, C).contains(s);
+    }
+
+    /**
+     * Computes the controllable attractor of {@code targets} within {@code region}.
+     *
+     * <p>A state {@code s ∈ region} is in the attractor iff the controller can
+     * <em>force</em> reaching {@code targets ∪ goals} despite adversarial environment:
+     * <ul>
+     *   <li>all uncontrollable transitions from {@code s} stay in the attractor, AND</li>
+     *   <li>at least one transition leads to the attractor (progress guarantee).</li>
+     * </ul>
+     * Because the environment controls uncontrollable actions, a state where an
+     * uncontrollable transition escapes the attractor is NOT in the attractor —
+     * the environment can use it to avoid the target indefinitely.
+     */
+    private Set<String> computeAttractor(Set<String> targets, Set<String> region) {
+        Set<String> attr = new LinkedHashSet<>();
+        for (String s : region) {
+            if (targets.contains(s) || goals.contains(s)) attr.add(s);
+        }
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (String s : region) {
+                if (attr.contains(s)) continue;
+                boolean allUncInAttr = true;
+                boolean hasInAttr    = false;
+                for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
+                    boolean inAttr = attr.contains(t.to()) || goals.contains(t.to());
+                    if (!controllable.contains(t.action())) {
+                        if (!inAttr) { allUncInAttr = false; break; }
+                        hasInAttr = true;
+                    } else {
+                        if (inAttr) hasInAttr = true;
+                    }
+                }
+                if (allUncInAttr && hasInAttr) { attr.add(s); changed = true; }
+            }
+        }
+        return attr;
+    }
+
+    // ── propagation ───────────────────────────────────────────────────────────
+
+    private void propagateGoal(Set<String> newGoals) {
+        Set<String> C = ancestorsNone(newGoals);
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            Iterator<String> it = C.iterator();
+            while (it.hasNext()) {
+                String s = it.next();
+                if (!safeInRegion(s, C) || !canReachGoalOrMarkedIn(s, C)) { it.remove(); changed = true; }
+            }
+        }
+        promoteToGoals(C);
+    }
+
+    private void propagateError(Set<String> newErrors) {
+        Set<String> C = ancestorsNone(newErrors);
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            Iterator<String> it = C.iterator();
+            while (it.hasNext()) {
+                String s = it.next();
+                if (isForcedToError(s)) {
+                    errors.add(s); none.remove(s); it.remove(); changed = true;
                 }
             }
         }
     }
 
-    private boolean allSuccessorsAreErrors(String s) {
-        List<ExtendedTransition> succ = succMap.getOrDefault(s, List.of());
-        if (succ.isEmpty()) return true;
-        for (ExtendedTransition t : succ) {
-            if (!errors.contains(t.to())) return false;
+    private Set<String> ancestorsNone(Set<String> targets) {
+        Set<String>   visited = new LinkedHashSet<>();
+        Queue<String> queue   = new ArrayDeque<>();
+        for (String t : targets) {
+            for (String p : parents.getOrDefault(t, Set.of())) {
+                if (none.contains(p) && visited.add(p)) queue.add(p);
+            }
         }
-        return true;
+        while (!queue.isEmpty()) {
+            for (String p : parents.getOrDefault(queue.poll(), Set.of())) {
+                if (none.contains(p) && visited.add(p)) queue.add(p);
+            }
+        }
+        return visited;
     }
 
-    // ── director construction ─────────────────────────────────────────────────
+    private void promoteToGoals(Set<String> C) {
+        for (String s : C) { if (goals.add(s)) none.remove(s); }
+    }
+
+    private void promoteToErrors(Set<String> P) {
+        for (String s : P) { if (errors.add(s)) none.remove(s); }
+    }
+
+    private boolean isForcedToError(String s) {
+        boolean hasNonError = false;
+        for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
+            if (!controllable.contains(t.action()) && errors.contains(t.to())) return true;
+            if (!errors.contains(t.to())) hasNonError = true;
+        }
+        return !hasNonError;
+    }
+
+    // ── director ──────────────────────────────────────────────────────────────
 
     private Director buildDirector() {
-        // BFS rank: distance from each goal state to the nearest goal-cycle entry
-        Map<String, Integer> rank = new HashMap<>();
-        Queue<String> queue = new ArrayDeque<>();
-        for (String g : goals) { rank.put(g, 0); queue.add(g); }
+        // Build reverse adjacency within the goal set.
+        Map<String, Set<String>> goalRevAdj = new HashMap<>();
+        for (String s : goals) {
+            for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
+                if (goals.contains(t.to()))
+                    goalRevAdj.computeIfAbsent(t.to(), k -> new LinkedHashSet<>()).add(s);
+            }
+        }
+
+        // BFS rank: marked goal states have rank 0.
+        Map<String, Integer> rank  = new HashMap<>();
+        Queue<String>        queue = new ArrayDeque<>();
+        for (String s : goals) {
+            if (isMarked(s)) { rank.put(s, 0); queue.add(s); }
+        }
         while (!queue.isEmpty()) {
             String s = queue.poll();
             int r = rank.get(s);
-            for (String p : parents.getOrDefault(s, Set.of())) {
-                if (goals.contains(p) && !rank.containsKey(p)) {
-                    rank.put(p, r + 1); queue.add(p);
-                }
+            for (String p : goalRevAdj.getOrDefault(s, Set.of())) {
+                if (!rank.containsKey(p)) { rank.put(p, r + 1); queue.add(p); }
             }
         }
 
+        // Enable controllable actions toward minimum-rank goal successors.
+        // Key on plant state (phase stripped) — the phase is internal to the algorithm.
         Map<String, Set<String>> enabled = new HashMap<>();
         for (String s : goals) {
             int minRank = Integer.MAX_VALUE;
             for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-                if (controllable.contains(t.action()) && goals.contains(t.to())) {
-                    int r = rank.getOrDefault(t.to(), Integer.MAX_VALUE);
-                    if (r < minRank) minRank = r;
-                }
+                if (controllable.contains(t.action()) && goals.contains(t.to()))
+                    minRank = Math.min(minRank, rank.getOrDefault(t.to(), Integer.MAX_VALUE));
             }
-            Set<String> enabledActions = new LinkedHashSet<>();
+            Set<String> ena = new LinkedHashSet<>();
             for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
                 if (controllable.contains(t.action()) && goals.contains(t.to())
                         && rank.getOrDefault(t.to(), Integer.MAX_VALUE) == minRank) {
-                    enabledActions.add(t.action());
+                    ena.add(t.action());
                 }
             }
-            enabled.put(s, enabledActions);
+            enabled.merge(plantPart(s), ena, (a, b) -> { a.addAll(b); return a; });
         }
         return new Director(enabled);
+    }
+
+    // ── pending pruning ───────────────────────────────────────────────────────
+
+    private void prunePending() {
+        pending.removeIf(tr -> !none.contains(tr.from()));
+    }
+
+    // ── logging ───────────────────────────────────────────────────────────────
+
+    private void logExplorationSummary() {
+        if (!verbose) return;
+        System.out.println("[DCS-GR1] ── Components ────────────────────────────────");
+        for (int i = 0; i < components.size(); i++)
+            System.out.println("[DCS-GR1]   [" + i + "] " + components.get(i).name());
+        System.out.println("[DCS-GR1] ── Exploration summary ──────────────────────");
+        System.out.printf("[DCS-GR1] %-50s  %-7s  %-7s  %-12s%n", "plant state", "phase", "marked", "class");
+        System.out.println("[DCS-GR1] " + "-".repeat(85));
+        List<String> sorted = new ArrayList<>(succMap.keySet());
+        Collections.sort(sorted);
+        for (String nodeId : sorted) {
+            String marked = isMarked(nodeId) ? "YES" : "no";
+            String cls;
+            if (goals.contains(nodeId))       cls = "GOAL";
+            else if (errors.contains(nodeId)) cls = "ERROR";
+            else                              cls = "none";
+            System.out.printf("[DCS-GR1] %-50s  %-7s  %-7s  %-12s%n",
+                    displayPlant(nodeId), phaseOf(nodeId), marked, cls);
+        }
+        System.out.println("[DCS-GR1] " + "-".repeat(85));
+    }
+
+    /**
+     * Returns the display string for the plant-state portion of {@code nodeId}.
+     * When {@link #useNumericIds} is true, each component sub-state is replaced
+     * by its integer ID from {@link LTS#stateIndex()}.
+     */
+    private String displayPlant(String nodeId) {
+        if (!useNumericIds) return plantPart(nodeId);
+        String[] parts = splitState(nodeId);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < components.size(); i++) {
+            if (i > 0) sb.append('|');
+            Integer id = components.get(i).stateIndex().get(parts[i]);
+            sb.append(id != null ? id : parts[i]);
+        }
+        return sb.toString();
+    }
+
+    /** Like {@link #displayPlant} but appends the {@code #phase} suffix. */
+    private String displayNodeId(String nodeId) {
+        if (!useNumericIds) return nodeId;
+        return displayPlant(nodeId) + "#" + phaseOf(nodeId);
+    }
+
+    private void log(String msg) {
+        if (verbose) System.out.println("[DCS-GR1] " + msg);
     }
 }

@@ -5,8 +5,10 @@ import newmtsa.parser.ast.ControllerSpecDef;
 import newmtsa.parser.ast.FSPModel;
 import newmtsa.parser.ast.LTS;
 import newmtsa.parser.ast.LtlPropertyDef;
+import newmtsa.synthesis.Director;
 import newmtsa.synthesis.SynthesisResult;
 import newmtsa.synthesis.heuristics.RandomHeuristic;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -119,6 +121,19 @@ class GR1SynthesizerBlockingTest {
                         + ", transitions=" + result.transitionsExplored() + ")");
         assertTrue(result.director().isPresent(),
                 "REALIZABLE result must carry a Director");
+    }
+
+    /**
+     * The director for a realizable file must contain at least one state entry.
+     */
+    @Test
+    void gr1test1_directorIsNonEmpty() throws IOException {
+        FSPModel model = FSPParser.parse(Paths.get("fsp/Blocking/ControllableFSPs/GR1test1.lts"));
+        assertTrue(model.errors().isEmpty(), "Parse errors: " + model.errors());
+        SynthesisResult result = synthesize(model);
+        assertTrue(result.isRealizable());
+        Director d = result.director().get();
+        assertFalse(d.enabled().isEmpty(), "Director should have at least one state entry");
     }
 
     /**

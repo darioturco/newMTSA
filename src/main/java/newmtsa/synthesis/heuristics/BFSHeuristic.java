@@ -24,28 +24,17 @@ public class BFSHeuristic implements Heuristic {
     private final Set<ExtendedTransition> seen = new HashSet<>();
 
     @Override
-    public ExtendedTransition pick(List<ExtendedTransition> pending) {
-        // Enqueue any transitions that have not been seen yet, preserving
-        // the insertion order in which they appear in pending.
+    public int pick(List<ExtendedTransition> pending) {
         for (ExtendedTransition t : pending) {
-            if (seen.add(t)) {
-                queue.add(t);
-            }
+            if (seen.add(t)) queue.add(t);
         }
 
-        // Return the front of the queue that is still present in pending.
-        // (Items are removed from pending by the caller after pick returns,
-        // so the only reason the head might be absent is if the same
-        // ExtendedTransition object appeared more than once and was already
-        // consumed — handled by the seen set above.)
         ExtendedTransition head;
         while ((head = queue.poll()) != null) {
-            if (pending.contains(head)) {
-                return head;
-            }
+            int idx = pending.indexOf(head);
+            if (idx >= 0) return idx;
         }
 
-        // Should never be reached when called with a non-empty pending list.
-        return pending.get(0);
+        return 0;
     }
 }

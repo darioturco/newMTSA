@@ -45,4 +45,16 @@ public interface SynthesisContext {
      * structure.  Returns an empty list if the state has not been expanded yet.
      */
     List<ExtendedTransition> successorsOf(String compositeState);
+
+    /**
+     * Returns the "plant-state key" for a composite state — the portion that
+     * can be split on {@code "|"} to yield per-component sub-states.
+     *
+     * <p>The default implementation returns the state unchanged (non-blocking DCS).
+     * GR(1) overrides this to strip the phase suffix
+     * (e.g. {@code "c0|c1#2"} → {@code "c0|c1"}).
+     */
+    default String plantStateKey(String compositeState) {
+        return compositeState;
+    }
 }

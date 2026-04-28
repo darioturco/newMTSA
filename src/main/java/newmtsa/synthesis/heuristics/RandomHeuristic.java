@@ -49,16 +49,16 @@ public class RandomHeuristic implements Heuristic {
     }
 
     @Override
-    public ExtendedTransition pick(List<ExtendedTransition> pending) {
+    public int pick(List<ExtendedTransition> pending) {
         if (step < script.size()) {
             int idx = script.get(step++);
             if (idx >= 0 && idx < pending.size()) {
-                return pending.get(idx);
+                return idx;
             }
             System.err.println("[RandomHeuristic] WARNING: scripted index " + idx
                     + " is out of bounds for frontier of size " + pending.size()
                     + " at step " + (step - 1) + " — falling back to random.");
         }
-        return pending.get(rng.nextInt(pending.size()));
+        return rng.nextInt(pending.size());
     }
 }

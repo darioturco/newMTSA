@@ -11,8 +11,8 @@ The problem scales in two dimensions:
 
 *****************************************************************************/
 
-const N = 1
-const K = 1
+const N = 2
+const K = 2
 
 const Mice = N
 const Cats = N

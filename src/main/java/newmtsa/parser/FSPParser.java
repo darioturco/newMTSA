@@ -1595,9 +1595,12 @@ public class FSPParser {
                 if (e.labelBase() != null) {
                     result.addAll(expandLabelBase(e.labelBase()));
                 } else if (e.UPPER_ID() != null) {
-                    // Resolve named set; fall back to the name itself if not found
-                    List<String> resolved = resolveSetByName(e.UPPER_ID().getText());
-                    if (!resolved.isEmpty()) result.addAll(resolved);
+                    List<String> base = resolveSetByName(e.UPPER_ID().getText());
+                    if (e.setDiff() != null) {
+                        Set<String> toRemove = new HashSet<>(extractSetElements(e.setDiff().setElements()));
+                        base = base.stream().filter(s -> !toRemove.contains(s)).collect(Collectors.toList());
+                    }
+                    if (!base.isEmpty()) result.addAll(base);
                     else result.add(e.UPPER_ID().getText());
                 } else if (e.INT() != null) {
                     result.add(e.INT().getText());

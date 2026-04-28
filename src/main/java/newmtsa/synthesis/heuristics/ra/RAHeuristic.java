@@ -157,8 +157,8 @@ public class RAHeuristic implements Heuristic {
     // ── Heuristic.pick ────────────────────────────────────────────────────────
 
     @Override
-    public ExtendedTransition pick(List<ExtendedTransition> pending) {
-        if (ctx == null) return pending.get(0);  // not yet initialised — safe fallback
+    public int pick(List<ExtendedTransition> pending) {
+        if (ctx == null) return 0;  // not yet initialised — safe fallback
 
         refreshVisitedStates();
         if (useG) refreshGoalStates();
@@ -178,7 +178,8 @@ public class RAHeuristic implements Heuristic {
             }
         }
         lastPicked = best;
-        return best;
+        int idx = pending.indexOf(best);
+        return idx >= 0 ? idx : 0;
     }
 
     // ── open queue ───────────────────────────────────────────────────────────
@@ -743,7 +744,7 @@ public class RAHeuristic implements Heuristic {
     }
 
     private String[] splitCompositeState(String s) {
-        return s.split("\\|", numComponents);
+        return ctx.plantStateKey(s).split("\\|", numComponents);
     }
 
     /** Returns a new list with the elements sorted in descending order. */

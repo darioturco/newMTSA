@@ -131,10 +131,11 @@ class RAHeuristicTest {
         // p sorted desc: [(1,2),(1,1)], t sorted desc: [(2,∞),(1,2)]
         // lex: (1,2) < (2,∞) → p wins
         RAHeuristic ra = initExample1(RAHeuristic.base());
-        ExtendedTransition tP = new ExtendedTransition("c0|f0", "p", "c1|f2");
-        ExtendedTransition tT = new ExtendedTransition("c0|f0", "t", "c0|f3");
-        ExtendedTransition picked = ra.pick(List.of(tT, tP));
-        assertSame(tP, picked, "p should be picked before t (closer to marked)");
+        List<ExtendedTransition> pending = List.of(
+                new ExtendedTransition("c0|f0", "t", "c0|f3"),
+                new ExtendedTransition("c0|f0", "p", "c1|f2"));
+        int idx = ra.pick(pending);
+        assertEquals(1, idx, "p (index 1) should be picked before t (closer to marked)");
     }
 
     @Test
@@ -147,10 +148,11 @@ class RAHeuristicTest {
                 Set.of("p"));
         RAHeuristic ra = RAHeuristic.base();
         ra.init(ctx);
-        ExtendedTransition tP = new ExtendedTransition("c0|f0", "p", "c1|f2");
-        ExtendedTransition tT = new ExtendedTransition("c0|f0", "t", "c0|f3");
-        ExtendedTransition picked = ra.pick(List.of(tP, tT));
-        assertSame(tT, picked, "uncontrollable t must be picked before controllable p");
+        List<ExtendedTransition> pending = List.of(
+                new ExtendedTransition("c0|f0", "p", "c1|f2"),
+                new ExtendedTransition("c0|f0", "t", "c0|f3"));
+        int idx = ra.pick(pending);
+        assertEquals(1, idx, "uncontrollable t (index 1) must be picked before controllable p");
     }
 
     // ── Example 2 automata (Figure 4.1, Pazos 2024 §4) ───────────────────────
