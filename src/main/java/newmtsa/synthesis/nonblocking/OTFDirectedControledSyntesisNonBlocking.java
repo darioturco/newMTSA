@@ -2,6 +2,7 @@ package newmtsa.synthesis.nonblocking;
 
 import newmtsa.parser.ast.LTS;
 import newmtsa.parser.ast.LtlPropertyDef;
+import newmtsa.synthesis.DCSForPython;
 import newmtsa.synthesis.ExtendedTransition;
 import newmtsa.synthesis.SynthesisResult;
 import newmtsa.synthesis.heuristics.Heuristic;

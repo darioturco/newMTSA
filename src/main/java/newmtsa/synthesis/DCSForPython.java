@@ -1,43 +1,52 @@
-package newmtsa.synthesis.nonblocking;
+package newmtsa.synthesis;
 
 import newmtsa.parser.ast.LTS;
 import newmtsa.parser.ast.LtlPropertyDef;
 import newmtsa.parser.ast.Transition;
-import newmtsa.synthesis.Director;
-import newmtsa.synthesis.ExtendedTransition;
-import newmtsa.synthesis.SynthesisResult;
 import newmtsa.synthesis.features.FeatureCompute;
 import newmtsa.synthesis.features.FeaturesContext;
+import newmtsa.synthesis.gr1.OTFDirectedControledSyntesisGR1;
 import newmtsa.synthesis.heuristics.Heuristic;
 import newmtsa.synthesis.heuristics.SimpleSynthesisContext;
 
 import java.util.*;
 
 /**
- * Step-by-step interface to the non-blocking DCS algorithm for use from Python
- * (e.g. via JPype). The Python side drives exploration by repeatedly calling
- * {@link #expand(int)} with the chosen frontier index, making this class suitable
- * as a Reinforcement Learning environment.
+ * Step-by-step interface to the DCS algorithm for use from Python (e.g. via JPype).
+ * Supports both non-blocking and GR(1) synthesis modes.
  *
- * <p>Internally implements the same on-the-fly DCS algorithm as
- * {@link OTFDirectedControledSyntesisNonBlocking} — which uses this class as
- * its engine — but exposes the main loop as individual steps.
+ * <p>The Python side drives exploration by repeatedly calling {@link #expand(int)} with
+ * the chosen frontier index, making this class suitable as a Reinforcement Learning
+ * environment.
+ *
+ * <p>Use {@link #getSynthesisType()} to determine which mode the instance is running.
+ * GR(1) instances delegate internally to {@link OTFDirectedControledSyntesisGR1};
+ * non-blocking instances implement the algorithm directly (same logic as
+ * {@link newmtsa.synthesis.nonblocking.OTFDirectedControledSyntesisNonBlocking}).
  */
 public class DCSForPython {
 
+    /** Whether this instance is running a non-blocking or a GR(1) synthesis. */
+    public enum SynthesisType { NON_BLOCKING, GR1 }
+
     // ── instance identity ─────────────────────────────────────────────────────
 
-    private final String instanceName;
+    public final String        instanceName;
+    public final SynthesisType synthesisType;
+
+    /** GR(1) engine; {@code null} when {@link SynthesisType#NON_BLOCKING}. */
+    public final OTFDirectedControledSyntesisGR1 gr1Engine;
 
     // ── inputs ────────────────────────────────────────────────────────────────
 
-    private final List<LTS>   components;
-    private final Set<String> controllable;
+    /** Component list of the parallel composition (including any synthetic fluents). */
+    public final List<LTS>   components;
+    public final Set<String> controllable;
 
     /** Heuristic used to guide exploration (publicly readable for Python comparison). */
     public final Heuristic heuristic;
 
-    // ── pre-computed per-component data ───────────────────────────────────────
+    // ── pre-computed per-component data (non-blocking only) ───────────────────
 
     private final List<Map<String, Map<String, String>>> compTrans;
     private final List<Set<String>> compAlpha;
@@ -45,34 +54,33 @@ public class DCSForPython {
     private final List<Set<String>> compMarked;
     private final List<Set<String>> compSafeStates;
 
-    // ── state classification ──────────────────────────────────────────────────
+    // ── state classification (non-blocking only) ──────────────────────────────
 
     private final Set<String> goals  = new LinkedHashSet<>();
     private final Set<String> errors = new LinkedHashSet<>();
     private final Set<String> none   = new LinkedHashSet<>();
 
-    // ── exploration structure ─────────────────────────────────────────────────
+    // ── exploration structure (non-blocking only) ─────────────────────────────
 
     private final Map<String, List<ExtendedTransition>> succMap = new HashMap<>();
     private final Map<String, Set<String>>              parents = new HashMap<>();
 
-    // ── step-by-step state ────────────────────────────────────────────────────
+    // ── step-by-step state (non-blocking only) ────────────────────────────────
 
     private final String                   s0;
     private       List<ExtendedTransition> pending;
     private       boolean                  explorationEnded;
+    private       int                      transitionsExplored = 0;
 
-    private int transitionsExplored = 0;
-
-    // ── feature computation (optional) ────────────────────────────────────────
+    // ── feature computation (non-blocking only) ───────────────────────────────
 
     private final FeatureCompute  featureCompute;
     private final FeaturesContext featuresCtx;
 
-    // ── constructor ───────────────────────────────────────────────────────────
+    // ── constructors ──────────────────────────────────────────────────────────
 
     /**
-     * Convenience constructor — no feature computation.
+     * Non-blocking convenience constructor — no feature computation.
      *
      * @param instanceName     human-readable name for this synthesis problem
      * @param components       automata forming the plant (parallel composition)
@@ -91,7 +99,7 @@ public class DCSForPython {
     }
 
     /**
-     * Full constructor — optionally enables per-transition feature computation.
+     * Non-blocking full constructor — optionally enables per-transition feature computation.
      *
      * @param featureCompute strategy for computing binary feature vectors; {@code null}
      *                       disables features ({@link #getFrontierWithFeatures()} will throw)
@@ -108,9 +116,11 @@ public class DCSForPython {
         if (markingActions.isEmpty())
             throw new IllegalArgumentException("DCS requires at least one marking action");
 
-        this.instanceName = instanceName;
-        this.controllable = Set.copyOf(controllable);
-        this.heuristic    = heuristic;
+        this.instanceName  = instanceName;
+        this.synthesisType = SynthesisType.NON_BLOCKING;
+        this.gr1Engine     = null;
+        this.controllable  = Set.copyOf(controllable);
+        this.heuristic     = heuristic;
 
         compTrans      = new ArrayList<>();
         compAlpha      = new ArrayList<>();
@@ -171,7 +181,6 @@ public class DCSForPython {
         }
         alphabet = Collections.unmodifiableSet(alpha);
 
-        // Provide the heuristic with a live, read-only view of this instance's state.
         SimpleSynthesisContext hCtx = new SimpleSynthesisContext(
                 this.components, compMarked, this.controllable) {
             @Override public Set<String>              exploredStates()       { return succMap.keySet(); }
@@ -182,8 +191,6 @@ public class DCSForPython {
         };
         heuristic.init(hCtx);
 
-        // Initialise feature computation (before first exploreState so the context
-        // is ready for any tracking done during initial-state expansion).
         this.featureCompute = featureCompute;
         if (featureCompute != null) {
             this.featuresCtx = new FeaturesContext(
@@ -194,7 +201,6 @@ public class DCSForPython {
             this.featuresCtx = null;
         }
 
-        // Expand and classify the initial state.
         s0 = initialState();
         exploreState(s0);
 
@@ -210,7 +216,54 @@ public class DCSForPython {
         }
     }
 
+    /**
+     * GR(1) constructor — wraps {@link OTFDirectedControledSyntesisGR1} so that both
+     * synthesis types share the same Python-facing step-by-step interface.
+     *
+     * @param instanceName human-readable name for this synthesis problem
+     * @param components   plant processes + guarantee/assumption fluents
+     * @param assumptions  environment liveness assumptions
+     * @param guarantees   controller liveness guarantees G_0 .. G_{k-1}
+     * @param controllable set of controllable event labels
+     * @param heuristic    frontier selection strategy
+     */
+    public DCSForPython(String               instanceName,
+                        List<LTS>            components,
+                        List<LtlPropertyDef> assumptions,
+                        List<LtlPropertyDef> guarantees,
+                        Set<String>          controllable,
+                        Heuristic            heuristic) {
+        if (controllable.isEmpty())
+            throw new IllegalArgumentException("DCS requires at least one controllable action");
+
+        this.instanceName  = instanceName;
+        this.synthesisType = SynthesisType.GR1;
+        this.heuristic     = heuristic;
+        this.gr1Engine     = new OTFDirectedControledSyntesisGR1(
+                components, assumptions, guarantees, controllable, heuristic, false);
+
+        // Expose the engine's (possibly modified) component list and alphabet.
+        this.components   = gr1Engine.getComponents();
+        this.controllable = gr1Engine.getControllable();
+        this.alphabet     = gr1Engine.getAlphabet();
+
+        // Non-blocking-internal structures — not used in GR1 mode.
+        this.compTrans      = null;
+        this.compAlpha      = null;
+        this.compMarked     = null;
+        this.compSafeStates = null;
+        this.featureCompute = null;
+        this.featuresCtx    = null;
+        this.s0             = null;
+        this.pending        = null;
+    }
+
     // ── public API ────────────────────────────────────────────────────────────
+
+    /** Returns whether this instance is running a non-blocking or a GR(1) synthesis. */
+    public SynthesisType getSynthesisType() {
+        return synthesisType;
+    }
 
     /** Returns the name of this synthesis instance. */
     public String getInstanceName() {
@@ -222,27 +275,28 @@ public class DCSForPython {
         return alphabet;
     }
 
-    /** Returns the component list used in the parallel composition (includes synthetic marking fluent). */
+    /** Returns the component list used in the parallel composition. */
     public List<LTS> getComponents() {
         return components;
     }
 
     /**
-     * Returns the current frontier: the list of pending transitions (from a
-     * None state) that have not yet been expanded. Transitions whose source
-     * state has been classified since they were added are pruned first.
+     * Returns the current frontier: the list of pending transitions (from a None state)
+     * that have not yet been expanded. Transitions whose source state has been classified
+     * since they were added are pruned first.
      */
     public List<ExtendedTransition> getFrontier() {
+        if (synthesisType == SynthesisType.GR1) return gr1Engine.getFrontier();
         prunePending();
         return Collections.unmodifiableList(pending);
     }
 
     /**
-     * Returns {@code true} when no further expansion is possible — either the
-     * initial state has been classified (realizable / unrealizable) or the
-     * frontier is empty.
+     * Returns {@code true} when no further expansion is possible — either the initial
+     * state has been classified (realizable / unrealizable) or the frontier is empty.
      */
     public boolean isExplorationEnded() {
+        if (synthesisType == SynthesisType.GR1) return gr1Engine.isExplorationEnded();
         if (explorationEnded) return true;
         prunePending();
         if (pending.isEmpty()) explorationEnded = true;
@@ -250,14 +304,16 @@ public class DCSForPython {
     }
 
     /**
-     * Performs one step of the DCS main loop by expanding the transition at
-     * position {@code index} in the current (pruned) frontier.
+     * Performs one step of the DCS main loop by expanding the transition at position
+     * {@code index} in the current (pruned) frontier.
      *
      * @param index index into {@link #getFrontier()} (0-based)
      * @throws IllegalStateException     if exploration has already ended
      * @throws IndexOutOfBoundsException if {@code index} is out of range
      */
     public void expand(int index) {
+        if (synthesisType == SynthesisType.GR1) { gr1Engine.expand(index); return; }
+
         if (isExplorationEnded())
             throw new IllegalStateException("Exploration has already ended");
 
@@ -308,13 +364,18 @@ public class DCSForPython {
     /**
      * Returns one binary feature vector per frontier transition.
      *
-     * <p>Requires a {@link FeatureCompute} to have been passed at construction time.
-     * The returned list is parallel to {@link #getFrontier()}: element {@code i} is
-     * the feature vector for frontier transition {@code i}.
+     * <p>Only available in {@link SynthesisType#NON_BLOCKING} mode. Requires a
+     * {@link FeatureCompute} to have been passed at construction time. The returned list
+     * is parallel to {@link #getFrontier()}: element {@code i} is the feature vector for
+     * frontier transition {@code i}.
      *
-     * @throws IllegalStateException if no {@link FeatureCompute} was provided
+     * @throws UnsupportedOperationException if called in GR(1) mode
+     * @throws IllegalStateException         if no {@link FeatureCompute} was provided
      */
     public List<int[]> getFrontierWithFeatures() {
+        if (synthesisType == SynthesisType.GR1)
+            throw new UnsupportedOperationException(
+                    "getFrontierWithFeatures() is not supported in GR(1) mode");
         if (featureCompute == null)
             throw new IllegalStateException(
                     "No FeatureCompute registered — use the constructor overload that accepts FeatureCompute");
@@ -331,6 +392,7 @@ public class DCSForPython {
      * {@link #isExplorationEnded()} returns {@code true}.
      */
     public SynthesisResult getSynthesisResult() {
+        if (synthesisType == SynthesisType.GR1) return gr1Engine.getSynthesisResult();
         if (goals.contains(s0))
             return SynthesisResult.of(buildDirector(), succMap.size(), transitionsExplored);
         return SynthesisResult.unrealizable(succMap.size(), transitionsExplored);
@@ -340,20 +402,23 @@ public class DCSForPython {
 
     /** Returns {@code true} iff the initial state has been classified as realizable. */
     public boolean isRealizable() {
+        if (synthesisType == SynthesisType.GR1) return gr1Engine.isRealizable();
         return goals.contains(s0);
     }
 
     /** Number of transitions expanded so far. */
     public int getTransitionsExplored() {
+        if (synthesisType == SynthesisType.GR1) return gr1Engine.getTransitionsExplored();
         return transitionsExplored;
     }
 
     /** Number of composite states discovered so far. */
     public int getStatesExplored() {
+        if (synthesisType == SynthesisType.GR1) return gr1Engine.getStatesExplored();
         return succMap.size();
     }
 
-    // ── private helpers ───────────────────────────────────────────────────────
+    // ── private helpers (non-blocking only) ──────────────────────────────────
 
     private void prunePending() {
         pending.removeIf(tr -> !none.contains(tr.from()));
@@ -417,7 +482,6 @@ public class DCSForPython {
         return succMap.getOrDefault(s, List.of()).isEmpty();
     }
 
-    /** Computes all outgoing transitions from composite state {@code s}. */
     private void exploreState(String s) {
         if (succMap.containsKey(s)) return;
         String[] parts = splitState(s);

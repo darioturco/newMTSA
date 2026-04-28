@@ -333,9 +333,12 @@ public class OTFDirectedControledSyntesisGR1 {
         if (goals.contains(s0) || errors.contains(s0)) explorationEnded = true;
     }
 
-    public boolean isRealizable()          { return goals.contains(s0); }
-    public int     getStatesExplored()      { return succMap.size(); }
-    public int     getTransitionsExplored() { return transitionsExplored; }
+    public boolean       isRealizable()          { return goals.contains(s0); }
+    public int           getStatesExplored()      { return succMap.size(); }
+    public int           getTransitionsExplored() { return transitionsExplored; }
+    public List<LTS>     getComponents()          { return components; }
+    public Set<String>   getControllable()        { return controllable; }
+    public Set<String>   getAlphabet()            { return alphabet; }
 
     public SynthesisResult getSynthesisResult() {
         if (goals.contains(s0))

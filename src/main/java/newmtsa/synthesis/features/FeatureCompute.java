@@ -7,11 +7,11 @@ import newmtsa.synthesis.ExtendedTransition;
  * DCS exploration.
  *
  * <p>Register an implementation with
- * {@link newmtsa.synthesis.nonblocking.DCSForPython#DCSForPython(String,
+ * {@link newmtsa.synthesis.DCSForPython#DCSForPython(String,
  * java.util.List, java.util.List, java.util.Set, java.util.Set,
  * newmtsa.synthesis.heuristics.Heuristic, FeatureCompute)}.
  * Once registered, every call to
- * {@link newmtsa.synthesis.nonblocking.DCSForPython#getFrontierWithFeatures()}
+ * {@link newmtsa.synthesis.DCSForPython#getFrontierWithFeatures()}
  * invokes {@link #compute(ExtendedTransition)} for each frontier transition.
  *
  * <p>Implementations may be written in Java or, via JPype, in Python.
