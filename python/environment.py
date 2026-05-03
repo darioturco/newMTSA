@@ -16,12 +16,7 @@ def _start_jvm():
 
 _start_jvm()
 
-from java.nio.file import Paths           # noqa: E402
-from java.util import ArrayList, HashSet  # noqa: E402
-from newmtsa.parser import FSPParser                              # noqa: E402
-from newmtsa.synthesis.nonblocking import DCSForPython            # noqa: E402
-from newmtsa.synthesis.heuristics import HeuristicType            # noqa: E402
-from newmtsa.synthesis.features import FeatureType                # noqa: E402
+from newmtsa.synthesis import DCSForPython  # noqa: E402
 
 
 class DCSEnvironment:
@@ -37,8 +32,9 @@ class DCSEnvironment:
 
     Parameters
     ----------
-    heuristic : HeuristicType  (Java enum)
-        Heuristic used internally by DCSForPython (default: FIRST).
+    heuristic : str
+        Name of a HeuristicType enum constant (default: "FIRST").
+        Java resolves the string to the matching Heuristic implementation.
     feature_type : str or None
         Name of a FeatureType enum constant (e.g. "BASIC").
         Java resolves the string to the matching FeatureCompute implementation.
@@ -50,12 +46,12 @@ class DCSEnvironment:
     >>> obs = env.reset("path/to/instance.fsp")   # list of int[] feature vectors
     """
 
-    def __init__(self, heuristic=None, feature_type: str = None):
-        self._heuristic_type  = heuristic or HeuristicType.FIRST
-        self._feature_type_name = feature_type   # plain Python string, e.g. "BASIC"
-        self._dcs   = None
-        self._frontier = []
-        self._done  = False
+    def __init__(self, heuristic: str = "FIRST", feature_type: str = None):
+        self._heuristic_name    = heuristic
+        self._feature_type_name = feature_type
+        self._dcs               = None
+        self._frontier          = []
+        self.is_finished        = False
 
     # ── public API ──────────────────────────────────────────────────────────
 
@@ -67,49 +63,13 @@ class DCSEnvironment:
         - With features: list of list[int] (binary feature vectors, one per frontier element)
         - Without:       list of (from, action, to) string tuples
         """
-        model = FSPParser.parse(Paths.get(fsp_path))
-
-        spec = None
-        for s in model.controllerSpecs():
-            if s.nonblocking():
-                spec = s
-        if spec is None:
-            raise ValueError(f"No nonblocking controller spec found in: {fsp_path}")
-
-        components = ArrayList()
-        for p in model.processes():
-            components.add(p)
-
-        safety_props = ArrayList()
-        for name in spec.safety():
-            for prop in model.ltlProperties():
-                if str(prop.name()) == str(name):
-                    safety_props.add(prop)
-                    break
-
-        marking = HashSet()
-        for m in spec.marking():
-            marking.add(str(m))
-
-        controllable = HashSet()
-        for c in spec.controllable():
-            controllable.add(str(c))
-
-        heuristic     = self._heuristic_type.create()
-        instance_name = Path(fsp_path).stem
-
-        if self._feature_type_name is not None:
-            fc = FeatureType.valueOf(self._feature_type_name).create()
-            self._dcs = DCSForPython(
-                instance_name, components, safety_props, marking, controllable, heuristic, fc
-            )
-        else:
-            self._dcs = DCSForPython(
-                instance_name, components, safety_props, marking, controllable, heuristic
-            )
-
-        self._done     = bool(self._dcs.isExplorationEnded())
-        self._frontier = self._read_frontier()
+        self._dcs = DCSForPython.fromPath(
+            fsp_path,
+            self._heuristic_name,
+            self._feature_type_name or "",
+        )
+        self.is_finished = bool(self._dcs.isExplorationEnded())
+        self._frontier   = self._read_frontier()
         return self._frontier
 
     def step(self, action: int) -> tuple:
@@ -118,21 +78,21 @@ class DCSEnvironment:
 
         Returns (next_frontier, reward=-1, done, info).
         """
-        if self._done:
+        if self.is_finished:
             raise RuntimeError("Episode already ended — call reset() first")
         if not (0 <= action < len(self._frontier)):
             raise IndexError(f"action {action} out of range [0, {len(self._frontier)})")
 
         self._dcs.expand(action)
-        self._done     = bool(self._dcs.isExplorationEnded())
-        self._frontier = self._read_frontier()
+        self.is_finished = bool(self._dcs.isExplorationEnded())
+        self._frontier   = self._read_frontier()
 
         info = {
             "transitions_explored": int(self._dcs.getTransitionsExplored()),
             "states_explored":      int(self._dcs.getStatesExplored()),
-            "realizable": bool(self._dcs.isRealizable()) if self._done else None,
+            "realizable": bool(self._dcs.isRealizable()) if self.is_finished else None,
         }
-        return self._frontier, -1, self._done, info
+        return self._frontier, -1, self.is_finished, info
 
     @property
     def frontier(self) -> list:
@@ -143,6 +103,11 @@ class DCSEnvironment:
 
     def uses_features(self) -> bool:
         return self._feature_type_name is not None
+
+    @property
+    def is_nonblocking(self) -> bool:
+        """True when the loaded instance is a non-blocking synthesis problem (not GR(1))."""
+        return bool(self._dcs.isNonBlocking()) if self._dcs is not None else None
 
     # ── internal ────────────────────────────────────────────────────────────
 

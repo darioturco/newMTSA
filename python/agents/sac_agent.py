@@ -3,28 +3,31 @@ SAC (Soft Actor-Critic) agent for the DCS RL environment.
 
 Architecture note
 -----------------
-Two network modes (selected by use_lstm):
+Three network modes (selected by use_lstm / use_transformer):
 
-Flat mode (use_lstm=False):
+Flat mode (use_lstm=False, use_transformer=False):
   Actor and Q-networks are MLPs operating on individual feature vectors.
   π(a|s) = softmax_a [ actor(feature_a) ]
   Q(s,a) = q_net(feature_a)
 
 LSTM mode (use_lstm=True):
-  Each network (actor, q1, q2 and their targets) has its own LSTM that
+  Each network (actor, q1, q2 and their targets) has its own LSTMNet that
   consumes the previously chosen transition's feature vector, producing
   h_t that encodes history.
-  score(a) = head(concat(h_t, feature_a))
-  During inference the actor LSTM hidden state is maintained across steps.
-  During training all networks replay episode windows from scratch (h_0=0).
+
+Transformer mode (use_transformer=True):
+  Same as LSTM mode but uses TransformerNet for all networks.
+  The 'hidden state' for inference is a growing list of previous feature
+  vectors (KV cache).
 
 Replay buffers
 --------------
-Flat : ReplayBuffer       — (curr_feats, action, reward, next_feats, done)
-LSTM : EpisodeReplayBuffer — full episodes; sampled as seq_len windows
+Flat       : SACReplayBuffer     — (curr_feats, action, reward, next_feats, done)
+Sequential : EpisodeReplayBuffer — full episodes; sampled as seq_len windows
 """
 
 import csv
+import re
 import random
 from collections import deque
 from pathlib import Path
@@ -36,172 +39,45 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-
-# ── flat networks ──────────────────────────────────────────────────────────────
-
-class QNetwork(nn.Module):
-    def __init__(self, feature_size: int, hidden_size: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(feature_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, 1),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x).squeeze(-1)
+from .base_agent import BaseAgent
+from .networks import (
+    MLPScorer, LSTMNet, TransformerNet,
+    OnnxLSTMWrapper, OnnxTransformerWrapper,
+    SACReplayBuffer, EpisodeReplayBuffer,
+)
 
 
-class ActorNetwork(nn.Module):
-    def __init__(self, feature_size: int, hidden_size: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(feature_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, 1),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x).squeeze(-1)
-
-
-# ── LSTM network (shared structure for actor and Q-nets) ──────────────────────
-
-class LSTMNet(nn.Module):
-    """
-    LSTM history encoder + MLP scoring head.
-    Used for actor and both Q-networks.
-
-    forward_sequence — training: full window in one call → all hidden states.
-    forward_step     — inference: single step → updated hidden state.
-    score            — given h_t and candidates → scalar scores / Q-values.
-    """
-
-    def __init__(self, feature_size: int, lstm_hidden: int, mlp_hidden: int):
-        super().__init__()
-        self.lstm_hidden = lstm_hidden
-        self.lstm = nn.LSTM(feature_size, lstm_hidden, batch_first=True)
-        self.head = nn.Sequential(
-            nn.Linear(lstm_hidden + feature_size, mlp_hidden),
-            nn.ReLU(),
-            nn.Linear(mlp_hidden, 1),
-        )
-
-    def forward_sequence(self, prev_feats: torch.Tensor, hidden=None):
-        """prev_feats: (1, T, F) → all_h: (T, lstm_hidden), new hidden"""
-        all_h, state = self.lstm(prev_feats, hidden)
-        return all_h.squeeze(0), state
-
-    def forward_step(self, prev_feat: torch.Tensor, hidden=None):
-        """prev_feat: (F,) → h: (lstm_hidden,), new hidden"""
-        x = prev_feat.unsqueeze(0).unsqueeze(0)  # (1, 1, F)
-        out, state = self.lstm(x, hidden)
-        return out.squeeze(), state
-
-    def score(self, h: torch.Tensor, candidates: torch.Tensor) -> torch.Tensor:
-        """h: (lstm_hidden,), candidates: (N, F) → (N,)"""
-        h_exp = h.unsqueeze(0).expand(candidates.size(0), -1)
-        return self.head(torch.cat([h_exp, candidates], dim=-1)).squeeze(-1)
-
-
-# ── replay buffers ─────────────────────────────────────────────────────────────
-
-class ReplayBuffer:
-    def __init__(self, capacity: int):
-        self._buf: deque = deque(maxlen=capacity)
-
-    def push(self, curr_feats: list, action: int, reward: float,
-             next_feats: list, done: bool) -> None:
-        self._buf.append((
-            [np.asarray(f, dtype=np.float32) for f in curr_feats],
-            int(action),
-            float(reward),
-            [np.asarray(f, dtype=np.float32) for f in next_feats],
-            bool(done),
-        ))
-
-    def sample(self, batch_size: int) -> list:
-        return random.sample(self._buf, batch_size)
-
-    def __len__(self) -> int:
-        return len(self._buf)
-
-
-class EpisodeReplayBuffer:
-    """
-    Stores complete episodes; samples contiguous windows of length seq_len.
-
-    Each step: (prev_chosen_feat, frontier_feats, action, reward, done)
-    """
-
-    def __init__(self, capacity: int, seq_len: int):
-        self._episodes: deque = deque(maxlen=capacity)
-        self._current: list = []
-        self.seq_len = seq_len
-
-    def push_step(self, prev_chosen: np.ndarray, frontier: list,
-                  action: int, reward: float, done: bool) -> None:
-        self._current.append((
-            prev_chosen.copy(),
-            [np.asarray(f, dtype=np.float32) for f in frontier],
-            int(action),
-            float(reward),
-            bool(done),
-        ))
-        if done:
-            if self._current:
-                self._episodes.append(self._current)
-            self._current = []
-
-    def sample(self, n_seqs: int) -> List[list]:
-        if not self._episodes:
-            return []
-        chosen = random.choices(self._episodes, k=n_seqs)
-        windows = []
-        for ep in chosen:
-            T = len(ep)
-            if T <= self.seq_len:
-                windows.append(ep)
-            else:
-                start = random.randrange(0, T - self.seq_len + 1)
-                windows.append(ep[start : start + self.seq_len])
-        return windows
-
-    def __len__(self) -> int:
-        return len(self._episodes)
-
-
-# ── agent ──────────────────────────────────────────────────────────────────────
-
-class SACAgent:
+class SACAgent(BaseAgent):
     """
     Parameters
     ----------
-    use_lstm          : use LSTMNet + EpisodeReplayBuffer
-    lstm_hidden       : LSTM hidden size (LSTM mode only)
-    seq_len           : BPTT window length
-    min_episodes      : warmup episodes before LSTM training starts
-    episode_capacity  : max episodes in EpisodeReplayBuffer
-    hidden_size       : MLP hidden size (both modes)
+    use_lstm              : use LSTMNet + EpisodeReplayBuffer
+    use_transformer       : use TransformerNet + EpisodeReplayBuffer (overrides use_lstm)
+    lstm_hidden           : LSTM hidden size
+    seq_len               : BPTT window length
+    min_episodes          : warmup episodes before sequential training starts
+    episode_capacity      : max episodes in EpisodeReplayBuffer
+    hidden_size           : MLP hidden size
     lr_q / lr_actor / lr_alpha : learning rates
-    gamma             : discount factor
-    tau               : Polyak averaging for target networks
-    buffer_size       : ReplayBuffer capacity (flat mode)
-    batch_size        : transitions (flat) or sequences (LSTM) per step
-    target_entropy    : desired entropy (nats)
-    auto_alpha        : auto-tune temperature
-    init_alpha        : initial temperature
-    min_replay_size   : warmup transitions (flat mode)
-    target_update_freq: soft-update targets every N steps
+    gamma                 : discount factor
+    tau                   : Polyak averaging for target networks
+    buffer_size           : SACReplayBuffer capacity (flat mode)
+    batch_size            : transitions (flat) or sequences (sequential) per step
+    target_entropy        : desired entropy (nats)
+    auto_alpha            : auto-tune temperature
+    init_alpha            : initial temperature
+    min_replay_size       : warmup transitions (flat mode)
+    target_update_freq    : soft-update targets every N steps
+    d_model               : Transformer embedding dimension
+    nhead                 : number of Transformer attention heads
+    num_transformer_layers: number of Transformer encoder layers
+    save_frequency        : save checkpoint every N episodes
     """
 
     def __init__(
         self,
         use_lstm: bool = False,
+        use_transformer: bool = False,
         lstm_hidden: int = 64,
         seq_len: int = 16,
         min_episodes: int = 50,
@@ -219,33 +95,49 @@ class SACAgent:
         init_alpha: float = 0.2,
         min_replay_size: int = 500,
         target_update_freq: int = 1,
+        d_model: int = 64,
+        nhead: int = 4,
+        num_transformer_layers: int = 2,
+        save_frequency: int = 10,
     ):
-        self.use_lstm    = use_lstm
-        self.lstm_hidden = lstm_hidden
-        self.seq_len     = seq_len
-        self.min_episodes = min_episodes
-        self.hidden_size = hidden_size
-        self.lr_q        = lr_q
-        self.lr_actor    = lr_actor
-        self.gamma       = gamma
-        self.tau         = tau
-        self.batch_size  = batch_size
-        self.target_entropy   = target_entropy
-        self.auto_alpha       = auto_alpha
-        self.min_replay_size  = min_replay_size
-        self.target_update_freq = target_update_freq
+        super().__init__(save_frequency=save_frequency)
+        self.use_lstm              = use_lstm
+        self.use_transformer       = use_transformer
+        self.lstm_hidden           = lstm_hidden
+        self.seq_len               = seq_len
+        self.min_episodes          = min_episodes
+        self.hidden_size           = hidden_size
+        self.lr_q                  = lr_q
+        self.lr_actor              = lr_actor
+        self.lr_alpha              = lr_alpha
+        self.gamma                 = gamma
+        self.tau                   = tau
+        self.batch_size            = batch_size
+        self.target_entropy        = target_entropy
+        self.auto_alpha            = auto_alpha
+        self.min_replay_size       = min_replay_size
+        self.target_update_freq    = target_update_freq
+        self.d_model               = d_model
+        self.nhead                 = nhead
+        self.num_transformer_layers = num_transformer_layers
 
-        self.replay_buffer  = ReplayBuffer(buffer_size)
-        self.episode_buffer = EpisodeReplayBuffer(episode_capacity, seq_len) if use_lstm else None
+        self._use_sequential: bool = use_transformer or use_lstm
+
+        self.replay_buffer  = SACReplayBuffer(buffer_size)
+        self.episode_buffer = (
+            EpisodeReplayBuffer(episode_capacity, seq_len)
+            if self._use_sequential else None
+        )
 
         self.feature_size: Optional[int] = None
         self._initialized: bool = False
-        self.total_steps: int = 0
+        self.total_steps:  int  = 0
+        self.last_loss:    Optional[float] = None
 
         # networks (lazy init)
-        self.actor:    Optional[nn.Module] = None
-        self.q1:       Optional[nn.Module] = None
-        self.q2:       Optional[nn.Module] = None
+        self.actor:     Optional[nn.Module] = None
+        self.q1:        Optional[nn.Module] = None
+        self.q2:        Optional[nn.Module] = None
         self.target_q1: Optional[nn.Module] = None
         self.target_q2: Optional[nn.Module] = None
         self.actor_optimizer = None
@@ -259,8 +151,8 @@ class SACAgent:
             optim.Adam([self.log_alpha], lr=lr_alpha) if auto_alpha else None
         )
 
-        # LSTM per-episode inference state (actor only)
-        self._prev_chosen: Optional[np.ndarray] = None
+        # per-episode sequential state (actor only)
+        self._prev_chosen:    Optional[np.ndarray] = None
         self._actor_hidden = None
 
     # ── lazy network init ────────────────────────────────────────────────────
@@ -270,18 +162,23 @@ class SACAgent:
             return
         self._initialized = True
         self.feature_size = feature_size
-        if self.use_lstm:
-            self.actor    = LSTMNet(feature_size, self.lstm_hidden, self.hidden_size)
-            self.q1       = LSTMNet(feature_size, self.lstm_hidden, self.hidden_size)
-            self.q2       = LSTMNet(feature_size, self.lstm_hidden, self.hidden_size)
-            self.target_q1 = LSTMNet(feature_size, self.lstm_hidden, self.hidden_size)
-            self.target_q2 = LSTMNet(feature_size, self.lstm_hidden, self.hidden_size)
-        else:
-            self.actor    = ActorNetwork(feature_size, self.hidden_size)
-            self.q1       = QNetwork(feature_size, self.hidden_size)
-            self.q2       = QNetwork(feature_size, self.hidden_size)
-            self.target_q1 = QNetwork(feature_size, self.hidden_size)
-            self.target_q2 = QNetwork(feature_size, self.hidden_size)
+
+        def _make_net():
+            if self.use_transformer:
+                return TransformerNet(
+                    feature_size, self.d_model, self.nhead,
+                    self.num_transformer_layers, self.hidden_size,
+                )
+            elif self.use_lstm:
+                return LSTMNet(feature_size, self.lstm_hidden, self.hidden_size)
+            else:
+                return MLPScorer(feature_size, self.hidden_size)
+
+        self.actor     = _make_net()
+        self.q1        = _make_net()
+        self.q2        = _make_net()
+        self.target_q1 = _make_net()
+        self.target_q2 = _make_net()
 
         self.target_q1.load_state_dict(self.q1.state_dict())
         self.target_q2.load_state_dict(self.q2.state_dict())
@@ -293,7 +190,7 @@ class SACAgent:
         )
 
     def reset_episode(self) -> None:
-        """Reset per-episode LSTM state. Must be called at the start of every episode."""
+        """Reset per-episode sequential state. Call at the start of every episode."""
         if self.feature_size is not None:
             self._prev_chosen = np.zeros(self.feature_size, dtype=np.float32)
         self._actor_hidden = None
@@ -303,7 +200,7 @@ class SACAgent:
     def select_action(self, frontier_feats: list) -> int:
         feats_t = torch.tensor(np.array(frontier_feats, dtype=np.float32))
         with torch.no_grad():
-            if self.use_lstm:
+            if self._use_sequential:
                 prev_t = torch.tensor(self._prev_chosen)
                 h, self._actor_hidden = self.actor.forward_step(prev_t, self._actor_hidden)
                 scores = self.actor.score(h, feats_t)
@@ -324,16 +221,18 @@ class SACAgent:
     ) -> Optional[float]:
         self.total_steps += 1
 
-        if self.use_lstm:
+        if self._use_sequential:
             self.episode_buffer.push_step(
                 self._prev_chosen, curr_feats, action, reward, done
             )
             self._prev_chosen = np.asarray(curr_feats[action], dtype=np.float32)
-            loss = self._train_step_lstm()
+            loss = self._train_step_sequential()
         else:
             self.replay_buffer.push(curr_feats, action, reward, next_feats, done)
             loss = self._train_step_flat()
 
+        if loss is not None:
+            self.last_loss = loss
         return loss
 
     # ── training: flat ───────────────────────────────────────────────────────
@@ -363,8 +262,8 @@ class SACAgent:
 
         q1_vals, q2_vals = [], []
         for cf, a in zip(curr_feats_list, actions):
-            cf_t     = torch.tensor(np.stack(cf))
-            feat_a   = cf_t[a : a + 1]
+            cf_t   = torch.tensor(np.stack(cf))
+            feat_a = cf_t[a : a + 1]
             q1_vals.append(self.q1(feat_a))
             q2_vals.append(self.q2(feat_a))
 
@@ -409,9 +308,9 @@ class SACAgent:
 
         return critic_loss.item()
 
-    # ── training: LSTM ───────────────────────────────────────────────────────
+    # ── training: sequential (LSTM & Transformer share this path) ─────────────
 
-    def _train_step_lstm(self) -> Optional[float]:
+    def _train_step_sequential(self) -> Optional[float]:
         if len(self.episode_buffer) < self.min_episodes:
             return None
 
@@ -428,7 +327,6 @@ class SACAgent:
                 np.stack([s[0] for s in window]), dtype=torch.float32
             ).unsqueeze(0)  # (1, T, F)
 
-            # Run all networks over window (h_0 = zeros)
             all_h_actor, _ = self.actor.forward_sequence(prev_feats_t)
             all_h_q1,    _ = self.q1.forward_sequence(prev_feats_t)
             all_h_q2,    _ = self.q2.forward_sequence(prev_feats_t)
@@ -437,13 +335,11 @@ class SACAgent:
                 all_h_tq2, _ = self.target_q2.forward_sequence(prev_feats_t)
 
             for t, (_, frontier, action, reward, done) in enumerate(window):
-                ft = torch.tensor(np.stack(frontier), dtype=torch.float32)  # (N, F)
+                ft = torch.tensor(np.stack(frontier), dtype=torch.float32)
 
-                # ── critic predictions ───────────────────────────────────────
                 q1_preds.append(self.q1.score(all_h_q1[t], ft)[action])
                 q2_preds.append(self.q2.score(all_h_q2[t], ft)[action])
 
-                # ── critic targets ───────────────────────────────────────────
                 with torch.no_grad():
                     if done or t == T - 1:
                         tgt = float(reward)
@@ -451,7 +347,6 @@ class SACAgent:
                         nf = window[t + 1][1]
                         if nf:
                             nft = torch.tensor(np.stack(nf), dtype=torch.float32)
-                            # V(s') uses actor hidden at t+1, target Q at t+1
                             next_log_probs = F.log_softmax(
                                 self.actor.score(all_h_actor[t + 1], nft), dim=0
                             )
@@ -466,7 +361,6 @@ class SACAgent:
                             tgt = float(reward)
                 q_targets.append(tgt)
 
-                # ── actor loss ───────────────────────────────────────────────
                 log_probs = F.log_softmax(self.actor.score(all_h_actor[t], ft), dim=0)
                 probs     = log_probs.exp()
                 with torch.no_grad():
@@ -477,10 +371,9 @@ class SACAgent:
                 actor_losses.append(-(probs * (min_q - self.alpha * log_probs)).sum())
                 log_pi_all.append((probs * log_probs).sum())
 
-        # ── critic update ────────────────────────────────────────────────────
-        q1_t   = torch.stack(q1_preds)
-        q2_t   = torch.stack(q2_preds)
-        tgt_t  = torch.tensor(q_targets, dtype=torch.float32)
+        q1_t  = torch.stack(q1_preds)
+        q2_t  = torch.stack(q2_preds)
+        tgt_t = torch.tensor(q_targets, dtype=torch.float32)
         critic_loss = F.mse_loss(q1_t, tgt_t) + F.mse_loss(q2_t, tgt_t)
         self.q_optimizer.zero_grad()
         critic_loss.backward()
@@ -489,14 +382,12 @@ class SACAgent:
         )
         self.q_optimizer.step()
 
-        # ── actor update ─────────────────────────────────────────────────────
         actor_loss = torch.stack(actor_losses).mean()
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
         self.actor_optimizer.step()
 
-        # ── temperature update ────────────────────────────────────────────────
         if self.auto_alpha:
             log_pi_mean = torch.stack(log_pi_all).mean().detach()
             alpha_loss  = -(self.log_alpha.exp() * (log_pi_mean + self.target_entropy))
@@ -505,7 +396,6 @@ class SACAgent:
             self.alpha_optimizer.step()
             self.alpha = float(self.log_alpha.exp().detach())
 
-        # ── soft target update ────────────────────────────────────────────────
         if self.total_steps % self.target_update_freq == 0:
             self._soft_update(self.q1, self.target_q1)
             self._soft_update(self.q2, self.target_q2)
@@ -516,23 +406,122 @@ class SACAgent:
         for s_p, t_p in zip(source.parameters(), target.parameters()):
             t_p.data.copy_(self.tau * s_p.data + (1.0 - self.tau) * t_p.data)
 
+    # ── episode buffer warmup ─────────────────────────────────────────────────
+
+    def _fill_episode_buffer(self, env, fsp_path: str) -> None:
+        """Pre-fill episode buffer with random episodes before training starts."""
+        n = self.min_episodes
+        log_every = max(1, n // 5)
+        print(f"[Warmup] Collecting {n} random episodes...", flush=True)
+        for i in range(n):
+            frontier = env.reset(fsp_path)
+            if frontier and not self._initialized:
+                self._init_networks(len(frontier[0]))
+            self.reset_episode()
+            while not env.is_finished:
+                if not frontier:
+                    break
+                action        = random.randrange(len(frontier))
+                prev_frontier = frontier
+                frontier, reward, done, _ = env.step(action)
+                self.episode_buffer.push_step(
+                    self._prev_chosen, prev_frontier, action, reward, done
+                )
+                self._prev_chosen = np.asarray(prev_frontier[action], dtype=np.float32)
+            if (i + 1) % log_every == 0 or i + 1 == n:
+                print(f"[Warmup] {i + 1}/{n} episodes", flush=True)
+        print(f"[Warmup] Done — buffer has {len(self.episode_buffer)} episodes.", flush=True)
+
     # ── persistence ──────────────────────────────────────────────────────────
 
     def save_onnx(self, path: str) -> None:
-        if self.use_lstm:
-            print("[WARN] ONNX export not supported for LSTM mode.")
-            return
-
+        F = self.feature_size
         self.actor.eval()
-        dummy = torch.zeros(1, self.feature_size)
-        torch.onnx.export(
-            self.actor, dummy, path,
-            input_names=["features"], output_names=["score"],
-            dynamic_axes={"features": {0: "batch_size"}},
-            opset_version=17,
-            export_params=True,
-            dynamo=False
-        )
+        if self.use_transformer:
+            wrapper = OnnxTransformerWrapper(self.actor)
+            torch.onnx.export(
+                wrapper,
+                (torch.zeros(1, 1, F), torch.zeros(3, F)),
+                path,
+                input_names=["sequence", "candidates"],
+                output_names=["scores"],
+                dynamic_axes={"sequence": {1: "T"}, "candidates": {0: "N"}, "scores": {0: "N"}},
+                opset_version=17, export_params=True, dynamo=False,
+            )
+        elif self.use_lstm:
+            H = self.lstm_hidden
+            wrapper = OnnxLSTMWrapper(self.actor)
+            torch.onnx.export(
+                wrapper,
+                (torch.zeros(1, 1, F), torch.zeros(1, 1, H), torch.zeros(1, 1, H), torch.zeros(3, F)),
+                path,
+                input_names=["prev_feat", "h_in", "c_in", "candidates"],
+                output_names=["scores", "h_out", "c_out"],
+                dynamic_axes={"candidates": {0: "N"}, "scores": {0: "N"}},
+                opset_version=17, export_params=True, dynamo=False,
+            )
+        else:
+            torch.onnx.export(
+                self.actor, torch.zeros(1, F), path,
+                input_names=["features"], output_names=["score"],
+                dynamic_axes={"features": {0: "N"}, "score": {0: "N"}},
+                opset_version=17, export_params=True, dynamo=False,
+            )
+
+    def save_model(self, path: str) -> None:
+        if not self._initialized:
+            print("[WARN] Agent not initialized; nothing to save.")
+            return
+        torch.save({
+            "feature_size": self.feature_size,
+            "config": self._config_dict(),
+            "actor":     self.actor.state_dict(),
+            "q1":        self.q1.state_dict(),
+            "q2":        self.q2.state_dict(),
+            "target_q1": self.target_q1.state_dict(),
+            "target_q2": self.target_q2.state_dict(),
+            "actor_optimizer": self.actor_optimizer.state_dict(),
+            "q_optimizer":     self.q_optimizer.state_dict(),
+        }, path)
+
+    @classmethod
+    def load_model(cls, path: str) -> "SACAgent":
+        payload = torch.load(path, map_location="cpu")
+        agent = cls(**payload["config"])
+        agent._init_networks(payload["feature_size"])
+        agent.actor.load_state_dict(payload["actor"])
+        agent.q1.load_state_dict(payload["q1"])
+        agent.q2.load_state_dict(payload["q2"])
+        agent.target_q1.load_state_dict(payload["target_q1"])
+        agent.target_q2.load_state_dict(payload["target_q2"])
+        agent.actor_optimizer.load_state_dict(payload["actor_optimizer"])
+        agent.q_optimizer.load_state_dict(payload["q_optimizer"])
+        return agent
+
+    def _config_dict(self) -> dict:
+        return {
+            "use_lstm": self.use_lstm,
+            "use_transformer": self.use_transformer,
+            "lstm_hidden": self.lstm_hidden,
+            "seq_len": self.seq_len,
+            "min_episodes": self.min_episodes,
+            "hidden_size": self.hidden_size,
+            "lr_q": self.lr_q,
+            "lr_actor": self.lr_actor,
+            "lr_alpha": self.lr_alpha,
+            "gamma": self.gamma,
+            "tau": self.tau,
+            "batch_size": self.batch_size,
+            "target_entropy": self.target_entropy,
+            "auto_alpha": self.auto_alpha,
+            "init_alpha": self.alpha,
+            "min_replay_size": self.min_replay_size,
+            "target_update_freq": self.target_update_freq,
+            "d_model": self.d_model,
+            "nhead": self.nhead,
+            "num_transformer_layers": self.num_transformer_layers,
+            "save_frequency": self.save_frequency,
+        }
 
 
 # ── training loop ──────────────────────────────────────────────────────────────
@@ -547,7 +536,10 @@ def train(
     results_dir: str = "results",
     verbose: bool = True,
 ) -> SACAgent:
-    results_path = Path(results_dir)
+    _m = re.match(r"^(.+)-\d+-\d+$", Path(fsp_path).stem)
+    family = _m.group(1) if _m else Path(fsp_path).stem
+    _rd = Path(results_dir)
+    results_path = _rd.parent / family / _rd.name
     results_path.mkdir(parents=True, exist_ok=True)
     csv_path = results_path / "sac_training.csv"
 
@@ -557,9 +549,15 @@ def train(
     best_ep_reward = float("-inf")
     best_avg     = float("-inf")
     no_improve   = 0
-    recent: deque = deque(maxlen=10)
+    recent: deque = deque(maxlen=50)
     global_steps = 0
     stop_reason  = f"max episodes ({max_episodes})"
+
+    env.reset(fsp_path)
+    print(f"Instance type: {'non-blocking' if env.is_nonblocking else 'blocking'}")
+
+    if agent._use_sequential:
+        agent._fill_episode_buffer(env, fsp_path)
 
     for ep in range(1, max_episodes + 1):
         frontier = env.reset(fsp_path)
@@ -573,7 +571,7 @@ def train(
         ep_steps  = 0
         ep_info   = {}
 
-        while not env._done:
+        while not env.is_finished:
             if not frontier:
                 break
 
@@ -599,13 +597,14 @@ def train(
                 [ep, ep_reward, ep_steps, ep_info.get("realizable")]
             )
 
-        if ep % 10 == 0 and agent._initialized:
-            onnx_path = results_path / f"sac_ep{ep:04d}.onnx"
-            agent.save_onnx(str(onnx_path))
+        if ep % agent.save_frequency == 0 and agent._initialized:
+            agent.save_onnx(str(results_path / f"sac_ep{ep:04d}.onnx"))
+            if agent._use_sequential:
+                agent.save_model(str(results_path / f"sac_ep{ep:04d}.pt"))
 
         recent.append(ep_reward)
         avg = sum(recent) / len(recent)
-        if (avg > best_avg) or (ep_reward < best_ep_reward):
+        if (avg > best_avg) or (ep_reward > best_ep_reward):
             best_ep_reward = ep_reward
             best_avg   = avg
             no_improve = 0
@@ -613,10 +612,11 @@ def train(
             no_improve += 1
 
         if verbose:
+            loss_str = f"{agent.last_loss:.5f}" if agent.last_loss is not None else "N/A   "
             print(
                 f"Ep {ep:4d} | reward={ep_reward:6d} | steps={ep_steps:4d} | "
-                f"α={agent.alpha:.4f} | avg10={avg:7.1f} | "
-                f"patience={no_improve}/{patience}"
+                f"α={agent.alpha:.4f} | avg50={avg:7.1f} | "
+                f"loss={loss_str} | patience={no_improve}/{patience}"
             )
 
         if no_improve >= patience:
@@ -625,5 +625,8 @@ def train(
         if global_steps >= max_steps:
             break
 
-    print(f"\n[STOP] {stop_reason}  —  total steps: {global_steps:,}")
+    print(
+        f"\n[STOP] {stop_reason}  —  total steps: {global_steps:,}  —  total episodes: {ep}"
+    )
+    agent.trained = True
     return agent

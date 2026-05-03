@@ -8,7 +8,7 @@ def run_episode(env, fsp_path: str) -> dict:
     steps = 0
     info = {}
 
-    while not env._done:
+    while not env.is_finished:
         if not frontier:
             break
         action = random.randrange(len(frontier))

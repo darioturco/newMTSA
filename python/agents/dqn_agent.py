@@ -3,9 +3,9 @@ DQN agent for the DCS RL environment.
 
 Architecture note
 -----------------
-Two network modes are available (selected by use_lstm):
+Three network modes are available (selected by use_lstm / use_transformer):
 
-Flat mode (use_lstm=False):
+Flat mode (use_lstm=False, use_transformer=False):
   Q(s, a) ≈ MLP(feature_vector_of_a)
   Action selection = argmax Q over all frontier elements.
 
@@ -15,17 +15,23 @@ LSTM mode (use_lstm=True):
   Q(s, a) ≈ MLP(concat(h_t, feature_vector_of_a))
   Buffer stores full episodes; training uses BPTT over sampled windows.
 
+Transformer mode (use_transformer=True):
+  Same as LSTM mode but uses a Transformer encoder instead.
+  The 'hidden state' is a growing list of previous feature vectors (KV cache).
+  Q(s, a) ≈ MLP(concat(h_t, feature_vector_of_a))
+
 Replay buffers
 --------------
-Flat  : ReplayBuffer      — stores (feat_chosen, reward, next_feats, done)
-LSTM  : EpisodeReplayBuffer — stores full episodes; samples seq_len windows
+Flat       : ReplayBuffer        — stores (feat_chosen, reward, next_feats, done)
+Sequential : EpisodeReplayBuffer — stores full episodes; samples seq_len windows
 """
 
 import csv
+import re
 import random
 from collections import deque
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import numpy as np
 import torch
@@ -33,161 +39,45 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-
-# ── flat network ───────────────────────────────────────────────────────────────
-
-class QNetwork(nn.Module):
-    def __init__(self, feature_size: int, hidden_size: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(feature_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, 1),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (batch, feature_size) → (batch,)
-        return self.net(x).squeeze(-1)
+from .base_agent import BaseAgent
+from .networks import (
+    MLPScorer, LSTMNet, TransformerNet,
+    OnnxLSTMWrapper, OnnxTransformerWrapper,
+    ReplayBuffer, EpisodeReplayBuffer,
+)
 
 
-# ── LSTM network ───────────────────────────────────────────────────────────────
-
-class LSTMQNetwork(nn.Module):
-    """
-    LSTM history encoder + MLP scoring head.
-
-    forward_sequence — training: process a full window, return all hidden states.
-    forward_step     — inference: process one step, update running hidden state.
-    score            — shared head: given h_t and candidates → Q-values.
-    """
-
-    def __init__(self, feature_size: int, lstm_hidden: int, mlp_hidden: int):
-        super().__init__()
-        self.lstm_hidden = lstm_hidden
-        self.lstm = nn.LSTM(feature_size, lstm_hidden, batch_first=True)
-        self.head = nn.Sequential(
-            nn.Linear(lstm_hidden + feature_size, mlp_hidden),
-            nn.ReLU(),
-            nn.Linear(mlp_hidden, 1),
-        )
-
-    def forward_sequence(self, prev_feats: torch.Tensor, hidden=None):
-        """prev_feats: (1, T, F) → all_h: (T, lstm_hidden), new hidden"""
-        all_h, state = self.lstm(prev_feats, hidden)
-        return all_h.squeeze(0), state
-
-    def forward_step(self, prev_feat: torch.Tensor, hidden=None):
-        """prev_feat: (F,) → h: (lstm_hidden,), new hidden"""
-        x = prev_feat.unsqueeze(0).unsqueeze(0)  # (1, 1, F)
-        out, state = self.lstm(x, hidden)
-        return out.squeeze(), state
-
-    def score(self, h: torch.Tensor, candidates: torch.Tensor) -> torch.Tensor:
-        """h: (lstm_hidden,), candidates: (N, F) → (N,)"""
-        h_exp = h.unsqueeze(0).expand(candidates.size(0), -1)
-        return self.head(torch.cat([h_exp, candidates], dim=-1)).squeeze(-1)
-
-
-# ── replay buffers ─────────────────────────────────────────────────────────────
-
-class ReplayBuffer:
-    def __init__(self, capacity: int):
-        self._buf: deque = deque(maxlen=capacity)
-
-    def push(self, feat_chosen: np.ndarray, reward: float,
-             next_feats: list, done: bool) -> None:
-        self._buf.append((
-            feat_chosen,
-            float(reward),
-            [np.asarray(f, dtype=np.float32) for f in next_feats],
-            bool(done),
-        ))
-
-    def sample(self, batch_size: int) -> list:
-        return random.sample(self._buf, batch_size)
-
-    def __len__(self) -> int:
-        return len(self._buf)
-
-
-class EpisodeReplayBuffer:
-    """
-    Stores complete episodes; samples contiguous windows of length seq_len.
-
-    Each step: (prev_chosen_feat, frontier_feats, action, reward, done)
-      prev_chosen_feat — feature of the transition expanded at the previous step
-                         (zero vector at episode start)
-      frontier_feats   — full set of candidate features at this step
-    """
-
-    def __init__(self, capacity: int, seq_len: int):
-        self._episodes: deque = deque(maxlen=capacity)
-        self._current: list = []
-        self.seq_len = seq_len
-
-    def push_step(self, prev_chosen: np.ndarray, frontier: list,
-                  action: int, reward: float, done: bool) -> None:
-        self._current.append((
-            prev_chosen.copy(),
-            [np.asarray(f, dtype=np.float32) for f in frontier],
-            int(action),
-            float(reward),
-            bool(done),
-        ))
-        if done:
-            if self._current:
-                self._episodes.append(self._current)
-            self._current = []
-
-    def sample(self, n_seqs: int) -> List[list]:
-        """Return n_seqs windows of length seq_len (or full episode if shorter)."""
-        if not self._episodes:
-            return []
-        chosen = random.choices(self._episodes, k=n_seqs)
-        windows = []
-        for ep in chosen:
-            T = len(ep)
-            if T <= self.seq_len:
-                windows.append(ep)
-            else:
-                start = random.randrange(0, T - self.seq_len + 1)
-                windows.append(ep[start : start + self.seq_len])
-        return windows
-
-    def __len__(self) -> int:
-        return len(self._episodes)
-
-
-# ── agent ──────────────────────────────────────────────────────────────────────
-
-# TODO: Make a base Agent class and move common code (e.g. epsilon decay, ONNX export) there, since PPO and SAC agents also have those features. DQNAgent should then inherit from that base class and only implement the DQN-specific parts.
-#   Also separate the ReplayBuffer in a separate file, since it's also used by the PPO and SAC agents (although they use a different variant of it, but still some code could be shared). The same applies to the LSTMQNetwork, since it's also used by the SAC and PPO agent.
-#   All the agent files must be in a separate folder called "agents".
-
-class DQNAgent:
+class DQNAgent(BaseAgent):
     """
     Parameters
     ----------
-    use_lstm           : use LSTMQNetwork + EpisodeReplayBuffer
-    lstm_hidden        : LSTM hidden size (LSTM mode only)
-    seq_len            : BPTT window length for episode buffer
-    min_episodes       : warmup — train only after this many episodes stored
-    episode_capacity   : max episodes in EpisodeReplayBuffer
-    hidden_size        : MLP hidden size (both modes)
-    lr                 : Adam learning rate
-    gamma              : discount factor
-    buffer_size        : ReplayBuffer capacity (flat mode only)
-    batch_size         : transitions per gradient step (flat) or sequences (LSTM)
+    use_lstm              : use LSTMNet + EpisodeReplayBuffer
+    use_transformer       : use TransformerNet + EpisodeReplayBuffer (overrides use_lstm)
+    lstm_hidden           : LSTM hidden size
+    seq_len               : BPTT window length
+    min_episodes          : warmup episodes before sequential training starts
+    episode_capacity      : max episodes in EpisodeReplayBuffer
+    hidden_size           : MLP head hidden size
+    lr                    : Adam learning rate
+    gamma                 : discount factor
+    buffer_size           : ReplayBuffer capacity (flat mode only)
+    batch_size            : transitions (flat) or sequences (sequential) per step
     epsilon_start/end/decay : ε-greedy schedule
-    target_update_freq : hard-copy q_net → target_net every N steps
-    min_replay_size    : warmup transitions (flat mode only)
+    target_update_freq    : update target net every N steps
+    tau                   : Polyak averaging coefficient (1.0 = hard copy)
+    min_replay_size       : warmup transitions (flat mode only)
+    weight_decay          : L2 regularisation in Adam optimiser
+    double_dqn            : use Double DQN for target computation
+    d_model               : Transformer embedding dimension
+    nhead                 : number of Transformer attention heads
+    num_transformer_layers: number of Transformer encoder layers
+    save_frequency        : save checkpoint every N episodes
     """
 
     def __init__(
         self,
         use_lstm: bool = False,
+        use_transformer: bool = False,
         lstm_hidden: int = 64,
         seq_len: int = 16,
         min_episodes: int = 50,
@@ -201,33 +91,51 @@ class DQNAgent:
         epsilon_end: float = 0.05,
         epsilon_decay: float = 0.997,
         target_update_freq: int = 200,
+        tau: float = 1.0,
         min_replay_size: int = 500,
+        weight_decay: float = 0.0,
+        double_dqn: bool = False,
+        d_model: int = 64,
+        nhead: int = 4,
+        num_transformer_layers: int = 2,
+        save_frequency: int = 10,
     ):
-        self.use_lstm = use_lstm
-        self.lstm_hidden = lstm_hidden
-        self.seq_len = seq_len
-        self.min_episodes = min_episodes
-        self.hidden_size = hidden_size
-        self.lr = lr
-        self.gamma = gamma
-        self.batch_size = batch_size
-        self.epsilon = epsilon_start
-        self.epsilon_end = epsilon_end
-        self.epsilon_decay = epsilon_decay
-        self.target_update_freq = target_update_freq
-        self.min_replay_size = min_replay_size
+        super().__init__(epsilon_start, epsilon_end, epsilon_decay, save_frequency)
+        self.use_lstm              = use_lstm
+        self.use_transformer       = use_transformer
+        self.lstm_hidden           = lstm_hidden
+        self.seq_len               = seq_len
+        self.min_episodes          = min_episodes
+        self.hidden_size           = hidden_size
+        self.lr                    = lr
+        self.gamma                 = gamma
+        self.batch_size            = batch_size
+        self.target_update_freq    = target_update_freq
+        self.tau                   = tau
+        self.min_replay_size       = min_replay_size
+        self.weight_decay          = weight_decay
+        self.double_dqn            = double_dqn
+        self.d_model               = d_model
+        self.nhead                 = nhead
+        self.num_transformer_layers = num_transformer_layers
 
-        self.replay_buffer = ReplayBuffer(buffer_size)
-        self.episode_buffer = EpisodeReplayBuffer(episode_capacity, seq_len) if use_lstm else None
+        self._use_sequential: bool = use_transformer or use_lstm
 
-        self.q_net: Optional[nn.Module] = None
+        self.replay_buffer  = ReplayBuffer(buffer_size)
+        self.episode_buffer = (
+            EpisodeReplayBuffer(episode_capacity, seq_len)
+            if self._use_sequential else None
+        )
+
+        self.q_net:      Optional[nn.Module] = None
         self.target_net: Optional[nn.Module] = None
-        self.optimizer = None
+        self.optimizer   = None
         self.feature_size: Optional[int] = None
         self._initialized: bool = False
-        self.total_steps: int = 0
+        self.total_steps:  int  = 0
+        self.last_loss:    Optional[float] = None
 
-        # LSTM per-episode state
+        # per-episode sequential state (LSTM tuple or Transformer cache list)
         self._prev_chosen: Optional[np.ndarray] = None
         self._hidden = None
 
@@ -238,21 +146,39 @@ class DQNAgent:
             return
         self._initialized = True
         self.feature_size = feature_size
-        if self.use_lstm:
-            self.q_net     = LSTMQNetwork(feature_size, self.lstm_hidden, self.hidden_size)
-            self.target_net = LSTMQNetwork(feature_size, self.lstm_hidden, self.hidden_size)
+        if self.use_transformer:
+            self.q_net = TransformerNet(
+                feature_size, self.d_model, self.nhead,
+                self.num_transformer_layers, self.hidden_size,
+            )
+            self.target_net = TransformerNet(
+                feature_size, self.d_model, self.nhead,
+                self.num_transformer_layers, self.hidden_size,
+            )
+        elif self.use_lstm:
+            self.q_net      = LSTMNet(feature_size, self.lstm_hidden, self.hidden_size)
+            self.target_net = LSTMNet(feature_size, self.lstm_hidden, self.hidden_size)
         else:
-            self.q_net     = QNetwork(feature_size, self.hidden_size)
-            self.target_net = QNetwork(feature_size, self.hidden_size)
+            self.q_net      = MLPScorer(feature_size, self.hidden_size)
+            self.target_net = MLPScorer(feature_size, self.hidden_size)
         self.target_net.load_state_dict(self.q_net.state_dict())
         self.target_net.eval()
-        self.optimizer = optim.Adam(self.q_net.parameters(), lr=self.lr)
+        self.optimizer = optim.Adam(
+            self.q_net.parameters(), lr=self.lr, weight_decay=self.weight_decay
+        )
 
     def reset_episode(self) -> None:
-        """Reset per-episode LSTM state. Must be called at the start of every episode."""
+        """Reset per-episode sequential state. Call at the start of every episode."""
         if self.feature_size is not None:
             self._prev_chosen = np.zeros(self.feature_size, dtype=np.float32)
         self._hidden = None
+
+    # ── target network update ────────────────────────────────────────────────
+
+    def _update_target(self) -> None:
+        """Polyak average: tau=1.0 is a hard copy, tau<1.0 is a soft update."""
+        for p, tp in zip(self.q_net.parameters(), self.target_net.parameters()):
+            tp.data.copy_(self.tau * p.data + (1.0 - self.tau) * tp.data)
 
     # ── action selection ─────────────────────────────────────────────────────
 
@@ -261,7 +187,7 @@ class DQNAgent:
         if random.random() < self.epsilon:
             return random.randrange(len(frontier_feats))
         with torch.no_grad():
-            if self.use_lstm:
+            if self._use_sequential:
                 prev_t = torch.tensor(self._prev_chosen)
                 h, self._hidden = self.q_net.forward_step(prev_t, self._hidden)
                 cands = torch.tensor(np.array(frontier_feats, dtype=np.float32))
@@ -280,29 +206,25 @@ class DQNAgent:
         next_feats: list,
         done: bool,
     ) -> Optional[float]:
-        """
-        Store transition and trigger one gradient step.
-
-        frontier_feats : full frontier before the step (list of feature vectors)
-        action         : chosen index into frontier_feats
-        next_feats     : frontier after the step (used by flat mode only)
-        """
+        """Store transition and trigger one gradient step."""
         self.total_steps += 1
         feat_chosen = np.asarray(frontier_feats[action], dtype=np.float32)
 
-        if self.use_lstm:
+        if self._use_sequential:
             self.episode_buffer.push_step(
                 self._prev_chosen, frontier_feats, action, reward, done
             )
             self._prev_chosen = feat_chosen
-            loss = self._train_step_lstm()
+            loss = self._train_step_sequential()
         else:
             self.replay_buffer.push(feat_chosen, reward, next_feats, done)
             loss = self._train_step_flat()
 
         if self.total_steps % self.target_update_freq == 0:
-            self.target_net.load_state_dict(self.q_net.state_dict())
+            self._update_target()
 
+        if loss is not None:
+            self.last_loss = loss
         return loss
 
     # ── training: flat ───────────────────────────────────────────────────────
@@ -325,7 +247,11 @@ class DQNAgent:
             for i, (nf, d) in enumerate(zip(next_feats_list, dones_t)):
                 if not d and nf:
                     nf_t = torch.tensor(np.stack(nf))
-                    next_q[i] = self.target_net(nf_t).max()
+                    if self.double_dqn:
+                        best_a = self.q_net(nf_t).argmax()
+                        next_q[i] = self.target_net(nf_t)[best_a]
+                    else:
+                        next_q[i] = self.target_net(nf_t).max()
 
         targets = rewards_t + self.gamma * next_q * (1.0 - dones_t)
         loss = F.mse_loss(current_q, targets)
@@ -335,9 +261,9 @@ class DQNAgent:
         self.optimizer.step()
         return loss.item()
 
-    # ── training: LSTM ───────────────────────────────────────────────────────
+    # ── training: sequential (LSTM & Transformer share this path) ─────────────
 
-    def _train_step_lstm(self) -> Optional[float]:
+    def _train_step_sequential(self) -> Optional[float]:
         if len(self.episode_buffer) < self.min_episodes:
             return None
 
@@ -369,9 +295,15 @@ class DQNAgent:
                         nf = window[t + 1][1]
                         if nf:
                             nft = torch.tensor(np.stack(nf), dtype=torch.float32)
-                            tgt = reward + self.gamma * self.target_net.score(
-                                all_h_tgt[t + 1], nft
-                            ).max().item()
+                            if self.double_dqn:
+                                best_a = self.q_net.score(all_h[t + 1], nft).argmax()
+                                tgt = reward + self.gamma * self.target_net.score(
+                                    all_h_tgt[t + 1], nft
+                                )[best_a].item()
+                            else:
+                                tgt = reward + self.gamma * self.target_net.score(
+                                    all_h_tgt[t + 1], nft
+                                ).max().item()
                         else:
                             tgt = float(reward)
                     all_target_q.append(tgt)
@@ -388,32 +320,117 @@ class DQNAgent:
         self.optimizer.step()
         return loss.item()
 
-    def decay_epsilon(self) -> None:
-        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+    # ── episode buffer warmup ─────────────────────────────────────────────────
+
+    def _fill_episode_buffer(self, env, fsp_path: str) -> None:
+        """Pre-fill episode buffer with random episodes before training starts."""
+        n = self.min_episodes
+        log_every = max(1, n // 5)
+        print(f"[Warmup] Collecting {n} random episodes...", flush=True)
+        for i in range(n):
+            frontier = env.reset(fsp_path)
+            if frontier and not self._initialized:
+                self._init_networks(len(frontier[0]))
+            self.reset_episode()
+            while not env.is_finished:
+                if not frontier:
+                    break
+                action        = random.randrange(len(frontier))
+                prev_frontier = frontier
+                frontier, reward, done, _ = env.step(action)
+                self.episode_buffer.push_step(
+                    self._prev_chosen, prev_frontier, action, reward, done
+                )
+                self._prev_chosen = np.asarray(prev_frontier[action], dtype=np.float32)
+            if (i + 1) % log_every == 0 or i + 1 == n:
+                print(f"[Warmup] {i + 1}/{n} episodes", flush=True)
+        print(f"[Warmup] Done — buffer has {len(self.episode_buffer)} episodes.", flush=True)
 
     # ── persistence ──────────────────────────────────────────────────────────
 
     def save_onnx(self, path: str) -> None:
-        if self.use_lstm:
-            # TODO: implment the LTSM save, that is important to test the agent in other instances size.
-            print("[WARN] ONNX export not supported for LSTM mode.")
-            return
-        
+        F = self.feature_size
         self.q_net.eval()
-        dummy = torch.zeros(1, self.feature_size)
-        torch.onnx.export(
-            self.q_net, dummy, path,
-            input_names=["features"], output_names=["q_value"],
-            dynamic_axes={"features": {0: "batch_size"}},
-            opset_version=17,
-            export_params=True,
-            dynamo=False
-        )
+        if self.use_transformer:
+            wrapper = OnnxTransformerWrapper(self.q_net)
+            torch.onnx.export(
+                wrapper,
+                (torch.zeros(1, 1, F), torch.zeros(3, F)),
+                path,
+                input_names=["sequence", "candidates"],
+                output_names=["scores"],
+                dynamic_axes={"sequence": {1: "T"}, "candidates": {0: "N"}, "scores": {0: "N"}},
+                opset_version=17, export_params=True, dynamo=False,
+            )
+        elif self.use_lstm:
+            H = self.lstm_hidden
+            wrapper = OnnxLSTMWrapper(self.q_net)
+            torch.onnx.export(
+                wrapper,
+                (torch.zeros(1, 1, F), torch.zeros(1, 1, H), torch.zeros(1, 1, H), torch.zeros(3, F)),
+                path,
+                input_names=["prev_feat", "h_in", "c_in", "candidates"],
+                output_names=["scores", "h_out", "c_out"],
+                dynamic_axes={"candidates": {0: "N"}, "scores": {0: "N"}},
+                opset_version=17, export_params=True, dynamo=False,
+            )
+        else:
+            torch.onnx.export(
+                self.q_net, torch.zeros(1, F), path,
+                input_names=["features"], output_names=["q_value"],
+                dynamic_axes={"features": {0: "N"}, "q_value": {0: "N"}},
+                opset_version=17, export_params=True, dynamo=False,
+            )
+
+    def save_model(self, path: str) -> None:
+        if not self._initialized:
+            print("[WARN] Agent not initialized; nothing to save.")
+            return
+        torch.save({
+            "feature_size": self.feature_size,
+            "config": self._config_dict(),
+            "q_net": self.q_net.state_dict(),
+            "target_net": self.target_net.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+        }, path)
+
+    @classmethod
+    def load_model(cls, path: str) -> "DQNAgent":
+        payload = torch.load(path, map_location="cpu")
+        agent = cls(**payload["config"])
+        agent._init_networks(payload["feature_size"])
+        agent.q_net.load_state_dict(payload["q_net"])
+        agent.target_net.load_state_dict(payload["target_net"])
+        agent.optimizer.load_state_dict(payload["optimizer"])
+        return agent
+
+    def _config_dict(self) -> dict:
+        return {
+            "use_lstm": self.use_lstm,
+            "use_transformer": self.use_transformer,
+            "lstm_hidden": self.lstm_hidden,
+            "seq_len": self.seq_len,
+            "min_episodes": self.min_episodes,
+            "hidden_size": self.hidden_size,
+            "lr": self.lr,
+            "gamma": self.gamma,
+            "batch_size": self.batch_size,
+            "epsilon_start": self.epsilon,
+            "epsilon_end": self.epsilon_end,
+            "epsilon_decay": self.epsilon_decay,
+            "target_update_freq": self.target_update_freq,
+            "tau": self.tau,
+            "weight_decay": self.weight_decay,
+            "double_dqn": self.double_dqn,
+            "d_model": self.d_model,
+            "nhead": self.nhead,
+            "num_transformer_layers": self.num_transformer_layers,
+            "save_frequency": self.save_frequency,
+        }
 
 
 # ── training loop ──────────────────────────────────────────────────────────────
-# TODO: make this function part of the Agent class. 
-#   Also implment a trained agent flag, that initialy is false and before the end of training is set to true.
+
 def train(
     env,
     agent: DQNAgent,
@@ -424,7 +441,10 @@ def train(
     results_dir: str = "results",
     verbose: bool = True,
 ) -> DQNAgent:
-    results_path = Path(results_dir)
+    _m = re.match(r"^(.+)-\d+-\d+$", Path(fsp_path).stem)
+    family = _m.group(1) if _m else Path(fsp_path).stem
+    _rd = Path(results_dir)
+    results_path = _rd.parent / family / _rd.name
     results_path.mkdir(parents=True, exist_ok=True)
     csv_path = results_path / "dqn_training.csv"
 
@@ -434,9 +454,15 @@ def train(
     best_ep_reward = float("-inf")
     best_avg     = float("-inf")
     no_improve   = 0
-    recent: deque = deque(maxlen=10)
+    recent: deque = deque(maxlen=50)
     global_steps = 0
     stop_reason  = f"max episodes ({max_episodes})"
+
+    env.reset(fsp_path)
+    print(f"Instance type: {'non-blocking' if env.is_nonblocking else 'blocking'}")
+
+    if agent._use_sequential:
+        agent._fill_episode_buffer(env, fsp_path)
 
     for ep in range(1, max_episodes + 1):
         frontier = env.reset(fsp_path)
@@ -450,7 +476,7 @@ def train(
         ep_steps  = 0
         ep_info   = {}
 
-        while not env._done: # TODO: cambia el nombre _done, pones is_finish, que no sea un atributo privado.
+        while not env.is_finished:
             if not frontier:
                 break
 
@@ -478,13 +504,14 @@ def train(
                 [ep, ep_reward, ep_steps, ep_info.get("realizable")]
             )
 
-        if ep % 10 == 0 and agent._initialized: # TODO: make save frequency configurable, not a hardcored 10 (in all agents)
-            onnx_path = results_path / f"dqn_ep{ep:04d}.onnx"
-            agent.save_onnx(str(onnx_path))
+        if ep % agent.save_frequency == 0 and agent._initialized:
+            agent.save_onnx(str(results_path / f"dqn_ep{ep:04d}.onnx"))
+            if agent._use_sequential:
+                agent.save_model(str(results_path / f"dqn_ep{ep:04d}.pt"))
 
         recent.append(ep_reward)
         avg = sum(recent) / len(recent)
-        if (avg > best_avg) or (ep_reward < best_ep_reward):
+        if (avg > best_avg) or (ep_reward > best_ep_reward):
             best_ep_reward = ep_reward
             best_avg   = avg
             no_improve = 0
@@ -492,10 +519,11 @@ def train(
             no_improve += 1
 
         if verbose:
+            loss_str = f"{agent.last_loss:.5f}" if agent.last_loss is not None else "N/A   "
             print(
                 f"Ep {ep:4d} | reward={ep_reward:6d} | steps={ep_steps:4d} | "
-                f"ε={agent.epsilon:.5f} | avg10={avg:7.1f} | "
-                f"patience={no_improve}/{patience}" # TODO: after the pacience add the loss value of the network in that episode, that is important to understand if the agent is still learning or not.
+                f"ε={agent.epsilon:.5f} | avg50={avg:7.1f} | "
+                f"loss={loss_str} | patience={no_improve}/{patience}"
             )
 
         if no_improve >= patience:
@@ -504,5 +532,8 @@ def train(
         if global_steps >= max_steps:
             break
 
-    print(f"\n[STOP] {stop_reason}  —  total steps: {global_steps:,}") # TODO: all the total of episodes
+    print(
+        f"\n[STOP] {stop_reason}  —  total steps: {global_steps:,}  —  total episodes: {ep}"
+    )
+    agent.trained = True
     return agent
