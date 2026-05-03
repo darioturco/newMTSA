@@ -102,7 +102,17 @@ public final class GUIView {
             boolean blocked = lts.states().size() > MAX_STATE_RENDER;
             graphJson.append("\"").append(escapeJson(key)).append("\":{")
                     .append("\"stateCount\":").append(lts.states().size()).append(",")
-                    .append("\"blocked\":").append(blocked);
+                    .append("\"blocked\":").append(blocked).append(",")
+                    .append("\"dot\":\"").append(escapeJson(lts.toDotString())).append("\",")
+                    .append("\"actions\":[");
+
+            for (int a = 0; a < lts.actions().size(); a++) {
+                if (a > 0) {
+                    graphJson.append(",");
+                }
+                graphJson.append("\"").append(escapeJson(lts.actions().get(a))).append("\"");
+            }
+            graphJson.append("]");
 
             if (blocked) {
                 graphJson.append(",\"nodes\":[],\"edges\":[]}");

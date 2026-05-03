@@ -5,8 +5,8 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>newmtsa</groupId>
-    <artifactId>new-mtsa</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <artifactId>mtsa</artifactId>
+    <version>1.0</version>
     <packaging>jar</packaging>
 
     <name>NewMTSA</name>
@@ -32,6 +32,12 @@
             <groupId>org.antlr</groupId>
             <artifactId>antlr4-runtime</artifactId>
             <version>4.13.1</version>
+        </dependency>
+        <!-- ONNX Runtime for Java — used by DCSForPython benchmark -->
+        <dependency>
+            <groupId>com.microsoft.onnxruntime</groupId>
+            <artifactId>onnxruntime</artifactId>
+            <version>1.18.0</version>
         </dependency>
     </dependencies>
 

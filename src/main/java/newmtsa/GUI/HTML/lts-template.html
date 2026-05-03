@@ -1,0 +1,171 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>LTS Viewer - {{SOURCE_NAME}}</title>
+  <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 16px; color: #1f2937; background: #f5f7fb; }
+    #toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+    #ltsSelect { min-width: 260px; padding: 6px 8px; border-radius: 6px; border: 1px solid #dbe3f0; }
+    #downloadDotBtn { padding: 6px 12px; border-radius: 6px; border: 1px solid #2563eb; background: #2563eb; color: #fff; font-weight: 600; cursor: pointer; }
+    #downloadDotBtn:hover { background: #1d4ed8; }
+    #network { width: 100%; height: 78vh; border: 1px solid #dbe3f0; border-radius: 8px; background: #fcfdff; }
+    #actionsPanel { margin-top: 14px; padding: 12px 14px; border: 1px solid #dbe3f0; border-radius: 8px; background: #fff; }
+    #actionsPanel h3 { margin: 0 0 8px 0; font-size: 15px; color: #374151; }
+    #actionsList { display: flex; flex-wrap: wrap; gap: 6px; }
+    #actionsList code { font-size: 12px; padding: 4px 8px; border-radius: 6px; background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; }
+    .legend { margin-top: 8px; color: #6b7280; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h2>LTS Viewer</h2>
+  <div><strong>Source:</strong> {{SOURCE_NAME}}</div>
+  <div id="toolbar">
+    <label for="ltsSelect"><strong>LTS:</strong></label>
+    <select id="ltsSelect">{{SELECT_OPTIONS}}</select>
+    <button id="downloadDotBtn" type="button">Download .dot</button>
+  </div>
+  <div id="renderWarning" style="display:none; margin:8px 0; padding:10px 12px; border-radius:8px; background:#fff7e6; color:#7a5200; border:1px solid #ffd88a;"></div>
+  <div id="network"></div>
+  <div id="actionsPanel">
+    <h3>Alphabet (actions)</h3>
+    <div id="actionsList"></div>
+  </div>
+  <div class="legend">Initial state: blue. Accepting state: green.</div>
+  <script>
+    const graphs = {{GRAPH_DATA}};
+    const select = document.getElementById('ltsSelect');
+    const downloadDotBtn = document.getElementById('downloadDotBtn');
+    const actionsList = document.getElementById('actionsList');
+    const container = document.getElementById('network');
+    let network = null;
+    const options = {
+      layout: { improvedLayout: true },
+      nodes: {
+        font: { size: 14 },
+        borderWidth: 1,
+        margin: 12
+      },
+      edges: {
+        font: { align: 'top', size: 12, background: 'rgba(255,255,255,0.8)' },
+        smooth: { enabled: true, type: 'dynamic' }
+      },
+      physics: {
+        stabilization: true,
+        barnesHut: {
+          springLength: 240,
+          springConstant: 0.03,
+          gravitationalConstant: -5000,
+          damping: 0.18
+        }
+      }
+    };
+
+    function spreadParallelEdges(edges) {
+      const grouped = new Map();
+      for (const edge of edges) {
+        const key = `${edge.from}->${edge.to}`;
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(edge);
+      }
+
+      for (const list of grouped.values()) {
+        if (list.length <= 1) continue;
+
+        const middle = (list.length - 1) / 2;
+        for (let i = 0; i < list.length; i++) {
+          const offset = i - middle;
+          const roundness = 0.12 + Math.abs(offset) * 0.1;
+          list[i].smooth = {
+            enabled: true,
+            type: offset >= 0 ? 'curvedCW' : 'curvedCCW',
+            roundness: roundness
+          };
+        }
+      }
+
+      return edges;
+    }
+
+    function renderActionsList(data) {
+      actionsList.innerHTML = '';
+      if (!data || !Array.isArray(data.actions) || data.actions.length === 0) {
+        const empty = document.createElement('span');
+        empty.style.color = '#6b7280';
+        empty.style.fontSize = '13px';
+        empty.textContent = '(no actions in alphabet)';
+        actionsList.appendChild(empty);
+        return;
+      }
+      for (const action of data.actions) {
+        const el = document.createElement('code');
+        el.textContent = action;
+        el.title = action;
+        actionsList.appendChild(el);
+      }
+    }
+
+    function renderSelected() {
+      const key = select.value;
+      const data = graphs[key];
+      if (!data) return;
+
+      renderActionsList(data);
+
+      const warning = document.getElementById('renderWarning');
+      if (data.blocked) {
+        warning.textContent = `Rendering blocked: this LTS has ${data.stateCount} states (MAX_STATE_RENDER = {{MAX_STATE_RENDER}}).`;
+        warning.style.display = 'block';
+        const emptyData = {
+          nodes: new vis.DataSet([]),
+          edges: new vis.DataSet([])
+        };
+        if (network === null) {
+          network = new vis.Network(container, emptyData, options);
+        } else {
+          network.setData(emptyData);
+        }
+        return;
+      }
+      warning.style.display = 'none';
+
+      const visData = {
+        nodes: new vis.DataSet(data.nodes),
+        edges: new vis.DataSet(spreadParallelEdges([...data.edges]))
+      };
+
+      if (network === null) {
+        network = new vis.Network(container, visData, options);
+      } else {
+        network.setData(visData);
+      }
+      network.fit({ animation: true });
+    }
+
+    function safeFileName(input) {
+      return input.replace(/[<>:"/\\|?*]+/g, '_');
+    }
+
+    function downloadSelectedDot() {
+      const key = select.value;
+      const data = graphs[key];
+      if (!data || !data.dot) return;
+
+      const blob = new Blob([data.dot], { type: 'text/vnd.graphviz;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${safeFileName(key)}.dot`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+
+    select.addEventListener('change', renderSelected);
+    downloadDotBtn.addEventListener('click', downloadSelectedDot);
+    renderSelected();
+  </script>
+</body>
+</html>

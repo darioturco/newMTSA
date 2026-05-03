@@ -25,3 +25,13 @@ Thumbs.db
 
 # Claude
 .claude/
+
+# Others
+plan.txt
+run_test.txt
+
+# Python
+__pycache__/
+*.csv
+*.onnx
+*.onnx.data

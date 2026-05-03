@@ -62,8 +62,10 @@ public class Main {
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\AT\\AT-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\BW\\BW-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\ControllableFSPs\\test21.lts");
-            file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
+            //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\CM\\CM-2-2.fsp");
+            file = Path.of("C:\\Users\\diort\\Downloads\\data\\krka_et_al_FSE14\\reference_models\\ElemNumber$NumberFormatStringTokenizer.lts");
+
         }
 
         FSPModel model = FSPParser.parse(file);

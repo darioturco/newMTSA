@@ -31,6 +31,8 @@ public final class FeaturesContext {
 
     private final List<LTS>         components;
     private final List<Set<String>> compMarked;
+    /** When true, strips the {@code #phase} suffix from GR(1) state strings before checking compMarked. */
+    private final boolean           stripPhase;
 
     // ── mutable progress state (written by DCSForPython) ─────────────────────
 
@@ -55,6 +57,19 @@ public final class FeaturesContext {
                            Set<String>                            alphabet,
                            List<LTS>                              components,
                            List<Set<String>>                      compMarked) {
+        this(goals, errors, none, succMap, parents, controllable, alphabet, components, compMarked, false);
+    }
+
+    public FeaturesContext(Set<String>                            goals,
+                           Set<String>                            errors,
+                           Set<String>                            none,
+                           Map<String, List<ExtendedTransition>>  succMap,
+                           Map<String, Set<String>>               parents,
+                           Set<String>                            controllable,
+                           Set<String>                            alphabet,
+                           List<LTS>                              components,
+                           List<Set<String>>                      compMarked,
+                           boolean                                stripPhase) {
         this.goals        = goals;
         this.errors       = errors;
         this.none         = none;
@@ -64,6 +79,7 @@ public final class FeaturesContext {
         this.alphabet     = alphabet;
         this.components   = components;
         this.compMarked   = compMarked;
+        this.stripPhase   = stripPhase;
     }
 
     // ── public helpers ────────────────────────────────────────────────────────
@@ -86,6 +102,11 @@ public final class FeaturesContext {
     /** {@code true} iff {@code state} is marked in every component that declares marked states. */
     public boolean isMarked(String state) {
         String[] parts = state.split("\\|", components.size());
+        if (stripPhase && parts.length > 0) {
+            int last = parts.length - 1;
+            int h = parts[last].lastIndexOf('#');
+            if (h >= 0) parts[last] = parts[last].substring(0, h);
+        }
         for (int i = 0; i < components.size(); i++) {
             Set<String> marked = compMarked.get(i);
             if (!marked.isEmpty() && !marked.contains(parts[i])) return false;
@@ -100,7 +121,7 @@ public final class FeaturesContext {
 
     /** Strips all digit characters from {@code label}. */
     public static String removeIndices(String label) {
-        return label.replaceAll("[0-9]", "");
+        return label.replaceAll("\\.[0-9]+", "");
     }
 
     // ── private ───────────────────────────────────────────────────────────────

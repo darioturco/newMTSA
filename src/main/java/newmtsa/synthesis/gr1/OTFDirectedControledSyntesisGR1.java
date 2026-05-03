@@ -69,6 +69,7 @@ public class OTFDirectedControledSyntesisGR1 {
     private final List<Map<String, Map<String, String>>> compTrans;
     private final List<Set<String>>                      compAlpha;
     private final Set<String>                            alphabet;
+    private final List<Set<String>>                      compMarked;
 
     // ── state classification ──────────────────────────────────────────────────
 
@@ -196,11 +197,12 @@ public class OTFDirectedControledSyntesisGR1 {
         alphabet = Collections.unmodifiableSet(alpha);
 
         // Provide heuristic with a live view of this engine's state.
-        List<Set<String>> compMarked = new ArrayList<>();
-        for (int i = 0; i < this.components.size(); i++) compMarked.add(new LinkedHashSet<>());
+        List<Set<String>> cm = new ArrayList<>();
+        for (int i = 0; i < this.components.size(); i++) cm.add(new LinkedHashSet<>());
         for (int i = 0; i < numGuarantees; i++)
-            compMarked.get(guaranteeIndices[i]).addAll(this.components.get(guaranteeIndices[i]).acceptingStates());
-        heuristic.init(new SimpleSynthesisContext(this.components, compMarked, this.controllable) {
+            cm.get(guaranteeIndices[i]).addAll(this.components.get(guaranteeIndices[i]).acceptingStates());
+        this.compMarked = Collections.unmodifiableList(cm);
+        heuristic.init(new SimpleSynthesisContext(this.components, this.compMarked, this.controllable) {
             @Override public Set<String>              exploredStates()            { return succMap.keySet(); }
             @Override public Set<String>              goals()                     { return goals; }
             @Override public List<ExtendedTransition> successorsOf(String s)      { return succMap.getOrDefault(s, List.of()); }
@@ -339,6 +341,12 @@ public class OTFDirectedControledSyntesisGR1 {
     public List<LTS>     getComponents()          { return components; }
     public Set<String>   getControllable()        { return controllable; }
     public Set<String>   getAlphabet()            { return alphabet; }
+    public Set<String>                           getGoals()      { return goals; }
+    public Set<String>                           getErrors()     { return errors; }
+    public Set<String>                           getNone()       { return none; }
+    public Map<String, List<ExtendedTransition>> getSuccMap()    { return succMap; }
+    public Map<String, Set<String>>              getParents()    { return parents; }
+    public List<Set<String>>                     getCompMarked() { return compMarked; }
 
     public SynthesisResult getSynthesisResult() {
         if (goals.contains(s0))
@@ -397,7 +405,7 @@ public class OTFDirectedControledSyntesisGR1 {
      *       controller a vacuous win without needing to return to assumption phase.</li>
      * </ul>
      */
-    private boolean isMarked(String nodeId) {
+    public boolean isMarked(String nodeId) {
         if (numPhases == 0) return true;
         String[] parts = splitState(nodeId);
         int j = phaseOf(nodeId);

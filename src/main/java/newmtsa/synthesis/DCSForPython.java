@@ -1,14 +1,22 @@
 package newmtsa.synthesis;
 
+import newmtsa.parser.FSPParser;
+import newmtsa.parser.ast.ControllerSpecDef;
+import newmtsa.parser.ast.FSPModel;
 import newmtsa.parser.ast.LTS;
 import newmtsa.parser.ast.LtlPropertyDef;
 import newmtsa.parser.ast.Transition;
 import newmtsa.synthesis.features.FeatureCompute;
+import newmtsa.synthesis.features.FeatureType;
 import newmtsa.synthesis.features.FeaturesContext;
 import newmtsa.synthesis.gr1.OTFDirectedControledSyntesisGR1;
 import newmtsa.synthesis.heuristics.Heuristic;
+import newmtsa.synthesis.heuristics.HeuristicType;
 import newmtsa.synthesis.heuristics.SimpleSynthesisContext;
 
+import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 
 /**
@@ -217,15 +225,8 @@ public class DCSForPython {
     }
 
     /**
-     * GR(1) constructor — wraps {@link OTFDirectedControledSyntesisGR1} so that both
-     * synthesis types share the same Python-facing step-by-step interface.
-     *
-     * @param instanceName human-readable name for this synthesis problem
-     * @param components   plant processes + guarantee/assumption fluents
-     * @param assumptions  environment liveness assumptions
-     * @param guarantees   controller liveness guarantees G_0 .. G_{k-1}
-     * @param controllable set of controllable event labels
-     * @param heuristic    frontier selection strategy
+     * GR(1) constructor — wraps {@link OTFDirectedControledSyntesisGR1}.
+     * No feature computation.
      */
     public DCSForPython(String               instanceName,
                         List<LTS>            components,
@@ -233,6 +234,22 @@ public class DCSForPython {
                         List<LtlPropertyDef> guarantees,
                         Set<String>          controllable,
                         Heuristic            heuristic) {
+        this(instanceName, components, assumptions, guarantees, controllable, heuristic, null);
+    }
+
+    /**
+     * GR(1) constructor with optional feature computation.
+     *
+     * @param featureCompute strategy for computing binary feature vectors per frontier transition;
+     *                       {@code null} disables features
+     */
+    public DCSForPython(String               instanceName,
+                        List<LTS>            components,
+                        List<LtlPropertyDef> assumptions,
+                        List<LtlPropertyDef> guarantees,
+                        Set<String>          controllable,
+                        Heuristic            heuristic,
+                        FeatureCompute       featureCompute) {
         if (controllable.isEmpty())
             throw new IllegalArgumentException("DCS requires at least one controllable action");
 
@@ -242,7 +259,6 @@ public class DCSForPython {
         this.gr1Engine     = new OTFDirectedControledSyntesisGR1(
                 components, assumptions, guarantees, controllable, heuristic, false);
 
-        // Expose the engine's (possibly modified) component list and alphabet.
         this.components   = gr1Engine.getComponents();
         this.controllable = gr1Engine.getControllable();
         this.alphabet     = gr1Engine.getAlphabet();
@@ -252,10 +268,22 @@ public class DCSForPython {
         this.compAlpha      = null;
         this.compMarked     = null;
         this.compSafeStates = null;
-        this.featureCompute = null;
-        this.featuresCtx    = null;
         this.s0             = null;
         this.pending        = null;
+
+        this.featureCompute = featureCompute;
+        if (featureCompute != null) {
+            // GR(1) states have format "c0|...|cN#phase"; stripPhase=true strips the suffix
+            // before checking compMarked so that isMarked() works correctly.
+            this.featuresCtx = new FeaturesContext(
+                gr1Engine.getGoals(), gr1Engine.getErrors(), gr1Engine.getNone(),
+                gr1Engine.getSuccMap(), gr1Engine.getParents(),
+                this.controllable, this.alphabet,
+                this.components, gr1Engine.getCompMarked(), true);
+            featureCompute.init(this.featuresCtx);
+        } else {
+            this.featuresCtx = null;
+        }
     }
 
     // ── public API ────────────────────────────────────────────────────────────
@@ -312,7 +340,22 @@ public class DCSForPython {
      * @throws IndexOutOfBoundsException if {@code index} is out of range
      */
     public void expand(int index) {
-        if (synthesisType == SynthesisType.GR1) { gr1Engine.expand(index); return; }
+        if (synthesisType == SynthesisType.GR1) {
+            if (featuresCtx != null) {
+                ExtendedTransition t = gr1Engine.getFrontier().get(index);
+                int prevGoalCount = gr1Engine.getGoals().size();
+                gr1Engine.expand(index);
+                featuresCtx.lastExpandedFrom = t.from();
+                featuresCtx.lastExpandedTo   = t.to();
+                if (!featuresCtx.markedStateFound && gr1Engine.isMarked(t.to()))
+                    featuresCtx.markedStateFound = true;
+                if (gr1Engine.getGoals().size() > prevGoalCount)
+                    featuresCtx.closedWinningLoopsCount++;
+            } else {
+                gr1Engine.expand(index);
+            }
+            return;
+        }
 
         if (isExplorationEnded())
             throw new IllegalStateException("Exploration has already ended");
@@ -373,12 +416,15 @@ public class DCSForPython {
      * @throws IllegalStateException         if no {@link FeatureCompute} was provided
      */
     public List<int[]> getFrontierWithFeatures() {
-        if (synthesisType == SynthesisType.GR1)
-            throw new UnsupportedOperationException(
-                    "getFrontierWithFeatures() is not supported in GR(1) mode");
         if (featureCompute == null)
             throw new IllegalStateException(
                     "No FeatureCompute registered — use the constructor overload that accepts FeatureCompute");
+        if (synthesisType == SynthesisType.GR1) {
+            List<ExtendedTransition> frontier = gr1Engine.getFrontier();
+            List<int[]> result = new ArrayList<>(frontier.size());
+            for (ExtendedTransition t : frontier) result.add(featureCompute.compute(t));
+            return result;
+        }
         prunePending();
         List<int[]> result = new ArrayList<>(pending.size());
         for (ExtendedTransition t : pending) {
@@ -398,7 +444,89 @@ public class DCSForPython {
         return SynthesisResult.unrealizable(succMap.size(), transitionsExplored);
     }
 
+    // ── factory ───────────────────────────────────────────────────────────────
+
+    /**
+     * Parse an FSP file and construct a ready-to-use {@link DCSForPython}.
+     * Automatically selects the non-blocking or GR(1) solver based on the
+     * controller spec found in the file.
+     *
+     * @param fspPath       path to the {@code .fsp} source file
+     * @param heuristicType {@link HeuristicType} constant name, e.g. {@code "FIRST"}
+     * @param featureType   {@link FeatureType} constant name, e.g. {@code "BASIC"},
+     *                      or {@code null}/{@code ""} to disable feature computation
+     *                      (ignored for GR(1) instances)
+     */
+    public static DCSForPython fromPath(String fspPath,
+                                        String heuristicType,
+                                        String featureType) throws IOException {
+        Path      path  = Paths.get(fspPath);
+        FSPModel  model = FSPParser.parse(path);
+        String    name  = path.getFileName().toString().replace(".fsp", "");
+        Heuristic heuristic = HeuristicType.valueOf(heuristicType.toUpperCase()).create();
+
+        Optional<ControllerSpecDef> nbSpec = model.controllerSpecs().stream()
+            .filter(ControllerSpecDef::nonblocking)
+            .findFirst();
+
+        if (nbSpec.isPresent()) {
+            ControllerSpecDef spec = nbSpec.get();
+            List<LtlPropertyDef> safetyProps = spec.safety().stream()
+                .flatMap(sn -> model.ltlProperties().stream().filter(p -> p.name().equals(sn)))
+                .toList();
+            FeatureCompute fc = (featureType != null && !featureType.isEmpty())
+                ? FeatureType.valueOf(featureType.toUpperCase()).create()
+                : null;
+            return new DCSForPython(name,
+                new ArrayList<>(model.processes()),
+                safetyProps,
+                new HashSet<>(spec.marking()),
+                new HashSet<>(spec.controllable()),
+                heuristic, fc);
+        }
+
+        // GR(1) / blocking path
+        ControllerSpecDef spec = model.controllerSpecs().stream()
+            .findFirst()
+            .orElseThrow(() -> new IllegalArgumentException(
+                "No controller spec found in: " + fspPath));
+
+        List<LtlPropertyDef> guarantees = new ArrayList<>();
+        for (String n : spec.liveness()) {
+            model.asserts().stream().filter(p -> p.name().equals(n)).findFirst()
+                .or(() -> model.fluents().stream().filter(fl -> fl.name().equals(n))
+                    .map(fl -> new LtlPropertyDef(fl.name(), List.of(), fl)).findFirst())
+                .ifPresent(guarantees::add);
+        }
+
+        List<LtlPropertyDef> assumptions = new ArrayList<>();
+        for (String n : spec.assumption()) {
+            model.asserts().stream().filter(p -> p.name().equals(n)).findFirst()
+                .or(() -> model.fluents().stream().filter(fl -> fl.name().equals(n))
+                    .map(fl -> new LtlPropertyDef(fl.name(), List.of(), fl)).findFirst())
+                .ifPresent(assumptions::add);
+        }
+
+        List<LTS> components = new ArrayList<>(model.processes());
+        for (LtlPropertyDef g : guarantees) components.add(g.lts());
+        for (LtlPropertyDef a : assumptions) {
+            if (components.stream().noneMatch(c -> c.name().equals(a.name())))
+                components.add(a.lts());
+        }
+
+        FeatureCompute fc = (featureType != null && !featureType.isEmpty())
+            ? FeatureType.valueOf(featureType.toUpperCase()).create()
+            : null;
+        return new DCSForPython(name, components, assumptions, guarantees,
+            new HashSet<>(spec.controllable()), heuristic, fc);
+    }
+
     // ── additional observable state ───────────────────────────────────────────
+
+    /** Returns {@code true} when this instance runs non-blocking (not GR(1)) synthesis. */
+    public boolean isNonBlocking() {
+        return synthesisType == SynthesisType.NON_BLOCKING;
+    }
 
     /** Returns {@code true} iff the initial state has been classified as realizable. */
     public boolean isRealizable() {
