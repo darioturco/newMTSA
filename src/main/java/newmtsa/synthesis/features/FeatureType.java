@@ -8,15 +8,19 @@ package newmtsa.synthesis.features;
  *
  * <pre>
  * BASIC – features from "On the fly controller synthesis via reinforcement learning"
+ * ROL   – BASIC features + role-based encoding (abstract submachine per component) + one-hot action + has_index
  * </pre>
  */
 public enum FeatureType {
 
-    BASIC;
+    BASIC,
+    /** BasicFeatures extended with role-based component state encoding — see {@link RolFeatures}. */
+    ROL;
 
     public FeatureCompute create() {
         return switch (this) {
             case BASIC -> new BasicFeatures();
+            case ROL   -> new RolFeatures();
         };
     }
 }

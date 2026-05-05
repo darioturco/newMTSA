@@ -10,7 +10,7 @@ DQN = dict(
     use_transformer=False,
     lstm_hidden=64,
     seq_len=16,
-    min_episodes=50,
+    min_episodes=20,
     episode_capacity=1000,
     hidden_size=128,
     lr=1e-3,
@@ -19,7 +19,8 @@ DQN = dict(
     batch_size=64,
     epsilon_start=1.0,
     epsilon_end=0.05,
-    epsilon_decay=0.997,
+    epsilon_decay="auto",
+    epsilon_decay_episodes=250,
     target_update_freq=200,
     tau=1.0,
     min_replay_size=500,
@@ -28,7 +29,7 @@ DQN = dict(
     d_model=64,
     nhead=4,
     num_transformer_layers=2,
-    save_frequency=10,
+    save_frequency=5,
 )
 
 PPO = dict(
@@ -47,7 +48,7 @@ PPO = dict(
     d_model=64,
     nhead=4,
     num_transformer_layers=2,
-    save_frequency=10,
+    save_frequency=5,
 )
 
 SAC = dict(
@@ -73,11 +74,11 @@ SAC = dict(
     d_model=64,
     nhead=4,
     num_transformer_layers=2,
-    save_frequency=10,
+    save_frequency=5,
 )
 
 TRAIN = dict(
-    max_episodes=10_000,
-    max_steps=100_000,
-    patience=100,
+    max_episodes=1000,
+    max_steps=120_000,
+    patience=120,
 )

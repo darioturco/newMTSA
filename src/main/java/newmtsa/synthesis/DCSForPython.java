@@ -178,8 +178,14 @@ public class DCSForPython {
             Set<String> marked = new LinkedHashSet<>();
             if (isMarkingFluent) {
                 marked.add("on");
-            } else if (!isSafetyMonitor && markingActions.isEmpty()) {
-                marked.addAll(lts.acceptingStates());
+            } else if (!isSafetyMonitor) {
+                if (markingActions.isEmpty()) {
+                    marked.addAll(lts.acceptingStates());
+                } else {
+                    for (Transition t : lts.transitions()) {
+                        if (markingActions.contains(t.action())) marked.add(t.to());
+                    }
+                }
             }
             compMarked.add(marked);
 
@@ -373,17 +379,23 @@ public class DCSForPython {
 
         if (isVisited(eʹ)) {
             addParent(eʹ, e);
-            Set<String> loop = getMaxLoop(e, eʹ);
-            if (!loop.isEmpty()) {
-                if (canBeWinningLoop(loop)) {
-                    if (featuresCtx != null) featuresCtx.closedWinningLoopsCount++;
-                    Set<String> C = findNewGoalsIn(loop);
-                    promoteToGoals(C);
-                    propagateGoal(C);
-                } else {
-                    Set<String> P = findNewErrorsIn(loop);
-                    promoteToErrors(P);
-                    propagateError(P);
+            if (errors.contains(eʹ)) {
+                propagateError(Set.of(eʹ));
+            } else if (goals.contains(eʹ)) {
+                propagateGoal(Set.of(eʹ));
+            } else {
+                Set<String> loop = getMaxLoop(e, eʹ);
+                if (!loop.isEmpty()) {
+                    if (canBeWinningLoop(loop)) {
+                        if (featuresCtx != null) featuresCtx.closedWinningLoopsCount++;
+                        Set<String> C = findNewGoalsIn(loop);
+                        promoteToGoals(C);
+                        propagateGoal(C);
+                    } else {
+                        Set<String> P = findNewErrorsIn(loop);
+                        promoteToErrors(P);
+                        propagateError(P);
+                    }
                 }
             }
         } else {
@@ -441,7 +453,11 @@ public class DCSForPython {
         if (synthesisType == SynthesisType.GR1) return gr1Engine.getSynthesisResult();
         if (goals.contains(s0))
             return SynthesisResult.of(buildDirector(), succMap.size(), transitionsExplored);
-        return SynthesisResult.unrealizable(succMap.size(), transitionsExplored);
+        SynthesisResult.TerminationReason reason;
+        if (errors.contains(s0))    reason = SynthesisResult.TerminationReason.ERROR;
+        else if (pending.isEmpty()) reason = SynthesisResult.TerminationReason.FRONTIER_EMPTY;
+        else                        reason = SynthesisResult.TerminationReason.NONE;
+        return SynthesisResult.unrealizable(succMap.size(), transitionsExplored, reason);
     }
 
     // ── factory ───────────────────────────────────────────────────────────────

@@ -31,7 +31,7 @@ import re
 import random
 from collections import deque
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import torch
@@ -89,7 +89,7 @@ class DQNAgent(BaseAgent):
         batch_size: int = 64,
         epsilon_start: float = 1.0,
         epsilon_end: float = 0.05,
-        epsilon_decay: float = 0.997,
+        epsilon_decay: Union[float, str] = "auto",
         target_update_freq: int = 200,
         tau: float = 1.0,
         min_replay_size: int = 500,
@@ -99,8 +99,12 @@ class DQNAgent(BaseAgent):
         nhead: int = 4,
         num_transformer_layers: int = 2,
         save_frequency: int = 10,
+        epsilon_decay_episodes: int = 250,
     ):
         super().__init__(epsilon_start, epsilon_end, epsilon_decay, save_frequency)
+        self._auto_decay: bool = isinstance(epsilon_decay, str) and epsilon_decay.lower() in ("auto", "automatic")
+        self._epsilon_decay_config = epsilon_decay
+        self.epsilon_decay_episodes = epsilon_decay_episodes
         self.use_lstm              = use_lstm
         self.use_transformer       = use_transformer
         self.lstm_hidden           = lstm_hidden
@@ -346,6 +350,20 @@ class DQNAgent(BaseAgent):
                 print(f"[Warmup] {i + 1}/{n} episodes", flush=True)
         print(f"[Warmup] Done — buffer has {len(self.episode_buffer)} episodes.", flush=True)
 
+    def _estimate_avg_episode_length(self, env, fsp_path: str, n: int = 20) -> float:
+        """Run n random episodes and return average step count."""
+        total = 0
+        for _ in range(n):
+            frontier = env.reset(fsp_path)
+            steps = 0
+            while not env.is_finished:
+                if not frontier:
+                    break
+                frontier, _, _, _ = env.step(random.randrange(len(frontier)))
+                steps += 1
+            total += steps
+        return total / n if n > 0 else 1.0
+
     # ── persistence ──────────────────────────────────────────────────────────
 
     def save_onnx(self, path: str) -> None:
@@ -417,7 +435,7 @@ class DQNAgent(BaseAgent):
             "batch_size": self.batch_size,
             "epsilon_start": self.epsilon,
             "epsilon_end": self.epsilon_end,
-            "epsilon_decay": self.epsilon_decay,
+            "epsilon_decay": self._epsilon_decay_config,
             "target_update_freq": self.target_update_freq,
             "tau": self.tau,
             "weight_decay": self.weight_decay,
@@ -426,6 +444,7 @@ class DQNAgent(BaseAgent):
             "nhead": self.nhead,
             "num_transformer_layers": self.num_transformer_layers,
             "save_frequency": self.save_frequency,
+            "epsilon_decay_episodes": self.epsilon_decay_episodes,
         }
 
 
@@ -441,10 +460,12 @@ def train(
     results_dir: str = "results",
     verbose: bool = True,
 ) -> DQNAgent:
-    _m = re.match(r"^(.+)-\d+-\d+$", Path(fsp_path).stem)
-    family = _m.group(1) if _m else Path(fsp_path).stem
-    _rd = Path(results_dir)
-    results_path = _rd.parent / family / _rd.name
+    env.reset(fsp_path)
+    print(f"Instance type: {'non-blocking' if env.is_nonblocking else 'blocking'}")
+    if env.uses_features() and env.frontier:
+        print(f"Feature size  : {len(env.frontier[0])}")
+
+    results_path = Path(results_dir)
     results_path.mkdir(parents=True, exist_ok=True)
     csv_path = results_path / "dqn_training.csv"
 
@@ -453,16 +474,24 @@ def train(
 
     best_ep_reward = float("-inf")
     best_avg     = float("-inf")
+    best_loss    = float("inf")
     no_improve   = 0
     recent: deque = deque(maxlen=50)
     global_steps = 0
     stop_reason  = f"max episodes ({max_episodes})"
 
-    env.reset(fsp_path)
-    print(f"Instance type: {'non-blocking' if env.is_nonblocking else 'blocking'}")
-
     if agent._use_sequential:
         agent._fill_episode_buffer(env, fsp_path)
+
+    if agent._auto_decay:
+        if agent._use_sequential:
+            avg_ep_len = agent.episode_buffer.avg_episode_length()
+        else:
+            avg_ep_len = agent._estimate_avg_episode_length(env, fsp_path)
+        target_steps = agent.epsilon_decay_episodes * avg_ep_len
+        agent.epsilon_decay = (agent.epsilon_end / agent.epsilon) ** (1.0 / target_steps)
+        print(f"[Auto decay] avg_ep_len={avg_ep_len:.1f}  decay={agent.epsilon_decay:.7f}  "
+              f"(ε {agent.epsilon:.2f}→{agent.epsilon_end} in ~{agent.epsilon_decay_episodes} episodes)", flush=True)
 
     for ep in range(1, max_episodes + 1):
         frontier = env.reset(fsp_path)
@@ -492,12 +521,11 @@ def train(
             ep_reward    += reward
             ep_steps     += 1
             global_steps += 1
+            agent.decay_epsilon()
 
             if global_steps >= max_steps:
                 stop_reason = f"max steps ({max_steps:,})"
                 break
-
-        agent.decay_epsilon()
 
         with open(csv_path, "a", newline="") as f:
             csv.writer(f).writerow(
@@ -511,11 +539,14 @@ def train(
 
         recent.append(ep_reward)
         avg = sum(recent) / len(recent)
-        if (avg > best_avg) or (ep_reward > best_ep_reward):
+        new_loss_min = agent.last_loss is not None and agent.last_loss < best_loss
+        if new_loss_min:
+            best_loss = agent.last_loss
+        if (avg > best_avg) or (ep_reward > best_ep_reward) or new_loss_min:
             best_ep_reward = ep_reward
             best_avg   = avg
             no_improve = 0
-        else:
+        elif agent.epsilon <= agent.epsilon_end:
             no_improve += 1
 
         if verbose:
@@ -533,7 +564,8 @@ def train(
             break
 
     print(
-        f"\n[STOP] {stop_reason}  —  total steps: {global_steps:,}  —  total episodes: {ep}"
+        f"\n[STOP] DQN | {stop_reason}  —  total steps: {global_steps:,}  —  total episodes: {ep}"
+        f"  —  best reward: {best_ep_reward}"
     )
     agent.trained = True
     return agent

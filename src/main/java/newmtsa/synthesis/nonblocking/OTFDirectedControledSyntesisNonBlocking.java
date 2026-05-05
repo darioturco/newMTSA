@@ -144,7 +144,7 @@ public class OTFDirectedControledSyntesisNonBlocking {
             ExtendedTransition t = frontier.get(index);
 
             log("  step " + (dcsForPython.getTransitionsExplored() + 1)
-                    + " | " + formatState(t.from()) + " --[" + t.action() + "]--> " + formatState(t.to()));
+                    + " | " + index + " | " + formatState(t.from()) + " --[" + t.action() + "]--> " + formatState(t.to()));
 
             dcsForPython.expand(index);
 

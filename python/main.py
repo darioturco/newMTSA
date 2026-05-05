@@ -4,6 +4,7 @@ Entry point for running agents against the DCS RL environment.
 Usage
 -----
     python main.py [fsp_path] [mode] [network] [episodes]
+    python main.py --graph [output.png]
 
 Arguments
 ---------
@@ -23,10 +24,19 @@ Examples
     python main.py path/to/AT-2-3.fsp ppo lstm               # PPO with LSTM
     python main.py path/to/AT-2-3.fsp sac transformer        # SAC with Transformer
     python main.py path/to/AT-1-1.fsp random flat 20         # random agent, 20 episodes
+    python main.py --graph                                    # bar plot of benchmark results
+    python main.py --graph out.png                            # save graph to specific path
 """
 
 import sys
 from pathlib import Path
+
+# Handle --graph before JVM-starting imports so it works without Java/ONNX.
+if len(sys.argv) > 1 and sys.argv[1] == "--graph":
+    from graph_results import graph_results
+    output = sys.argv[2] if len(sys.argv) > 2 else None
+    graph_results(output)
+    sys.exit(0)
 
 # environment.py starts the JVM at import time; all other Python imports follow.
 from environment import DCSEnvironment
@@ -42,17 +52,33 @@ warnings.filterwarnings("ignore", category=FutureWarning, message=".*LeafSpec.*"
 warnings.filterwarnings("ignore", message=".*model version conversion.*")
 
 # ── hardcodeable defaults ──────────────────────────────────────────────────────
-DEFAULT_FSP_PATH = "..\\fsp\\NonBlocking\\Benchmark\\DP\\DP-2-2.fsp"          # None → built-in AT-2-2.fsp
+DEFAULT_FSP_PATH = "..\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp"          # None → built-in AT-2-2.fsp
 DEFAULT_MODE     = "dqn"         # random | dqn | ppo | sac
 DEFAULT_NETWORK  = "flat"        # flat | lstm | transformer  ← change here to switch globally
 DEFAULT_EPISODES = 1             # only used for random mode
+
+# ── feature set selection ───────────────────────────────────────────────────────
+# BASIC : action one-hot, state label, controllable, phase, deadlock, neighborhood, …
+# ROL   : all BASIC features + role-based component encoding + action one-hot + has_index
+FEATURE_TYPE     = "ROL"       # BASIC | ROL  ← change here to switch globally
 # ──────────────────────────────────────────────────────────────────────────────
 
 RESULTS_BASE = Path(__file__).parent / "results"
 
 
-def _results_dir(agent: str, network: str) -> str:
-    return str(RESULTS_BASE / f"{agent}_{network}")
+def _results_dir(fsp_path: str, agent: str, network: str) -> str:
+    """Full save path: results/<blocking>/<Family>/<feature>/<agent>_<network>"""
+    p = Path(fsp_path)
+    family   = p.parent.name                                      # e.g. "DP"
+    parts_lc = [part.lower() for part in p.parts]
+    if "nonblocking" in parts_lc:
+        problem_type = "nonblocking"
+    elif "blocking" in parts_lc:
+        problem_type = "blocking"
+    else:
+        problem_type = "unknown"
+    feature  = FEATURE_TYPE.lower()                               # e.g. "rol"
+    return str(RESULTS_BASE / problem_type / family / feature / f"{agent}_{network}")
 
 
 def _network_flags(network: str) -> dict:
@@ -75,7 +101,7 @@ def run_random(fsp_path: str, num_episodes: int) -> None:
 
 
 def run_dqn(fsp_path: str, network: str = "flat") -> None:
-    env   = DCSEnvironment(feature_type="BASIC")
+    env   = DCSEnvironment(feature_type=FEATURE_TYPE)
     agent = DQNAgent(**{**DQN_CONFIG, **_network_flags(network)})
 
     tag_map = {"lstm": "DQN-LSTM", "transformer": "DQN-Transformer"}
@@ -85,11 +111,11 @@ def run_dqn(fsp_path: str, network: str = "flat") -> None:
     print("-" * 60)
 
     train(env, agent, fsp_path, **TRAIN_CONFIG,
-          results_dir=_results_dir("dqn", network), verbose=True)
+          results_dir=_results_dir(fsp_path, "dqn", network), verbose=True)
 
 
 def run_ppo(fsp_path: str, network: str = "flat") -> None:
-    env   = DCSEnvironment(feature_type="BASIC")
+    env   = DCSEnvironment(feature_type=FEATURE_TYPE)
     agent = PPOAgent(**{**PPO_CONFIG, **_network_flags(network)})
 
     tag_map = {"lstm": "PPO-LSTM", "transformer": "PPO-Transformer"}
@@ -99,11 +125,11 @@ def run_ppo(fsp_path: str, network: str = "flat") -> None:
     print("-" * 60)
 
     ppo_train(env, agent, fsp_path, **TRAIN_CONFIG,
-              results_dir=_results_dir("ppo", network), verbose=True)
+              results_dir=_results_dir(fsp_path, "ppo", network), verbose=True)
 
 
 def run_sac(fsp_path: str, network: str = "flat") -> None:
-    env   = DCSEnvironment(feature_type="BASIC")
+    env   = DCSEnvironment(feature_type=FEATURE_TYPE)
     agent = SACAgent(**{**SAC_CONFIG, **_network_flags(network)})
 
     tag_map = {"lstm": "SAC-LSTM", "transformer": "SAC-Transformer"}
@@ -113,7 +139,7 @@ def run_sac(fsp_path: str, network: str = "flat") -> None:
     print("-" * 60)
 
     sac_train(env, agent, fsp_path, **TRAIN_CONFIG,
-              results_dir=_results_dir("sac", network), verbose=True)
+              results_dir=_results_dir(fsp_path, "sac", network), verbose=True)
 
 
 def _dispatch(fsp_path: str, mode: str, network: str, episodes: int) -> None:
@@ -133,6 +159,7 @@ def _dispatch(fsp_path: str, mode: str, network: str, episodes: int) -> None:
 
 
 def main() -> None:
+    # --graph is intercepted before this point
     fsp_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_FSP_PATH
     mode     = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_MODE
     network  = sys.argv[3] if len(sys.argv) > 3 else DEFAULT_NETWORK

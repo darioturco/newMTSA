@@ -114,14 +114,17 @@ public final class FeaturesContext {
         return true;
     }
 
+    /** Returns the component LTS list used in the parallel composition. */
+    public List<LTS> getComponents() { return components; }
+
     /** {@code true} iff {@code state} has been classified (goal, error, or none). */
     public boolean isVisited(String state) {
         return goals.contains(state) || errors.contains(state) || none.contains(state);
     }
 
-    /** Strips all digit characters from {@code label}. */
+    /** Strips all {@code [N]} index suffixes from {@code label}. */
     public static String removeIndices(String label) {
-        return label.replaceAll("\\.[0-9]+", "");
+        return label.replaceAll("\\[[0-9]+\\]", "");
     }
 
     // ── private ───────────────────────────────────────────────────────────────

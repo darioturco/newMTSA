@@ -188,7 +188,9 @@ public class DCSBenchmark {
     }
 
     private static DCSForPython loadInstance(Path fspPath) throws IOException {
-        return DCSForPython.fromPath(fspPath.toString(), "FIRST", "BASIC");
+        // Heuristic is required by the constructor but never called in RL mode —
+        // the ONNX policy overrides all action selection. FIRST is the cheapest placeholder.
+        return DCSForPython.fromPath(fspPath.toString(), "FIRST", DEFAULT_FEATURE_TYPE);
     }
 
     private static BenchResult runEpisode(DCSForPython dcs, RLPolicy policy,
@@ -224,36 +226,164 @@ public class DCSBenchmark {
      * Usage: DCSBenchmark &lt;onnx_path&gt; &lt;fsp_dir&gt; [budget=2500] [output.csv=benchmark_results.csv]
      * </pre>
      */
-    // ── hardcoded defaults (used when no CLI args are provided) ──────────────
-    private static final String DEFAULT_ONNX_PATH = ".\\python\\results\\dqn_flat\\dqn_ep0020.onnx";
-    private static final String DEFAULT_FSP_DIR   = ".\\fsp\\Blocking\\Benchmark\\AT\\";
-    private static final int    DEFAULT_BUDGET     = 500;
-    private static final String DEFAULT_CSV_PATH   = "benchmark_results.csv";
+    // ── heuristic mode ───────────────────────────────────────────────────────
 
+    private static BenchResult runHeuristicEpisode(DCSForPython dcs, int budget) {
+        while (!dcs.isExplorationEnded() && dcs.getTransitionsExplored() < budget) {
+            List<ExtendedTransition> frontier = dcs.getFrontier();
+            if (frontier.isEmpty()) break;
+            dcs.expand(dcs.heuristic.pick(frontier));
+        }
+        boolean finished = dcs.isExplorationEnded();
+        return new BenchResult(finished, finished && dcs.isRealizable(),
+                               dcs.getTransitionsExplored(), dcs.getStatesExplored());
+    }
+
+    private static void runHeuristicBenchmark(Path fspDir, String heuristicType,
+                                               int budget, String csvPath) throws Exception {
+        System.out.printf("Heuristic : %s%nBudget    : %d transitions%n%n", heuristicType, budget);
+
+        Pattern pat = Pattern.compile(".+-(\\d+)-(\\d+)\\.fsp");
+        Map<Integer, List<Map.Entry<Integer, Path>>> byN = new TreeMap<>();
+
+        try (var stream = Files.walk(fspDir)) {
+            stream.filter(p -> p.toString().endsWith(".fsp"))
+                  .forEach(p -> {
+                      Matcher m = pat.matcher(p.getFileName().toString());
+                      if (m.matches()) {
+                          int n = Integer.parseInt(m.group(1));
+                          int k = Integer.parseInt(m.group(2));
+                          byN.computeIfAbsent(n, x -> new ArrayList<>())
+                             .add(Map.entry(k, p));
+                      }
+                  });
+        }
+        byN.values().forEach(list -> list.sort(Map.Entry.comparingByKey()));
+
+        Path parent = Paths.get(csvPath).getParent();
+        if (parent != null) Files.createDirectories(parent);
+
+        boolean writeHeader = !Files.exists(Paths.get(csvPath)) || Files.size(Paths.get(csvPath)) == 0;
+        try (PrintWriter csv = new PrintWriter(new FileWriter(csvPath, true))) {
+            if (writeHeader) {
+                csv.println("family,n,k,solved,realizable,transitions,states,time_ms");
+                csv.flush();
+            }
+
+            for (var nEntry : byN.entrySet()) {
+                int     n        = nEntry.getKey();
+                boolean skipRest = false;
+
+                for (var kEntry : nEntry.getValue()) {
+                    int  k      = kEntry.getKey();
+                    Path fsp    = kEntry.getValue();
+                    String family = deriveFamily(fsp);
+
+                    if (skipRest) {
+                        System.out.printf("  N=%-3d K=%-3d  SKIPPED (pruned)%n", n, k);
+                        csv.printf("%s,%d,%d,false,false,-1,-1,-1%n", family, n, k);
+                        csv.flush();
+                        continue;
+                    }
+
+                    DCSForPython dcs;
+                    try {
+                        dcs = DCSForPython.fromPath(fsp.toString(), heuristicType, "");
+                    } catch (Exception e) {
+                        System.err.printf("  N=%-3d K=%-3d  ERROR loading: %s%n",
+                            n, k, e.getMessage());
+                        continue;
+                    }
+
+                    long        t0  = System.currentTimeMillis();
+                    BenchResult res = runHeuristicEpisode(dcs, budget);
+                    long        ms  = System.currentTimeMillis() - t0;
+
+                    System.out.printf(
+                        "  N=%-3d K=%-3d  solved=%-5s realizable=%-5s trans=%-5d states=%-5d %dms%n",
+                        n, k, res.solved(), res.realizable(),
+                        res.transitions(), res.states(), ms);
+
+                    csv.printf("%s,%d,%d,%b,%b,%d,%d,%d%n",
+                        family, n, k,
+                        res.solved(), res.realizable(),
+                        res.transitions(), res.states(), ms);
+                    csv.flush();
+
+                    if (!res.solved()) skipRest = true;
+                }
+            }
+        }
+        System.out.println("\nDone. Results written to: " + csvPath);
+    }
+
+    // ── hardcoded defaults (used when no CLI args are provided) ──────────────
+    private static final String DEFAULT_ONNX_PATH     = ".\\python\\results\\blocking\\DP\\rol\\dqn_flat\\dqn_ep0025.onnx";
+    private static final String DEFAULT_FSP_DIR        = ".\\fsp\\Blocking\\Benchmark\\DP\\";
+    private static final int    DEFAULT_BUDGET          = 2500;
+    private static final String DEFAULT_CSV_PATH        = "benchmark_results.csv";
+    // Heuristic mode default. "RL" = RL model mode (uses DEFAULT_ONNX_PATH).
+    // Options: RL, FIRST, RANDOM, BFS, RA, RA_R, RA_E, RA_ER, RA_ERG,
+    //          RA_OPEN, RA_R_OPEN, RA_E_OPEN, RA_ER_OPEN, RA_ERG_OPEN
+    private static final String DEFAULT_HEURISTIC_TYPE = "RL";
+    // Feature set used when loading RL instances. Options: BASIC, ROL
+    private static final String DEFAULT_FEATURE_TYPE   = "ROL";
+
+    /**
+     * Usage:
+     *   Heuristic mode : DCSBenchmark <HEURISTIC_TYPE> <fsp_dir> [budget=2500]
+     *   RL model mode  : DCSBenchmark <model.onnx>    <fsp_dir> [budget=2500] [output.csv]
+     *   No args        : uses hardcoded defaults above
+     *
+     * Mode is auto-detected: if args[0] ends with ".onnx" → RL mode, otherwise → heuristic mode.
+     */
     public static void main(String[] args) throws Exception {
-        String onnxPath;
         Path   fspDir;
         int    budget;
+        String heuristicType;
+        String onnxPath;
         String csvPath;
 
         if (args.length == 0) {
-            onnxPath = DEFAULT_ONNX_PATH;
-            fspDir   = Paths.get(DEFAULT_FSP_DIR);
-            budget   = DEFAULT_BUDGET;
-            csvPath  = DEFAULT_CSV_PATH;
-            System.out.println("[DCSBenchmark] No args provided — using hardcoded defaults:");
-            System.out.printf("  onnx  = %s%n  dir   = %s%n  budget= %d%n  csv   = %s%n%n",
-                onnxPath, fspDir, budget, csvPath);
+            fspDir       = Paths.get(DEFAULT_FSP_DIR);
+            budget       = DEFAULT_BUDGET;
+            heuristicType = DEFAULT_HEURISTIC_TYPE;
+            onnxPath     = DEFAULT_ONNX_PATH;
+            csvPath      = DEFAULT_CSV_PATH;
+            System.out.println("[DCSBenchmark] No args — using hardcoded defaults:");
+            if (!"RL".equals(heuristicType)) {
+                System.out.printf("  mode  = heuristic (%s)%n  dir   = %s%n  budget= %d%n%n",
+                    heuristicType, fspDir, budget);
+            } else {
+                System.out.printf("  onnx  = %s%n  dir   = %s%n  budget= %d%n  csv   = %s%n%n",
+                    onnxPath, fspDir, budget, csvPath);
+            }
         } else if (args.length < 2) {
             System.err.println(
-                "Usage: DCSBenchmark <onnx_path> <fsp_dir> [budget=2500] [output.csv=benchmark_results.csv]");
+                "Usage (heuristic): DCSBenchmark <HEURISTIC_TYPE> <fsp_dir> [budget=2500]");
+            System.err.println(
+                "Usage (RL model) : DCSBenchmark <model.onnx> <fsp_dir> [budget=2500] [output.csv]");
             System.exit(1);
             return;
         } else {
-            onnxPath = args[0];
-            fspDir   = Paths.get(args[1]);
-            budget   = args.length > 2 ? Integer.parseInt(args[2]) : DEFAULT_BUDGET;
-            csvPath  = args.length > 3 ? args[3] : DEFAULT_CSV_PATH;
+            fspDir  = Paths.get(args[1]);
+            budget  = args.length > 2 ? Integer.parseInt(args[2]) : DEFAULT_BUDGET;
+            if (args[0].endsWith(".onnx")) {
+                heuristicType = "RL";
+                onnxPath      = args[0];
+                csvPath       = args.length > 3 ? args[3] : DEFAULT_CSV_PATH;
+            } else {
+                heuristicType = args[0].toUpperCase();
+                onnxPath      = null;
+                csvPath       = null;
+            }
+        }
+
+        if (!"RL".equals(heuristicType)) {
+            String hCsvPath = "results" + File.separator
+                              + heuristicType.toLowerCase() + "_benchmark.csv";
+            runHeuristicBenchmark(fspDir, heuristicType, budget, hCsvPath);
+            return;
         }
 
         OrtEnvironment ortEnv = OrtEnvironment.getEnvironment();
@@ -280,9 +410,12 @@ public class DCSBenchmark {
             }
             byN.values().forEach(list -> list.sort(Map.Entry.comparingByKey()));
 
-            try (PrintWriter csv = new PrintWriter(new FileWriter(csvPath))) {
-                csv.println("family,n,k,solved,realizable,transitions,states,time_ms");
-                csv.flush();
+            boolean writeHeader = !Files.exists(Paths.get(csvPath)) || Files.size(Paths.get(csvPath)) == 0;
+            try (PrintWriter csv = new PrintWriter(new FileWriter(csvPath, true))) {
+                if (writeHeader) {
+                    csv.println("family,n,k,solved,realizable,transitions,states,time_ms");
+                    csv.flush();
+                }
 
                 for (var nEntry : byN.entrySet()) {
                     int     n        = nEntry.getKey();
@@ -329,9 +462,9 @@ public class DCSBenchmark {
                             long        ms  = System.currentTimeMillis() - t0;
 
                             System.out.printf(
-                                "  N=%-3d K=%-3d  solved=%-5s realizable=%-5s trans=%-5d states=%-5d %dms%n",
+                                "  N=%-3d K=%-3d  solved=%-5s realizable=%-5s trans=%-5d %dms%n",
                                 n, k, res.solved(), res.realizable(),
-                                res.transitions(), res.states(), ms);
+                                res.transitions(), ms);
 
                             csv.printf("%s,%d,%d,%b,%b,%d,%d,%d%n",
                                 family, n, k,

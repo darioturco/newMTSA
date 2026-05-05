@@ -160,6 +160,7 @@ public class RAHeuristic implements Heuristic {
     public int pick(List<ExtendedTransition> pending) {
         if (ctx == null) return 0;  // not yet initialised — safe fallback
 
+        currentPending = pending;
         refreshVisitedStates();
         if (useG) refreshGoalStates();
 
@@ -197,6 +198,9 @@ public class RAHeuristic implements Heuristic {
 
     /** The transition returned by the most recent {@link #pick} call. */
     private ExtendedTransition lastPicked = null;
+
+    /** Snapshot of the pending list for the current {@link #pick} invocation. */
+    private List<ExtendedTransition> currentPending = List.of();
 
     /**
      * Maintains the open/closed state sets and returns the open-queue view of
@@ -384,24 +388,37 @@ public class RAHeuristic implements Heuristic {
     }
 
     /**
-     * Returns true iff no controllable transition from {@code from} has a
-     * visited target — i.e., no controllable child of this source state has
-     * been expanded yet.  Mirrors {@code Compostate.getControllablesExpandedCount() == 0}.
+     * Returns true iff no controllable transition from {@code from} has been
+     * expanded (removed from pending and processed) — mirrors
+     * {@code Compostate.getControllablesExpandedCount() == 0}.
+     *
+     * A transition is "expanded" when its target has been explored AND the
+     * transition is no longer in the current pending list (it was picked earlier).
      */
     private boolean noExploredControllableChildren(String from) {
         for (ExtendedTransition t : ctx.successorsOf(from)) {
-            if (controllable.contains(t.action()) && ctx.exploredStates().contains(t.to())) {
-                return false;
+            if (!controllable.contains(t.action())) continue;
+            if (!ctx.exploredStates().contains(t.to())) continue;
+            boolean stillPending = false;
+            for (ExtendedTransition p : currentPending) {
+                if (p.from().equals(from) && p.action().equals(t.action())) {
+                    stillPending = true;
+                    break;
+                }
             }
+            if (!stillPending) return false;
         }
         return true;
     }
 
     /**
-     * A composite state is "controllable" if every transition in its explored
-     * successor list is controllable (the environment has no forced moves).
-     * States that have not been expanded yet are treated as controllable
-     * (empty successor list → no uncontrollable transitions known).
+     * A composite state is "controllable" if every known successor transition is
+     * controllable (the environment has no forced moves from this state).
+     *
+     * <p>Uses the full successor list rather than pending, because a pending-only
+     * check over-promotes states whose uncontrollable successors were classified
+     * early (via backpropagation), leading to excessive structural priority when
+     * combined with per-component marking estimates.
      */
     private boolean isControllableState(String compositeState) {
         for (ExtendedTransition t : ctx.successorsOf(compositeState)) {

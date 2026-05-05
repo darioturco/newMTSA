@@ -415,6 +415,11 @@ class EpisodeReplayBuffer:
                 windows.append(ep[start : start + self.seq_len])
         return windows
 
+    def avg_episode_length(self) -> float:
+        if not self._episodes:
+            return 1.0
+        return sum(len(ep) for ep in self._episodes) / len(self._episodes)
+
     def __len__(self) -> int:
         return len(self._episodes)
 

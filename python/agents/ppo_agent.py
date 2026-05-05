@@ -437,10 +437,12 @@ def train(
     results_dir: str = "results",
     verbose: bool = True,
 ) -> PPOAgent:
-    _m = re.match(r"^(.+)-\d+-\d+$", Path(fsp_path).stem)
-    family = _m.group(1) if _m else Path(fsp_path).stem
-    _rd = Path(results_dir)
-    results_path = _rd.parent / family / _rd.name
+    env.reset(fsp_path)
+    print(f"Instance type: {'non-blocking' if env.is_nonblocking else 'blocking'}")
+    if env.uses_features() and env.frontier:
+        print(f"Feature size  : {len(env.frontier[0])}")
+
+    results_path = Path(results_dir)
     results_path.mkdir(parents=True, exist_ok=True)
     csv_path = results_path / "ppo_training.csv"
 
@@ -449,13 +451,11 @@ def train(
 
     best_ep_reward = float("-inf")
     best_avg     = float("-inf")
+    best_loss    = float("inf")
     no_improve   = 0
     recent: deque = deque(maxlen=50)
     global_steps = 0
     stop_reason  = f"max episodes ({max_episodes})"
-
-    env.reset(fsp_path)
-    print(f"Instance type: {'non-blocking' if env.is_nonblocking else 'blocking'}")
 
     for ep in range(1, max_episodes + 1):
         frontier = env.reset(fsp_path)
@@ -504,7 +504,10 @@ def train(
 
         recent.append(ep_reward)
         avg = sum(recent) / len(recent)
-        if (avg > best_avg) or (ep_reward > best_ep_reward):
+        new_loss_min = agent.last_loss is not None and agent.last_loss < best_loss
+        if new_loss_min:
+            best_loss = agent.last_loss
+        if (avg > best_avg) or (ep_reward > best_ep_reward) or new_loss_min:
             best_ep_reward = ep_reward
             best_avg   = avg
             no_improve = 0
@@ -525,7 +528,8 @@ def train(
             break
 
     print(
-        f"\n[STOP] {stop_reason}  —  total steps: {global_steps:,}  —  total episodes: {ep}"
+        f"\n[STOP] PPO | {stop_reason}  —  total steps: {global_steps:,}  —  total episodes: {ep}"
+        f"  —  best reward: {best_ep_reward}"
     )
     agent.trained = True
     return agent

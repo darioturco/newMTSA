@@ -23,32 +23,43 @@ public class Main {
     // Change HEURISTIC to switch strategy. For Non-Blocking DCS, RANDOM also
     // uses SCRIPT (see below); all other heuristics ignore SCRIPT.
     //
-    //   FIRST    – always picks the first transition in the frontier (deterministic)
-    //   RANDOM   – uniform random; uses SCRIPT indices first, then falls back to random
-    //   BFS      – breadth-first layer-by-layer expansion
-    //   HUMAN    – interactive: prints the frontier and asks the user to choose
-    //   RA       – Ready Abstraction (base, Pazos 2024)
-    //   RA_R     – RA + recompute estimates when new marked states are discovered
-    //   RA_E     – RA + structure-aware tie-breaking
-    //   RA_ER    – RA.R + RA.E combined
-    //   RA_ERG   – RA.R + RA.E + Goals-as-targets (all improvements)
-    //static final HeuristicType HEURISTIC = HeuristicType.RA;
-    static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
+    //   FIRST         – always picks the first transition in the frontier (deterministic)
+    //   RANDOM        – uniform random; uses SCRIPT indices first, then falls back to random
+    //   BFS           – breadth-first layer-by-layer expansion
+    //   HUMAN         – interactive: prints the frontier and asks the user to choose
+    //   RA            – Ready Abstraction (base, Pazos 2024)
+    //   RA_R          – RA + recompute estimates when new marked states are discovered
+    //   RA_E          – RA + structure-aware tie-breaking
+    //   RA_ER         – RA.R + RA.E combined
+    //   RA_ERG        – RA.R + RA.E + Goals-as-targets (all improvements)
+    //
+    //   Open-queue variants (DFS bias — restrict picks to states with no pending uncontrollables):
+    //   RA_OPEN       – RA  + open queue  (best open-queue variant per Pazos §7.2)
+    //   RA_R_OPEN     – RA.R + open queue
+    //   RA_E_OPEN     – RA.E + open queue  (NOTE: combining open queue + RA.E is counterproductive)
+    //   RA_ER_OPEN    – RA.ER + open queue
+    //   RA_ERG_OPEN   – RA.ERG + open queue
+    //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
+    //static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
     //static final HeuristicType HEURISTIC = HeuristicType.FIRST;
     //static final HeuristicType HEURISTIC = HeuristicType.BFS;
     //static final HeuristicType HEURISTIC = HeuristicType.HUMAN;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_R;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_E;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ER;
-    //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
+    static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
+    //static final HeuristicType HEURISTIC = HeuristicType.RA_OPEN;
+    //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG_OPEN;
+
+    // Print composite states as names (false) or numeric indices (true).
+    static final boolean USE_NUMERIC_STATE_IDS = true;
 
     // Scripted frontier indices used when HEURISTIC = RANDOM.
     // At step k picks pending.get(SCRIPT[k]); falls back to random once exhausted.
     // List.of() = pure random from the start.
     // [0,0,0,1] selects actions a[1], a[3], a[2], a[8] for FloppyTesis.fsp.
-    //static final List<Integer> SCRIPT = List.of(0, 0, 3, 0, 1);
-    //static final List<Integer> SCRIPT = List.of(0, 1, 2, 3);
-    static final List<Integer> SCRIPT = List.of();   // unused when HEURISTIC != RANDOM
+    //static final List<Integer> SCRIPT = List.of(0, 3, 6, 9, 12, 14, 17, 18, 14, 15, 22, 25, 27, 22, 28, 17);   // unused when HEURISTIC != RANDOM (Expansion to solve TL-2-2 in the same way the original RA should.)
+    static final List<Integer> SCRIPT = List.of();
 
     public static void main(String[] args) throws IOException {
         Path file;
@@ -57,14 +68,14 @@ public class Main {
         }else{
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\CM\\CM-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\DP\\DP-2-2.fsp");
-            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TL\\TL-2-2.fsp");
+            file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TL\\TL-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TA\\TA-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\AT\\AT-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\BW\\BW-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\ControllableFSPs\\test21.lts");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\CM\\CM-2-2.fsp");
-            file = Path.of("C:\\Users\\diort\\Downloads\\data\\krka_et_al_FSE14\\reference_models\\ElemNumber$NumberFormatStringTokenizer.lts");
+            //file = Path.of("C:\\Users\\diort\\Downloads\\data\\krka_et_al_FSE14\\reference_models\\ElemNumber$NumberFormatStringTokenizer.lts");
 
         }
 
@@ -97,7 +108,7 @@ public class Main {
         }
 
         System.out.println("  Result: " + (result.isRealizable() ? "REALIZABLE" : "UNREALIZABLE"));
-        System.out.println("  States explored     : " + result.statesExplored());
+        System.out.println("  Termination reason  : " + result.terminationReason());
         System.out.println("  Transitions expanded: " + result.transitionsExplored());
     }
 
@@ -110,9 +121,12 @@ public class Main {
                     .ifPresent(safetyProps::add);
         }
 
-        Heuristic h = (HEURISTIC == HeuristicType.RANDOM)
-                ? new RandomHeuristic(SCRIPT)
-                : HEURISTIC.create();
+        Heuristic h;
+        if (HEURISTIC == HeuristicType.RANDOM) {
+            h = new RandomHeuristic(SCRIPT);
+        } else {
+            h = HEURISTIC.create();
+        }
 
         return new OTFDirectedControledSyntesisNonBlocking(
                 new ArrayList<>(model.processes()),
@@ -120,7 +134,9 @@ public class Main {
                 new HashSet<>(spec.marking()),
                 new HashSet<>(spec.controllable()),
                 h,
-                verbose
+                verbose,
+                Integer.MAX_VALUE,
+                USE_NUMERIC_STATE_IDS
         ).run();
     }
 
@@ -163,7 +179,8 @@ public class Main {
                 components, assumptions, guarantees,
                 new HashSet<>(spec.controllable()),
                 HEURISTIC.create(),
-                verbose
+                verbose,
+                USE_NUMERIC_STATE_IDS
         ).run();
     }
 }

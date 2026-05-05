@@ -308,16 +308,22 @@ public class OTFDirectedControledSyntesisGR1 {
 
         if (isVisited(eʹ)) {
             addParent(eʹ, e);
-            Set<String> loop = getMaxLoop(e, eʹ);
-            if (!loop.isEmpty()) {
-                if (canBeWinningLoop(loop)) {
-                    Set<String> C = findNewGoalsIn(loop);
-                    promoteToGoals(C);
-                    propagateGoal(C);
-                } else {
-                    Set<String> P = findNewErrorsIn(loop);
-                    promoteToErrors(P);
-                    propagateError(P);
+            if (errors.contains(eʹ)) {
+                propagateError(Set.of(eʹ));
+            } else if (goals.contains(eʹ)) {
+                propagateGoal(Set.of(eʹ));
+            } else {
+                Set<String> loop = getMaxLoop(e, eʹ);
+                if (!loop.isEmpty()) {
+                    if (canBeWinningLoop(loop)) {
+                        Set<String> C = findNewGoalsIn(loop);
+                        promoteToGoals(C);
+                        propagateGoal(C);
+                    } else {
+                        Set<String> P = findNewErrorsIn(loop);
+                        promoteToErrors(P);
+                        propagateError(P);
+                    }
                 }
             }
         } else {
@@ -351,7 +357,11 @@ public class OTFDirectedControledSyntesisGR1 {
     public SynthesisResult getSynthesisResult() {
         if (goals.contains(s0))
             return SynthesisResult.of(buildDirector(), succMap.size(), transitionsExplored);
-        return SynthesisResult.unrealizable(succMap.size(), transitionsExplored);
+        SynthesisResult.TerminationReason reason;
+        if (errors.contains(s0))    reason = SynthesisResult.TerminationReason.ERROR;
+        else if (pending.isEmpty()) reason = SynthesisResult.TerminationReason.FRONTIER_EMPTY;
+        else                        reason = SynthesisResult.TerminationReason.NONE;
+        return SynthesisResult.unrealizable(succMap.size(), transitionsExplored, reason);
     }
 
     // ── state helpers ─────────────────────────────────────────────────────────
