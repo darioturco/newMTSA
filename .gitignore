@@ -29,6 +29,8 @@ Thumbs.db
 # Others
 plan.txt
 run_test.txt
+*.png
+*.pdf
 
 # Python
 __pycache__/
