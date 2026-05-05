@@ -348,6 +348,64 @@ class ReplayBuffer:
         return len(self._buf)
 
 
+class PrioritizedReplayBuffer:
+    """Flat replay buffer with priority-based sampling.
+
+    priority_mode='td_error': push uses max_priority; update_priorities called after each
+                              training step with |TD-error|; IS weights correct the gradient.
+    priority_mode='reward':   push uses |reward| as initial priority; priorities never updated;
+                              beta=0 so IS weights = 1 (no gradient correction).
+    """
+
+    def __init__(self, capacity: int, alpha: float = 0.6):
+        self.capacity = capacity
+        self.alpha = alpha
+        self._buf: list = []
+        self._priorities: np.ndarray = np.zeros(capacity, dtype=np.float32)
+        self._pos: int = 0
+        self._max_priority: float = 1.0
+
+    def push(self, feat_chosen: np.ndarray, reward: float,
+             next_feats: list, done: bool,
+             initial_priority: Optional[float] = None) -> None:
+        entry = (
+            feat_chosen,
+            float(reward),
+            [np.asarray(f, dtype=np.float32) for f in next_feats],
+            bool(done),
+        )
+        if len(self._buf) < self.capacity:
+            self._buf.append(entry)
+        else:
+            self._buf[self._pos] = entry
+        p = float(initial_priority) if initial_priority is not None else self._max_priority
+        self._priorities[self._pos] = p
+        if p > self._max_priority:
+            self._max_priority = p
+        self._pos = (self._pos + 1) % self.capacity
+
+    def sample(self, batch_size: int, beta: float = 0.4):
+        """Returns (samples, indices, is_weights). beta=0 gives is_weights=1 (no correction)."""
+        n = len(self._buf)
+        priorities = self._priorities[:n] ** self.alpha
+        probs = priorities / priorities.sum()
+        indices = np.random.choice(n, min(batch_size, n), p=probs, replace=False)
+        samples = [self._buf[i] for i in indices]
+        weights = (n * probs[indices]) ** (-beta)
+        weights = (weights / weights.max()).astype(np.float32)
+        return samples, indices, torch.tensor(weights)
+
+    def update_priorities(self, indices: np.ndarray, new_priorities: np.ndarray) -> None:
+        for idx, p in zip(indices, new_priorities):
+            p = float(p)
+            self._priorities[idx] = p
+            if p > self._max_priority:
+                self._max_priority = p
+
+    def __len__(self) -> int:
+        return len(self._buf)
+
+
 class SACReplayBuffer:
     """Flat replay buffer for SAC: stores (curr_feats, action, reward, next_feats, done)."""
 
@@ -383,6 +441,7 @@ class EpisodeReplayBuffer:
 
     def __init__(self, capacity: int, seq_len: int):
         self._episodes: deque = deque(maxlen=capacity)
+        self._returns: deque = deque(maxlen=capacity)
         self._current: list = []
         self.seq_len = seq_len
 
@@ -398,13 +457,26 @@ class EpisodeReplayBuffer:
         if done:
             if self._current:
                 self._episodes.append(self._current)
+                self._returns.append(sum(s[3] for s in self._current))
             self._current = []
 
-    def sample(self, n_seqs: int) -> List[list]:
-        """Return n_seqs windows of length seq_len (or full episode if shorter)."""
+    def sample(self, n_seqs: int, alpha: float = 0.0) -> List[list]:
+        """Return n_seqs windows of length seq_len (or full episode if shorter).
+
+        alpha=0: uniform sampling (default).
+        alpha>0: episodes sampled proportional to |return|^alpha (reward-priority mode).
+        """
         if not self._episodes:
             return []
-        chosen = random.choices(self._episodes, k=n_seqs)
+        if alpha > 0.0 and self._returns:
+            returns = np.array(list(self._returns), dtype=np.float32)
+            priorities = (np.abs(returns) + 1e-6) ** alpha
+            probs = priorities / priorities.sum()
+            episodes_list = list(self._episodes)
+            chosen_idx = np.random.choice(len(episodes_list), n_seqs, p=probs, replace=True)
+            chosen = [episodes_list[i] for i in chosen_idx]
+        else:
+            chosen = random.choices(self._episodes, k=n_seqs)
         windows = []
         for ep in chosen:
             T = len(ep)

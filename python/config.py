@@ -20,7 +20,7 @@ DQN = dict(
     epsilon_start=1.0,
     epsilon_end=0.05,
     epsilon_decay="auto",
-    epsilon_decay_episodes=250,
+    epsilon_decay_episodes=400,
     target_update_freq=200,
     tau=1.0,
     min_replay_size=500,
@@ -30,6 +30,10 @@ DQN = dict(
     nhead=4,
     num_transformer_layers=2,
     save_frequency=5,
+    gradient_steps=1,
+    priority_mode='none', # 'none' | 'td_error' | 'reward'
+    priority_alpha=0.6,
+    priority_beta=0.4,
 )
 
 PPO = dict(
@@ -78,7 +82,7 @@ SAC = dict(
 )
 
 TRAIN = dict(
-    max_episodes=1000,
-    max_steps=120_000,
-    patience=120,
+    max_episodes=1600,
+    max_steps=150_000,
+    patience=150,
 )

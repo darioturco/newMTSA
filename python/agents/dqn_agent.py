@@ -43,7 +43,7 @@ from .base_agent import BaseAgent
 from .networks import (
     MLPScorer, LSTMNet, TransformerNet,
     OnnxLSTMWrapper, OnnxTransformerWrapper,
-    ReplayBuffer, EpisodeReplayBuffer,
+    ReplayBuffer, PrioritizedReplayBuffer, EpisodeReplayBuffer,
 )
 
 
@@ -72,6 +72,10 @@ class DQNAgent(BaseAgent):
     nhead                 : number of Transformer attention heads
     num_transformer_layers: number of Transformer encoder layers
     save_frequency        : save checkpoint every N episodes
+    gradient_steps        : gradient updates per environment step (default 1)
+    priority_mode         : 'none' (uniform), 'td_error' (PER), or 'reward' (reward-weighted)
+    priority_alpha        : priority exponent — 0=uniform, 1=full prioritization
+    priority_beta         : IS correction exponent for td_error mode (0=no correction, 1=full)
     """
 
     def __init__(
@@ -100,11 +104,19 @@ class DQNAgent(BaseAgent):
         num_transformer_layers: int = 2,
         save_frequency: int = 10,
         epsilon_decay_episodes: int = 250,
+        gradient_steps: int = 1,
+        priority_mode: str = 'none',
+        priority_alpha: float = 0.6,
+        priority_beta: float = 0.4,
     ):
         super().__init__(epsilon_start, epsilon_end, epsilon_decay, save_frequency)
         self._auto_decay: bool = isinstance(epsilon_decay, str) and epsilon_decay.lower() in ("auto", "automatic")
         self._epsilon_decay_config = epsilon_decay
         self.epsilon_decay_episodes = epsilon_decay_episodes
+        self.gradient_steps        = gradient_steps
+        self.priority_mode         = priority_mode
+        self.priority_alpha        = priority_alpha
+        self.priority_beta         = priority_beta
         self.use_lstm              = use_lstm
         self.use_transformer       = use_transformer
         self.lstm_hidden           = lstm_hidden
@@ -124,8 +136,12 @@ class DQNAgent(BaseAgent):
         self.num_transformer_layers = num_transformer_layers
 
         self._use_sequential: bool = use_transformer or use_lstm
+        self._use_per: bool = priority_mode != 'none' and not self._use_sequential
 
-        self.replay_buffer  = ReplayBuffer(buffer_size)
+        self.replay_buffer = (
+            PrioritizedReplayBuffer(buffer_size, priority_alpha)
+            if self._use_per else ReplayBuffer(buffer_size)
+        )
         self.episode_buffer = (
             EpisodeReplayBuffer(episode_capacity, seq_len)
             if self._use_sequential else None
@@ -219,10 +235,18 @@ class DQNAgent(BaseAgent):
                 self._prev_chosen, frontier_feats, action, reward, done
             )
             self._prev_chosen = feat_chosen
-            loss = self._train_step_sequential()
+            loss = None
+            for _ in range(self.gradient_steps):
+                loss = self._train_step_sequential()
         else:
-            self.replay_buffer.push(feat_chosen, reward, next_feats, done)
-            loss = self._train_step_flat()
+            if self._use_per and self.priority_mode == 'reward':
+                self.replay_buffer.push(feat_chosen, reward, next_feats, done,
+                                        initial_priority=abs(reward) + 1e-6)
+            else:
+                self.replay_buffer.push(feat_chosen, reward, next_feats, done)
+            loss = None
+            for _ in range(self.gradient_steps):
+                loss = self._train_step_flat()
 
         if self.total_steps % self.target_update_freq == 0:
             self._update_target()
@@ -237,8 +261,15 @@ class DQNAgent(BaseAgent):
         if len(self.replay_buffer) < self.min_replay_size:
             return None
 
-        batch = self.replay_buffer.sample(self.batch_size)
+        if self._use_per:
+            beta = self.priority_beta if self.priority_mode == 'td_error' else 0.0
+            batch, indices, is_weights = self.replay_buffer.sample(self.batch_size, beta)
+        else:
+            batch = self.replay_buffer.sample(self.batch_size)
+            is_weights = None
+
         feats, rewards, next_feats_list, dones = zip(*batch)
+        n = len(batch)
 
         feats_t   = torch.tensor(np.stack(feats))
         rewards_t = torch.tensor(np.array(rewards, dtype=np.float32))
@@ -247,7 +278,7 @@ class DQNAgent(BaseAgent):
         current_q = self.q_net(feats_t)
 
         with torch.no_grad():
-            next_q = torch.zeros(self.batch_size)
+            next_q = torch.zeros(n)
             for i, (nf, d) in enumerate(zip(next_feats_list, dones_t)):
                 if not d and nf:
                     nf_t = torch.tensor(np.stack(nf))
@@ -258,7 +289,17 @@ class DQNAgent(BaseAgent):
                         next_q[i] = self.target_net(nf_t).max()
 
         targets = rewards_t + self.gamma * next_q * (1.0 - dones_t)
-        loss = F.mse_loss(current_q, targets)
+
+        if is_weights is not None:
+            td_errors = current_q - targets
+            loss = (is_weights * td_errors.pow(2)).mean()
+            if self.priority_mode == 'td_error':
+                self.replay_buffer.update_priorities(
+                    indices, td_errors.abs().detach().numpy() + 1e-6
+                )
+        else:
+            loss = F.mse_loss(current_q, targets)
+
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.q_net.parameters(), 1.0)
@@ -271,7 +312,8 @@ class DQNAgent(BaseAgent):
         if len(self.episode_buffer) < self.min_episodes:
             return None
 
-        windows = self.episode_buffer.sample(self.batch_size)
+        alpha = self.priority_alpha if self.priority_mode == 'reward' else 0.0
+        windows = self.episode_buffer.sample(self.batch_size, alpha=alpha)
         if not windows:
             return None
 
@@ -445,6 +487,10 @@ class DQNAgent(BaseAgent):
             "num_transformer_layers": self.num_transformer_layers,
             "save_frequency": self.save_frequency,
             "epsilon_decay_episodes": self.epsilon_decay_episodes,
+            "gradient_steps": self.gradient_steps,
+            "priority_mode": self.priority_mode,
+            "priority_alpha": self.priority_alpha,
+            "priority_beta": self.priority_beta,
         }
 
 

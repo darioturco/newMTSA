@@ -187,10 +187,29 @@ public class DCSBenchmark {
         };
     }
 
-    private static DCSForPython loadInstance(Path fspPath) throws IOException {
+    private static DCSForPython loadInstance(Path fspPath, String featureType) throws IOException {
         // Heuristic is required by the constructor but never called in RL mode —
         // the ONNX policy overrides all action selection. FIRST is the cheapest placeholder.
-        return DCSForPython.fromPath(fspPath.toString(), "FIRST", DEFAULT_FEATURE_TYPE);
+        return DCSForPython.fromPath(fspPath.toString(), "FIRST", featureType);
+    }
+
+    private static String extractAgentFromPath(String onnxPath) {
+        for (Path part : Paths.get(onnxPath)) {
+            String s = part.toString().toLowerCase();
+            if (s.startsWith("dqn")) return "dqn";
+            if (s.startsWith("ppo")) return "ppo";
+            if (s.startsWith("sac")) return "sac";
+        }
+        return "rl";
+    }
+
+    private static String extractFeatureFromPath(String onnxPath) {
+        for (Path part : Paths.get(onnxPath)) {
+            String s = part.toString().toLowerCase();
+            if (s.equals("basic")) return "basic";
+            if (s.equals("rol"))   return "rol";
+        }
+        return DEFAULT_FEATURE_TYPE.toLowerCase();
     }
 
     private static BenchResult runEpisode(DCSForPython dcs, RLPolicy policy,
@@ -371,7 +390,7 @@ public class DCSBenchmark {
             if (args[0].endsWith(".onnx")) {
                 heuristicType = "RL";
                 onnxPath      = args[0];
-                csvPath       = args.length > 3 ? args[3] : DEFAULT_CSV_PATH;
+                csvPath       = args.length > 3 ? args[3] : null;
             } else {
                 heuristicType = args[0].toUpperCase();
                 onnxPath      = null;
@@ -386,12 +405,19 @@ public class DCSBenchmark {
             return;
         }
 
+        String agentType   = extractAgentFromPath(onnxPath);
+        String featureType = extractFeatureFromPath(onnxPath);
+        if (csvPath == null) {
+            csvPath = "results" + File.separator
+                      + agentType + "_" + featureType + "_benchmark.csv";
+        }
+
         OrtEnvironment ortEnv = OrtEnvironment.getEnvironment();
         try (OrtSession session = ortEnv.createSession(onnxPath)) {
             String modelType  = detectModelType(session);
             int    expectedF  = extractExpectedFeatureSize(session, modelType);
-            System.out.printf("Model : %s%nType  : %s%nF     : %d features%nBudget: %d transitions%n%n",
-                Paths.get(onnxPath).getFileName(), modelType, expectedF, budget);
+            System.out.printf("Model : %s%nType  : %s%nFeature: %s%nF     : %d features%nBudget: %d transitions%n%n",
+                Paths.get(onnxPath).getFileName(), modelType, featureType.toUpperCase(), expectedF, budget);
 
             Pattern pat = Pattern.compile(".+-(\\d+)-(\\d+)\\.fsp");
             Map<Integer, List<Map.Entry<Integer, Path>>> byN = new TreeMap<>();
@@ -435,7 +461,7 @@ public class DCSBenchmark {
 
                         DCSForPython dcs;
                         try {
-                            dcs = loadInstance(fsp);
+                            dcs = loadInstance(fsp, featureType.toUpperCase());
                         } catch (Exception e) {
                             System.err.printf("  N=%-3d K=%-3d  ERROR loading: %s%n",
                                 n, k, e.getMessage());

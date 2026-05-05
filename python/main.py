@@ -26,6 +26,7 @@ Examples
     python main.py path/to/AT-1-1.fsp random flat 20         # random agent, 20 episodes
     python main.py --graph                                    # bar plot of benchmark results
     python main.py --graph out.png                            # save graph to specific path
+    python main.py --graph out.png 2500 blocking              # with budget and problem type in title
 """
 
 import sys
@@ -34,8 +35,10 @@ from pathlib import Path
 # Handle --graph before JVM-starting imports so it works without Java/ONNX.
 if len(sys.argv) > 1 and sys.argv[1] == "--graph":
     from graph_results import graph_results
-    output = sys.argv[2] if len(sys.argv) > 2 else None
-    graph_results(output)
+    output       = sys.argv[2] if len(sys.argv) > 2 else None
+    budget       = int(sys.argv[3]) if len(sys.argv) > 3 else 2500
+    problem_type = sys.argv[4] if len(sys.argv) > 4 else None
+    graph_results(output, budget, problem_type)
     sys.exit(0)
 
 # environment.py starts the JVM at import time; all other Python imports follow.
@@ -66,7 +69,7 @@ FEATURE_TYPE     = "ROL"       # BASIC | ROL  ← change here to switch globally
 RESULTS_BASE = Path(__file__).parent / "results"
 
 
-def _results_dir(fsp_path: str, agent: str, network: str) -> str:
+def _results_dir(fsp_path: str, agent: str, network: str, feature_type: str) -> str:
     """Full save path: results/<blocking>/<Family>/<feature>/<agent>_<network>"""
     p = Path(fsp_path)
     family   = p.parent.name                                      # e.g. "DP"
@@ -77,7 +80,7 @@ def _results_dir(fsp_path: str, agent: str, network: str) -> str:
         problem_type = "blocking"
     else:
         problem_type = "unknown"
-    feature  = FEATURE_TYPE.lower()                               # e.g. "rol"
+    feature  = feature_type.lower()                               # e.g. "rol"
     return str(RESULTS_BASE / problem_type / family / feature / f"{agent}_{network}")
 
 
@@ -100,8 +103,8 @@ def run_random(fsp_path: str, num_episodes: int) -> None:
         )
 
 
-def run_dqn(fsp_path: str, network: str = "flat") -> None:
-    env   = DCSEnvironment(feature_type=FEATURE_TYPE)
+def run_dqn(fsp_path: str, network: str, feature_type: str) -> None:
+    env   = DCSEnvironment(feature_type=feature_type)
     agent = DQNAgent(**{**DQN_CONFIG, **_network_flags(network)})
 
     tag_map = {"lstm": "DQN-LSTM", "transformer": "DQN-Transformer"}
@@ -111,11 +114,11 @@ def run_dqn(fsp_path: str, network: str = "flat") -> None:
     print("-" * 60)
 
     train(env, agent, fsp_path, **TRAIN_CONFIG,
-          results_dir=_results_dir(fsp_path, "dqn", network), verbose=True)
+          results_dir=_results_dir(fsp_path, "dqn", network, feature_type), verbose=True)
 
 
-def run_ppo(fsp_path: str, network: str = "flat") -> None:
-    env   = DCSEnvironment(feature_type=FEATURE_TYPE)
+def run_ppo(fsp_path: str, network: str, feature_type: str) -> None:
+    env   = DCSEnvironment(feature_type=feature_type)
     agent = PPOAgent(**{**PPO_CONFIG, **_network_flags(network)})
 
     tag_map = {"lstm": "PPO-LSTM", "transformer": "PPO-Transformer"}
@@ -125,11 +128,11 @@ def run_ppo(fsp_path: str, network: str = "flat") -> None:
     print("-" * 60)
 
     ppo_train(env, agent, fsp_path, **TRAIN_CONFIG,
-              results_dir=_results_dir(fsp_path, "ppo", network), verbose=True)
+              results_dir=_results_dir(fsp_path, "ppo", network, feature_type), verbose=True)
 
 
-def run_sac(fsp_path: str, network: str = "flat") -> None:
-    env   = DCSEnvironment(feature_type=FEATURE_TYPE)
+def run_sac(fsp_path: str, network: str, feature_type: str) -> None:
+    env   = DCSEnvironment(feature_type=feature_type)
     agent = SACAgent(**{**SAC_CONFIG, **_network_flags(network)})
 
     tag_map = {"lstm": "SAC-LSTM", "transformer": "SAC-Transformer"}
@@ -139,18 +142,18 @@ def run_sac(fsp_path: str, network: str = "flat") -> None:
     print("-" * 60)
 
     sac_train(env, agent, fsp_path, **TRAIN_CONFIG,
-              results_dir=_results_dir(fsp_path, "sac", network), verbose=True)
+              results_dir=_results_dir(fsp_path, "sac", network, feature_type), verbose=True)
 
 
-def _dispatch(fsp_path: str, mode: str, network: str, episodes: int) -> None:
+def train_agent(fsp_path: str, mode: str, network: str, feature_type: str, episodes: int = 1) -> None:
     if mode == "random":
         run_random(fsp_path, episodes)
     elif mode == "dqn":
-        run_dqn(fsp_path, network)
+        run_dqn(fsp_path, network, feature_type)
     elif mode == "ppo":
-        run_ppo(fsp_path, network)
+        run_ppo(fsp_path, network, feature_type)
     elif mode == "sac":
-        run_sac(fsp_path, network)
+        run_sac(fsp_path, network, feature_type)
     else:
         print(
             f"Unknown mode '{mode}'. Choose: random | dqn | ppo | sac"
@@ -160,24 +163,16 @@ def _dispatch(fsp_path: str, mode: str, network: str, episodes: int) -> None:
 
 def main() -> None:
     # --graph is intercepted before this point
-    fsp_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_FSP_PATH
-    mode     = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_MODE
-    network  = sys.argv[3] if len(sys.argv) > 3 else DEFAULT_NETWORK
-    episodes = int(sys.argv[4]) if len(sys.argv) > 4 else DEFAULT_EPISODES
+    fsp_path     = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_FSP_PATH
+    mode         = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_MODE
+    network      = sys.argv[3] if len(sys.argv) > 3 else DEFAULT_NETWORK
+    episodes     = int(sys.argv[4]) if len(sys.argv) > 4 else DEFAULT_EPISODES
+    feature_type = sys.argv[5] if len(sys.argv) > 5 else FEATURE_TYPE
 
-    if fsp_path is None:
-        instance = "AT"
-        n, k = 2, 2
-        fsp_path = str(
-            Path(__file__).parent.parent / "fsp" / "NonBlocking" / "Benchmark"
-            / instance / f"{instance}-{n}-{k}.fsp"
-        )
-
-    if network not in ("flat", "lstm", "transformer"):
-        print(f"Unknown network '{network}'. Choose: flat | lstm | transformer")
-        sys.exit(1)
-
-    _dispatch(fsp_path, mode, network, episodes)
+    #train_agent(fsp_path, mode, network, feature_type, episodes)
+    #train_agent("..\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp", "dqn", "flat", "BASIC")
+    train_agent("..\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp", "ppo", "flat", "ROL")
+    #train_agent("..\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp", "ppo", "flat", "BASIC")
 
 
 if __name__ == "__main__":
