@@ -82,7 +82,9 @@ public class OTFDirectedControledSyntesisGR1 {
     private final Map<String, List<ExtendedTransition>> succMap = new HashMap<>();
     private final Map<String, Set<String>>              parents = new HashMap<>();
     private final Map<String, Integer>                  phaseCache = new HashMap<>();
+    private final Map<String, String[]>                 splitStateCache = new HashMap<>();
     private final Map<String, Boolean>                  assumptionSatCache = new HashMap<>();
+    private       boolean                               pendingDirty = false;
 
     // ── main-loop state ───────────────────────────────────────────────────────
 
@@ -395,7 +397,11 @@ public class OTFDirectedControledSyntesisGR1 {
 
     /** Splits the plant-state portion of {@code nodeId} into per-component states. */
     private String[] splitState(String nodeId) {
-        return splitPlantState(plantPart(nodeId));
+        String[] cached = splitStateCache.get(nodeId);
+        if (cached != null) return cached;
+        String[] parts = splitPlantState(plantPart(nodeId));
+        splitStateCache.put(nodeId, parts);
+        return parts;
     }
 
     private String[] splitPlantState(String plantState) {
@@ -508,6 +514,7 @@ public class OTFDirectedControledSyntesisGR1 {
     private void exploreState(String nodeId) {
         if (succMap.containsKey(nodeId)) return;
         String[] parts = splitState(nodeId);
+        splitStateCache.putIfAbsent(nodeId, parts);
         int j = phaseOf(nodeId);
         phaseCache.putIfAbsent(nodeId, j);
 
@@ -553,6 +560,7 @@ public class OTFDirectedControledSyntesisGR1 {
             sb.append('#').append(nextJ); // phase suffix, not a component
             String target = sb.toString();
             phaseCache.putIfAbsent(target, nextJ);
+            splitStateCache.putIfAbsent(target, newParts);
             succ.add(new ExtendedTransition(nodeId, action, target));
         }
         succMap.put(nodeId, succ);
@@ -569,7 +577,7 @@ public class OTFDirectedControledSyntesisGR1 {
     }
 
     private Set<String> bfsForward(String start, Set<String> limit) {
-        Set<String>   visited = new LinkedHashSet<>();
+        Set<String>   visited = new HashSet<>();
         Queue<String> queue   = new ArrayDeque<>();
         queue.add(start); visited.add(start);
         while (!queue.isEmpty()) {
@@ -584,7 +592,7 @@ public class OTFDirectedControledSyntesisGR1 {
     }
 
     private Set<String> bfsBackward(String start, Set<String> limit) {
-        Set<String>   visited = new LinkedHashSet<>();
+        Set<String>   visited = new HashSet<>();
         Queue<String> queue   = new ArrayDeque<>();
         queue.add(start); visited.add(start);
         while (!queue.isEmpty()) {
@@ -742,14 +750,16 @@ public class OTFDirectedControledSyntesisGR1 {
             while (it.hasNext()) {
                 String s = it.next();
                 if (isForcedToError(s)) {
+                    boolean wasNone = none.contains(s);
                     errors.add(s); none.remove(s); it.remove(); changed = true;
+                    if (wasNone) pendingDirty = true;
                 }
             }
         }
     }
 
     private Set<String> ancestorsNone(Set<String> targets) {
-        Set<String>   visited = new LinkedHashSet<>();
+        Set<String>   visited = new HashSet<>();
         Queue<String> queue   = new ArrayDeque<>();
         for (String t : targets) {
             for (String p : parents.getOrDefault(t, Set.of())) {
@@ -765,11 +775,15 @@ public class OTFDirectedControledSyntesisGR1 {
     }
 
     private void promoteToGoals(Set<String> C) {
-        for (String s : C) { if (goals.add(s)) none.remove(s); }
+        for (String s : C) {
+            if (goals.add(s) && none.remove(s)) pendingDirty = true;
+        }
     }
 
     private void promoteToErrors(Set<String> P) {
-        for (String s : P) { if (errors.add(s)) none.remove(s); }
+        for (String s : P) {
+            if (errors.add(s) && none.remove(s)) pendingDirty = true;
+        }
     }
 
     private boolean isForcedToError(String s) {
@@ -831,7 +845,9 @@ public class OTFDirectedControledSyntesisGR1 {
     // ── pending pruning ───────────────────────────────────────────────────────
 
     private void prunePending() {
+        if (!pendingDirty) return;
         pending.removeIf(tr -> !none.contains(tr.from()));
+        pendingDirty = false;
     }
 
     // ── logging ───────────────────────────────────────────────────────────────

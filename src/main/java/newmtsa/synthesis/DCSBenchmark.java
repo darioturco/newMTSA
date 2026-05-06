@@ -376,8 +376,8 @@ public class DCSBenchmark {
     private static final String  DEFAULT_HEURISTIC_TYPE = "RL";
     // Feature set used when loading RL instances. Options: BASIC, ROL
     private static final String  DEFAULT_FEATURE_TYPE   = "ROL";
-    private static final String  DEFAULT_ONNX_PATH     = ".\\python\\results\\blocking\\TL\\rol\\ppo_flat\\ppo_ep0725.onnx";
-    private static final String  DEFAULT_FSP_DIR        = ".\\fsp\\Blocking\\Benchmark\\TL\\";
+    private static final String  DEFAULT_ONNX_PATH     = ".\\python\\results\\blocking\\BW\\rol\\ppo_flat\\ppo_ep1240.onnx";
+    private static final String  DEFAULT_FSP_DIR        = ".\\fsp\\Blocking\\Benchmark\\BW\\";
     private static final int     DEFAULT_BUDGET          = 2500;
     private static final boolean DEFAULT_SAVE_CSV        = true;
 
