@@ -81,6 +81,8 @@ public class OTFDirectedControledSyntesisGR1 {
 
     private final Map<String, List<ExtendedTransition>> succMap = new HashMap<>();
     private final Map<String, Set<String>>              parents = new HashMap<>();
+    private final Map<String, Integer>                  phaseCache = new HashMap<>();
+    private final Map<String, Boolean>                  assumptionSatCache = new HashMap<>();
 
     // ── main-loop state ───────────────────────────────────────────────────────
 
@@ -374,8 +376,12 @@ public class OTFDirectedControledSyntesisGR1 {
 
     /** Returns the phase counter embedded in a node ID (the number after {@code '#'}). */
     private int phaseOf(String nodeId) {
+        Integer cached = phaseCache.get(nodeId);
+        if (cached != null) return cached;
         int h = nodeId.lastIndexOf('#');
-        return h >= 0 ? Integer.parseInt(nodeId.substring(h + 1)) : 0;
+        int phase = h >= 0 ? Integer.parseInt(nodeId.substring(h + 1)) : 0;
+        phaseCache.put(nodeId, phase);
+        return phase;
     }
 
     private String initialState() {
@@ -389,7 +395,20 @@ public class OTFDirectedControledSyntesisGR1 {
 
     /** Splits the plant-state portion of {@code nodeId} into per-component states. */
     private String[] splitState(String nodeId) {
-        return plantPart(nodeId).split("\\|", -1);
+        return splitPlantState(plantPart(nodeId));
+    }
+
+    private String[] splitPlantState(String plantState) {
+        List<String> parts = new ArrayList<>();
+        int start = 0;
+        for (int i = 0; i < plantState.length(); i++) {
+            if (plantState.charAt(i) == '|') {
+                parts.add(plantState.substring(start, i));
+                start = i + 1;
+            }
+        }
+        parts.add(plantState.substring(start));
+        return parts.toArray(new String[0]);
     }
 
     /**
@@ -438,6 +457,17 @@ public class OTFDirectedControledSyntesisGR1 {
      * component {@code assumptionComponentIdx} in its accepting state.
      */
     private boolean controllerCanSatisfyAssumption(String nodeId, int assumptionComponentIdx) {
+        if (!succMap.containsKey(nodeId))
+            return controllerCanSatisfyAssumptionUncached(nodeId, assumptionComponentIdx);
+        String cacheKey = nodeId + '\u0000' + assumptionComponentIdx;
+        Boolean cached = assumptionSatCache.get(cacheKey);
+        if (cached != null) return cached;
+        boolean value = controllerCanSatisfyAssumptionUncached(nodeId, assumptionComponentIdx);
+        assumptionSatCache.put(cacheKey, value);
+        return value;
+    }
+
+    private boolean controllerCanSatisfyAssumptionUncached(String nodeId, int assumptionComponentIdx) {
         for (ExtendedTransition t : succMap.getOrDefault(nodeId, List.of())) {
             if (controllable.contains(t.action())) {
                 String[] sp = splitState(t.to());
@@ -479,6 +509,7 @@ public class OTFDirectedControledSyntesisGR1 {
         if (succMap.containsKey(nodeId)) return;
         String[] parts = splitState(nodeId);
         int j = phaseOf(nodeId);
+        phaseCache.putIfAbsent(nodeId, j);
 
         // Phase advances when the current phase's LTS is in its accepting state:
         //   assumption phase j<numAssumptions: advances when A_j holds (env met its obligation)
@@ -520,7 +551,9 @@ public class OTFDirectedControledSyntesisGR1 {
                 sb.append(newParts[i]);
             }
             sb.append('#').append(nextJ); // phase suffix, not a component
-            succ.add(new ExtendedTransition(nodeId, action, sb.toString()));
+            String target = sb.toString();
+            phaseCache.putIfAbsent(target, nextJ);
+            succ.add(new ExtendedTransition(nodeId, action, target));
         }
         succMap.put(nodeId, succ);
     }
@@ -528,7 +561,7 @@ public class OTFDirectedControledSyntesisGR1 {
     // ── loop analysis ─────────────────────────────────────────────────────────
 
     private Set<String> getMaxLoop(String loopEnd, String loopStart) {
-        Set<String> fwd = bfsForward(loopStart, null);
+        Set<String> fwd = bfsForward(loopStart, none);
         Set<String> bwd = bfsBackward(loopStart, fwd);
         fwd.retainAll(bwd);
         fwd.removeIf(s -> errors.contains(s) || goals.contains(s));
@@ -589,9 +622,10 @@ public class OTFDirectedControledSyntesisGR1 {
                     }
                 }
             }
+            Set<String> goalOrMarkedAttr = computeGoalOrMarkedAttractor(C);
             Iterator<String> it = C.iterator();
             while (it.hasNext()) {
-                if (!canReachGoalOrMarkedIn(it.next(), C)) {
+                if (!goalOrMarkedAttr.contains(it.next())) {
                     it.remove(); outerChanged = true;
                 }
             }
@@ -623,9 +657,15 @@ public class OTFDirectedControledSyntesisGR1 {
     }
 
     private boolean canReachGoalOrMarkedIn(String s, Set<String> C) {
+        return computeGoalOrMarkedAttractor(C).contains(s);
+    }
+
+    private Set<String> computeGoalOrMarkedAttractor(Set<String> region) {
         Set<String> targets = new LinkedHashSet<>();
-        for (String cs : C) if (isMarked(cs)) targets.add(cs);
-        return computeAttractor(targets, C).contains(s);
+        for (String s : region) {
+            if (isMarked(s)) targets.add(s);
+        }
+        return computeAttractor(targets, region);
     }
 
     private boolean canReachGoalIn(String s, Set<String> C) {
@@ -682,7 +722,12 @@ public class OTFDirectedControledSyntesisGR1 {
             Iterator<String> it = C.iterator();
             while (it.hasNext()) {
                 String s = it.next();
-                if (!safeInRegion(s, C) || !canReachGoalOrMarkedIn(s, C)) { it.remove(); changed = true; }
+                if (!safeInRegion(s, C)) { it.remove(); changed = true; }
+            }
+            Set<String> goalOrMarkedAttr = computeGoalOrMarkedAttractor(C);
+            it = C.iterator();
+            while (it.hasNext()) {
+                if (!goalOrMarkedAttr.contains(it.next())) { it.remove(); changed = true; }
             }
         }
         promoteToGoals(C);

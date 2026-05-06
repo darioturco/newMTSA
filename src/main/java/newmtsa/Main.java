@@ -40,14 +40,14 @@ public class Main {
     //   RA_ER_OPEN    – RA.ER + open queue
     //   RA_ERG_OPEN   – RA.ERG + open queue
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
-    //static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
+    static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
     //static final HeuristicType HEURISTIC = HeuristicType.FIRST;
     //static final HeuristicType HEURISTIC = HeuristicType.BFS;
     //static final HeuristicType HEURISTIC = HeuristicType.HUMAN;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_R;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_E;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ER;
-    static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
+    //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_OPEN;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG_OPEN;
 
@@ -58,8 +58,8 @@ public class Main {
     // At step k picks pending.get(SCRIPT[k]); falls back to random once exhausted.
     // List.of() = pure random from the start.
     // [0,0,0,1] selects actions a[1], a[3], a[2], a[8] for FloppyTesis.fsp.
-    //static final List<Integer> SCRIPT = List.of(0, 3, 6, 9, 12, 14, 17, 18, 14, 15, 22, 25, 27, 22, 28, 17);   // unused when HEURISTIC != RANDOM (Expansion to solve TL-2-2 in the same way the original RA should.)
-    static final List<Integer> SCRIPT = List.of();
+    static final List<Integer> SCRIPT = List.of(0, 3, 6, 9, 12, 14, 17, 18, 14, 15, 22, 25, 27, 22, 28, 17);   // unused when HEURISTIC != RANDOM (Expansion to solve TL-2-2 in the same way the original RA should.)
+    //static final List<Integer> SCRIPT = List.of();
 
     public static void main(String[] args) throws IOException {
         Path file;
