@@ -29,7 +29,7 @@ DQN = dict(
     d_model=64,
     nhead=4,
     num_transformer_layers=2,
-    save_frequency=5,
+    save_frequency=1,
     gradient_steps=1,
     priority_mode='none', # 'none' | 'td_error' | 'reward'
     priority_alpha=0.6,
@@ -52,7 +52,7 @@ PPO = dict(
     d_model=64,
     nhead=4,
     num_transformer_layers=2,
-    save_frequency=5,
+    save_frequency=1,
 )
 
 SAC = dict(
@@ -78,7 +78,7 @@ SAC = dict(
     d_model=64,
     nhead=4,
     num_transformer_layers=2,
-    save_frequency=5,
+    save_frequency=1,
 )
 
 TRAIN = dict(

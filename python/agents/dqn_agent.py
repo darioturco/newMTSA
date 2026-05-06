@@ -30,6 +30,7 @@ import csv
 import re
 import random
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
@@ -585,12 +586,16 @@ def train(
 
         recent.append(ep_reward)
         avg = sum(recent) / len(recent)
-        new_loss_min = agent.last_loss is not None and agent.last_loss < best_loss
+        new_loss_min    = agent.last_loss is not None and agent.last_loss < best_loss
+        new_best_reward = ep_reward > best_ep_reward
+        new_best_avg    = avg > best_avg
         if new_loss_min:
             best_loss = agent.last_loss
-        if (avg > best_avg) or (ep_reward > best_ep_reward) or new_loss_min:
+        if new_best_reward:
             best_ep_reward = ep_reward
-            best_avg   = avg
+        if new_best_avg:
+            best_avg = avg
+        if new_best_reward or new_best_avg or new_loss_min:
             no_improve = 0
         elif agent.epsilon <= agent.epsilon_end:
             no_improve += 1
@@ -612,6 +617,7 @@ def train(
     print(
         f"\n[STOP] DQN | {stop_reason}  —  total steps: {global_steps:,}  —  total episodes: {ep}"
         f"  —  best reward: {best_ep_reward}"
+        f"  —  end: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
     agent.trained = True
     return agent

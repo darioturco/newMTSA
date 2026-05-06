@@ -6,17 +6,13 @@ Segment labels show solved count for that family; bar top shows total.
 Agents with no solved instances are omitted from the plot.
 
 Expected CSV format (per-agent files):
-    family,n,k,solved,realizable,transitions,states,time_ms
+    family,n,k,solved,realizable,transitions,states,time_ms[,agent_path]
 
-CSV files are resolved relative to <project_root>/results/:
+CSV files are resolved relative to <project_root>/python/results/:
     random_benchmark.csv, bfs_benchmark.csv,
-    ra_benchmark.csv, ra_r_benchmark.csv, ra_e_benchmark.csv,
-    ra_er_benchmark.csv, ra_erg_benchmark.csv,
-    ra_open_benchmark.csv, ra_r_open_benchmark.csv, ra_e_open_benchmark.csv,
-    ra_er_open_benchmark.csv, ra_erg_open_benchmark.csv,
-    dqn_basic_benchmark.csv, dqn_rol_benchmark.csv,
-    ppo_basic_benchmark.csv, ppo_rol_benchmark.csv,
-    sac_basic_benchmark.csv, sac_rol_benchmark.csv
+    ra_benchmark.csv, ra_r_benchmark.csv, ...
+    dqn_flat_basic_benchmark.csv, dqn_flat_rol_benchmark.csv,
+    dqn_lstm_basic_benchmark.csv, dqn_lstm_rol_benchmark.csv, ...
 """
 
 import sys
@@ -27,28 +23,40 @@ import numpy as np
 import pandas as pd
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_RESULTS_DIR  = _PROJECT_ROOT / "results"
+_RESULTS_DIR  = _PROJECT_ROOT / "python" / "results"
 
 # Display order and CSV filenames (relative to _RESULTS_DIR)
 AGENTS: list[tuple[str, str]] = [
-    ("Random",      "random_benchmark.csv"),
-    ("BFS",         "bfs_benchmark.csv"),
-    ("RA",          "ra_benchmark.csv"),
-    ("RA-R",        "ra_r_benchmark.csv"),
-    ("RA-E",        "ra_e_benchmark.csv"),
-    ("RA-ER",       "ra_er_benchmark.csv"),
-    ("RA-ERG",      "ra_erg_benchmark.csv"),
-    ("RA-Open",     "ra_open_benchmark.csv"),
-    ("RA-R-Open",   "ra_r_open_benchmark.csv"),
-    ("RA-E-Open",   "ra_e_open_benchmark.csv"),
-    ("RA-ER-Open",  "ra_er_open_benchmark.csv"),
-    ("RA-ERG-Open", "ra_erg_open_benchmark.csv"),
-    ("DQN-Basic",   "dqn_basic_benchmark.csv"),
-    ("DQN-ROL",     "dqn_rol_benchmark.csv"),
-    ("PPO-Basic",   "ppo_basic_benchmark.csv"),
-    ("PPO-ROL",     "ppo_rol_benchmark.csv"),
-    ("SAC-Basic",   "sac_basic_benchmark.csv"),
-    ("SAC-ROL",     "sac_rol_benchmark.csv"),
+    ("Random",           "random_benchmark.csv"),
+    ("BFS",              "bfs_benchmark.csv"),
+    ("RA",               "ra_benchmark.csv"),
+    ("RA-R",             "ra_r_benchmark.csv"),
+    ("RA-E",             "ra_e_benchmark.csv"),
+    ("RA-ER",            "ra_er_benchmark.csv"),
+    ("RA-ERG",           "ra_erg_benchmark.csv"),
+    ("RA-Open",          "ra_open_benchmark.csv"),
+    ("RA-R-Open",        "ra_r_open_benchmark.csv"),
+    ("RA-E-Open",        "ra_e_open_benchmark.csv"),
+    ("RA-ER-Open",       "ra_er_open_benchmark.csv"),
+    ("RA-ERG-Open",      "ra_erg_open_benchmark.csv"),
+    ("DQN-Flat-Basic",   "dqn_flat_basic_benchmark.csv"),
+    ("DQN-Flat-ROL",     "dqn_flat_rol_benchmark.csv"),
+    ("DQN-LSTM-Basic",   "dqn_lstm_basic_benchmark.csv"),
+    ("DQN-LSTM-ROL",     "dqn_lstm_rol_benchmark.csv"),
+    ("DQN-Trans-Basic",  "dqn_transformer_basic_benchmark.csv"),
+    ("DQN-Trans-ROL",    "dqn_transformer_rol_benchmark.csv"),
+    ("PPO-Flat-Basic",   "ppo_flat_basic_benchmark.csv"),
+    ("PPO-Flat-ROL",     "ppo_flat_rol_benchmark.csv"),
+    ("PPO-LSTM-Basic",   "ppo_lstm_basic_benchmark.csv"),
+    ("PPO-LSTM-ROL",     "ppo_lstm_rol_benchmark.csv"),
+    ("PPO-Trans-Basic",  "ppo_transformer_basic_benchmark.csv"),
+    ("PPO-Trans-ROL",    "ppo_transformer_rol_benchmark.csv"),
+    ("SAC-Flat-Basic",   "sac_flat_basic_benchmark.csv"),
+    ("SAC-Flat-ROL",     "sac_flat_rol_benchmark.csv"),
+    ("SAC-LSTM-Basic",   "sac_lstm_basic_benchmark.csv"),
+    ("SAC-LSTM-ROL",     "sac_lstm_rol_benchmark.csv"),
+    ("SAC-Trans-Basic",  "sac_transformer_basic_benchmark.csv"),
+    ("SAC-Trans-ROL",    "sac_transformer_rol_benchmark.csv"),
 ]
 
 _FAMILY_COLORS = [
