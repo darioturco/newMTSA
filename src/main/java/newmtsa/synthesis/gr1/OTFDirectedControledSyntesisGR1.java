@@ -6,6 +6,8 @@ import newmtsa.parser.ast.Transition;
 import newmtsa.synthesis.Director;
 import newmtsa.synthesis.ExtendedTransition;
 import newmtsa.synthesis.SynthesisResult;
+import newmtsa.synthesis.features.FeatureCompute;
+import newmtsa.synthesis.features.FeaturesContext;
 import newmtsa.synthesis.heuristics.Heuristic;
 import newmtsa.synthesis.heuristics.SimpleSynthesisContext;
 
@@ -86,6 +88,11 @@ public class OTFDirectedControledSyntesisGR1 {
     private final Map<String, Boolean>                  assumptionSatCache = new HashMap<>();
     private       boolean                               pendingDirty = false;
 
+    // ── feature computation ───────────────────────────────────────────────────
+
+    private final FeatureCompute  featureCompute;
+    private final FeaturesContext featuresCtx;
+
     // ── main-loop state ───────────────────────────────────────────────────────
 
     private final String                   s0;
@@ -112,7 +119,7 @@ public class OTFDirectedControledSyntesisGR1 {
                                             Set<String>          controllable,
                                             Heuristic            heuristic,
                                             boolean              verbose) {
-        this(components, assumptions, guarantees, controllable, heuristic, verbose, false);
+        this(components, assumptions, guarantees, controllable, heuristic, verbose, false, null);
     }
 
     public OTFDirectedControledSyntesisGR1(List<LTS>            components,
@@ -122,6 +129,17 @@ public class OTFDirectedControledSyntesisGR1 {
                                             Heuristic            heuristic,
                                             boolean              verbose,
                                             boolean              useNumericIds) {
+        this(components, assumptions, guarantees, controllable, heuristic, verbose, useNumericIds, null);
+    }
+
+    public OTFDirectedControledSyntesisGR1(List<LTS>            components,
+                                            List<LtlPropertyDef> assumptions,
+                                            List<LtlPropertyDef> guarantees,
+                                            Set<String>          controllable,
+                                            Heuristic            heuristic,
+                                            boolean              verbose,
+                                            boolean              useNumericIds,
+                                            FeatureCompute       featureCompute) {
         if (controllable.isEmpty())
             throw new IllegalArgumentException("DCS requires at least one controllable action");
 
@@ -213,6 +231,16 @@ public class OTFDirectedControledSyntesisGR1 {
             @Override public String                   plantStateKey(String nodeId) { return plantPart(nodeId); }
         });
 
+        this.featureCompute = featureCompute;
+        if (featureCompute != null) {
+            this.featuresCtx = new FeaturesContext(
+                    goals, errors, none, succMap, parents,
+                    this.controllable, alphabet, this.components, this.compMarked, true);
+            featureCompute.init(this.featuresCtx);
+        } else {
+            this.featuresCtx = null;
+        }
+
         // Expand and classify the initial state.
         s0 = initialState();
         exploreState(s0);
@@ -223,6 +251,7 @@ public class OTFDirectedControledSyntesisGR1 {
             explorationEnded = true;
         } else {
             none.add(s0);
+            if (featuresCtx != null && isMarked(s0)) featuresCtx.markedStateFound = true;
             pending          = new ArrayList<>(succMap.getOrDefault(s0, List.of()));
             explorationEnded = false;
         }
@@ -304,11 +333,25 @@ public class OTFDirectedControledSyntesisGR1 {
         if (isExplorationEnded())
             throw new IllegalStateException("Exploration has already ended");
 
+        // TODO(perf): swap-remove would be O(1) instead of O(|pending|):
+        //   ExtendedTransition t = pending.get(index);
+        //   int last = pending.size() - 1;
+        //   if (index != last) pending.set(index, pending.get(last));
+        //   pending.remove(last);
+        // Blocked by DCSFrontierRegressionTest: that test asserts exact frontier element
+        // order at each step. Swap-remove reorders the tail, breaking those assertions.
+        // To enable: update all frontier snapshots in DCSFrontierRegressionTest to match
+        // the new ordering, or change the test to use Set comparison instead of List.
         ExtendedTransition t = pending.remove(index);
         transitionsExplored++;
 
         String e  = t.from();
         String eʹ = t.to();
+
+        if (featuresCtx != null) {
+            featuresCtx.lastExpandedFrom = e;
+            featuresCtx.lastExpandedTo   = eʹ;
+        }
 
         if (isVisited(eʹ)) {
             addParent(eʹ, e);
@@ -320,6 +363,7 @@ public class OTFDirectedControledSyntesisGR1 {
                 Set<String> loop = getMaxLoop(e, eʹ);
                 if (!loop.isEmpty()) {
                     if (canBeWinningLoop(loop)) {
+                        if (featuresCtx != null) featuresCtx.closedWinningLoopsCount++;
                         Set<String> C = findNewGoalsIn(loop);
                         promoteToGoals(C);
                         propagateGoal(C);
@@ -338,11 +382,22 @@ public class OTFDirectedControledSyntesisGR1 {
                 propagateError(Set.of(eʹ));
             } else {
                 none.add(eʹ);
+                if (featuresCtx != null && isMarked(eʹ)) featuresCtx.markedStateFound = true;
                 pending.addAll(succMap.getOrDefault(eʹ, List.of()));
             }
         }
 
         if (goals.contains(s0) || errors.contains(s0)) explorationEnded = true;
+    }
+
+    public List<int[]> getFrontierWithFeatures() {
+        if (featureCompute == null)
+            throw new IllegalStateException(
+                    "No FeatureCompute registered — use the constructor overload that accepts FeatureCompute");
+        prunePending();
+        List<int[]> result = new ArrayList<>(pending.size());
+        for (ExtendedTransition tr : pending) result.add(featureCompute.compute(tr));
+        return result;
     }
 
     public boolean       isRealizable()          { return goals.contains(s0); }
@@ -549,6 +604,7 @@ public class OTFDirectedControledSyntesisGR1 {
                 } else {
                     newParts[i] = cur;
                 }
+                if ("ERROR".equals(newParts[i])) { valid = false; break; }
             }
             if (!valid) continue;
 
@@ -683,41 +739,45 @@ public class OTFDirectedControledSyntesisGR1 {
     /**
      * Computes the controllable attractor of {@code targets} within {@code region}.
      *
-     * <p>A state {@code s ∈ region} is in the attractor iff the controller can
-     * <em>force</em> reaching {@code targets ∪ goals} despite adversarial environment:
-     * <ul>
-     *   <li>all uncontrollable transitions from {@code s} stay in the attractor, AND</li>
-     *   <li>at least one transition leads to the attractor (progress guarantee).</li>
-     * </ul>
-     * Because the environment controls uncontrollable actions, a state where an
-     * uncontrollable transition escapes the attractor is NOT in the attractor —
-     * the environment can use it to avoid the target indefinitely.
+     * <p>Uses a backward worklist: seed from targets in region, then propagate to
+     * predecessors (via the {@code parents} map) that pass the attractor condition.
+     * An initial scan handles states adjacent to goals outside the region.
+     * O(|region| × |succ|) vs the naive O(|region|² × |succ|) fixpoint.
      */
     private Set<String> computeAttractor(Set<String> targets, Set<String> region) {
-        Set<String> attr = new LinkedHashSet<>();
+        Set<String>   attr = new LinkedHashSet<>();
+        Queue<String> work = new ArrayDeque<>();
         for (String s : region) {
-            if (targets.contains(s) || goals.contains(s)) attr.add(s);
+            if (targets.contains(s) || goals.contains(s)) { attr.add(s); work.add(s); }
         }
-        boolean changed = true;
-        while (changed) {
-            changed = false;
-            for (String s : region) {
-                if (attr.contains(s)) continue;
-                boolean allUncInAttr = true;
-                boolean hasInAttr    = false;
-                for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-                    boolean inAttr = attr.contains(t.to()) || goals.contains(t.to());
-                    if (!controllable.contains(t.action())) {
-                        if (!inAttr) { allUncInAttr = false; break; }
-                        hasInAttr = true;
-                    } else {
-                        if (inAttr) hasInAttr = true;
-                    }
+        // One scan to seed states with direct transitions to goals outside region
+        // (not discoverable via backward parent edges since goals ∉ region).
+        for (String s : region) {
+            if (!attr.contains(s) && isAttrCandidate(s, attr)) { attr.add(s); work.add(s); }
+        }
+        while (!work.isEmpty()) {
+            String reached = work.poll();
+            for (String p : parents.getOrDefault(reached, Set.of())) {
+                if (!attr.contains(p) && region.contains(p) && isAttrCandidate(p, attr)) {
+                    attr.add(p); work.add(p);
                 }
-                if (allUncInAttr && hasInAttr) { attr.add(s); changed = true; }
             }
         }
         return attr;
+    }
+
+    private boolean isAttrCandidate(String s, Set<String> attr) {
+        boolean allUncInAttr = true, hasInAttr = false;
+        for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
+            boolean in = attr.contains(t.to()) || goals.contains(t.to());
+            if (!controllable.contains(t.action())) {
+                if (!in) { allUncInAttr = false; break; }
+                hasInAttr = true;
+            } else {
+                if (in) hasInAttr = true;
+            }
+        }
+        return allUncInAttr && hasInAttr;
     }
 
     // ── propagation ───────────────────────────────────────────────────────────
@@ -742,17 +802,16 @@ public class OTFDirectedControledSyntesisGR1 {
     }
 
     private void propagateError(Set<String> newErrors) {
-        Set<String> C = ancestorsNone(newErrors);
-        boolean changed = true;
-        while (changed) {
-            changed = false;
-            Iterator<String> it = C.iterator();
-            while (it.hasNext()) {
-                String s = it.next();
-                if (isForcedToError(s)) {
-                    boolean wasNone = none.contains(s);
-                    errors.add(s); none.remove(s); it.remove(); changed = true;
-                    if (wasNone) pendingDirty = true;
+        Set<String>   inQueue = new HashSet<>(ancestorsNone(newErrors));
+        Queue<String> work    = new ArrayDeque<>(inQueue);
+        while (!work.isEmpty()) {
+            String s = work.poll();
+            inQueue.remove(s);
+            if (!none.contains(s)) continue;
+            if (isForcedToError(s)) {
+                errors.add(s); none.remove(s); pendingDirty = true;
+                for (String p : parents.getOrDefault(s, Set.of())) {
+                    if (none.contains(p) && inQueue.add(p)) work.add(p);
                 }
             }
         }

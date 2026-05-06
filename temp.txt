@@ -1,178 +1,326 @@
-DCS GR(1) / Blocking — Optimization Candidates
+package newmtsa.synthesis;
 
-  HIGH IMPACT
+import newmtsa.parser.FSPParser;
+import newmtsa.parser.ast.ControllerSpecDef;
+import newmtsa.parser.ast.FSPModel;
+import newmtsa.parser.ast.LTS;
+import newmtsa.parser.ast.LtlPropertyDef;
+import newmtsa.synthesis.features.FeatureCompute;
+import newmtsa.synthesis.features.FeaturesContext;
+import newmtsa.synthesis.features.FeatureType;
+import newmtsa.synthesis.gr1.OTFDirectedControledSyntesisGR1;
+import newmtsa.synthesis.heuristics.Heuristic;
+import newmtsa.synthesis.heuristics.HeuristicType;
+import newmtsa.synthesis.nonblocking.OTFDirectedControledSyntesisNonBlocking;
 
-  1. canReachGoalOrMarkedIn / computeAttractor called per-state inside fixpoints
+import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.*;
 
-  GR1:findNewGoalsIn + propagateGoal call canReachGoalOrMarkedIn(s, C) for every state in C on each fixpoint iteration. Each call:
-  - Iterates all of C to rebuild targets (calls isMarked per state)
-  - Calls computeAttractor which scans region repeatedly
+/**
+ * Step-by-step interface to the DCS algorithm for use from Python (e.g. via JPype).
+ * Supports both non-blocking and GR(1) synthesis modes.
+ *
+ * <p>The Python side drives exploration by repeatedly calling {@link #expand(int)} with
+ * the chosen frontier index, making this class suitable as a Reinforcement Learning
+ * environment.
+ *
+ * <p>Use {@link #getSynthesisType()} to determine which mode the instance is running.
+ * GR(1) instances delegate internally to {@link OTFDirectedControledSyntesisGR1};
+ * non-blocking instances delegate to {@link OTFDirectedControledSyntesisNonBlocking}.
+ */
+public class DCSForPython {
 
-  Complexity: O(|C|² × |succ|) per fixpoint round. Fix: compute targets and attractor once per iteration, check membership for all states. Reduces to O(|C| ×
-  |succ|).
+    /** Whether this instance is running a non-blocking or a GR(1) synthesis. */
+    public enum SynthesisType { NON_BLOCKING, GR1 }
 
-  Relevant lines: OTFDirectedControledSyntesisGR1.java:577-599, 648-673, 677-688.
+    // ── instance identity ─────────────────────────────────────────────────────
 
-  ---
-  2. computeAttractor uses naive "scan all" fixpoint
+    public final String        instanceName;
+    public final SynthesisType synthesisType;
 
-  while (changed) {
-      changed = false;
-      for (String s : region) { ... }  // re-scans entire region each round
-  }
-  Worst case O(|region|² × |succ|). Fix: worklist-based (backward BFS): start from newly added attractor states, propagate to predecessors only. Requires a
-  reverse-adjacency index within succMap (already exists as parents). Reduces to O(|region| × |succ|).
+    // ── engines ───────────────────────────────────────────────────────────────
 
-  Relevant: GR1:648-673.
+    /** GR(1) engine; {@code null} when {@link SynthesisType#NON_BLOCKING}. */
+    public final OTFDirectedControledSyntesisGR1 gr1Engine;
 
-  ---
-  3. getMaxLoop: unbounded forward BFS
+    /** Non-blocking engine; {@code null} when {@link SynthesisType#GR1}. */
+    public final OTFDirectedControledSyntesisNonBlocking nbEngine;
 
-  bfsForward(loopStart, null) — null limit means it traverses the entire explored graph from loopStart. Errors/goals are only filtered after the BFS.
+    // ── inputs (mirrored from engine for direct Python access) ────────────────
 
-  Fix: pass none as the BFS limit. States in goals/errors are pruned from the result anyway, so exploring them is wasted work. This also applies to
-  DCSForPython.java:667.
+    public final List<LTS>   components;
+    public final Set<String> controllable;
+    public final Heuristic   heuristic;
 
-  Relevant: GR1:530-535, DCSForPython.java:666-672.
+    // ── feature computation (GR(1) mode only) ────────────────────────────────
 
-  ---
-  4. String-based state representation (largest structural gain)
+    private final FeatureCompute  featureCompute;
+    private final FeaturesContext featuresCtx;
 
-  Every composite state is a heap-allocated String like "s0|s1|...|sN#phase". Hot-path costs:
-  - splitState(nodeId) → regex split("\\|") on every call
-  - StringBuilder construction for every successor state in exploreState
-  - All HashMap lookups use String.hashCode() + .equals()
+    // ── constructors ──────────────────────────────────────────────────────────
 
-  Fix: intern states to integers on first encounter (Map<String, Integer> intern table). All internal maps (succMap, parents, goals, errors, none) become
-  int-keyed. Eliminates regex splits and string allocations from the hot path. Major refactor but biggest throughput gain.
+    /**
+     * Non-blocking convenience constructor — no feature computation.
+     */
+    public DCSForPython(String               instanceName,
+                        List<LTS>            components,
+                        List<LtlPropertyDef> safetyProperties,
+                        Set<String>          markingActions,
+                        Set<String>          controllable,
+                        Heuristic            heuristic) {
+        this(instanceName, components, safetyProperties, markingActions, controllable, heuristic, null);
+    }
 
-  ---
-  MEDIUM IMPACT
+    /**
+     * Non-blocking full constructor — optionally enables per-transition feature computation.
+     */
+    public DCSForPython(String               instanceName,
+                        List<LTS>            components,
+                        List<LtlPropertyDef> safetyProperties,
+                        Set<String>          markingActions,
+                        Set<String>          controllable,
+                        Heuristic            heuristic,
+                        FeatureCompute       featureCompute) {
+        this.instanceName  = instanceName;
+        this.synthesisType = SynthesisType.NON_BLOCKING;
+        this.gr1Engine     = null;
+        this.featureCompute = null;
+        this.featuresCtx    = null;
 
-  5. isMarked in GR1 parses phase string on every call
+        this.nbEngine = new OTFDirectedControledSyntesisNonBlocking(
+                components, safetyProperties, markingActions, controllable,
+                heuristic, false, Integer.MAX_VALUE, false, featureCompute);
 
-  phaseOf(nodeId) calls lastIndexOf('#') + Integer.parseInt() every invocation. Called inside every attractor loop iteration for every state in region.
+        this.components   = nbEngine.getComponents();
+        this.controllable = nbEngine.getControllable();
+        this.heuristic    = nbEngine.heuristic;
+    }
 
-  Fix: maintain a Map<String, Integer> nodePhaseCache populated in exploreState. Lookup instead of parse.
+    /**
+     * GR(1) constructor — wraps {@link OTFDirectedControledSyntesisGR1}.
+     * No feature computation.
+     */
+    public DCSForPython(String               instanceName,
+                        List<LTS>            components,
+                        List<LtlPropertyDef> assumptions,
+                        List<LtlPropertyDef> guarantees,
+                        Set<String>          controllable,
+                        Heuristic            heuristic) {
+        this(instanceName, components, assumptions, guarantees, controllable, heuristic, null);
+    }
 
-  Relevant: GR1:376-379, 418-434.
+    /**
+     * GR(1) constructor with optional feature computation.
+     */
+    public DCSForPython(String               instanceName,
+                        List<LTS>            components,
+                        List<LtlPropertyDef> assumptions,
+                        List<LtlPropertyDef> guarantees,
+                        Set<String>          controllable,
+                        Heuristic            heuristic,
+                        FeatureCompute       featureCompute) {
+        if (controllable.isEmpty())
+            throw new IllegalArgumentException("DCS requires at least one controllable action");
 
-  ---
-  6. controllerCanSatisfyAssumption inside isMarked without caching
+        this.instanceName  = instanceName;
+        this.synthesisType = SynthesisType.GR1;
+        this.heuristic     = heuristic;
+        this.nbEngine      = null;
+        this.gr1Engine     = new OTFDirectedControledSyntesisGR1(
+                components, assumptions, guarantees, controllable, heuristic, false);
 
-  isMarked calls controllerCanSatisfyAssumption(nodeId, aCIdx) per assumption for every guarantee-phase state where the guarantee is not yet met. This iterates all
-   successors of nodeId. Same state is re-checked on repeated calls (e.g., during attractor computation over a region).
+        this.components   = gr1Engine.getComponents();
+        this.controllable = gr1Engine.getControllable();
 
-  Fix: cache per (nodeId, assumptionIdx) → boolean. Cache is stable once a state is fully explored.
+        this.featureCompute = featureCompute;
+        if (featureCompute != null) {
+            this.featuresCtx = new FeaturesContext(
+                gr1Engine.getGoals(), gr1Engine.getErrors(), gr1Engine.getNone(),
+                gr1Engine.getSuccMap(), gr1Engine.getParents(),
+                this.controllable, gr1Engine.getAlphabet(),
+                this.components, gr1Engine.getCompMarked(), true);
+            featureCompute.init(this.featuresCtx);
+        } else {
+            this.featuresCtx = null;
+        }
+    }
 
-  Relevant: GR1:440-449.
+    // ── public API ────────────────────────────────────────────────────────────
 
-  ---
-  7. prunePending called on every getFrontier() invocation
+    /** Returns whether this instance is running a non-blocking or a GR(1) synthesis. */
+    public SynthesisType getSynthesisType() {
+        return synthesisType;
+    }
 
-  pending.removeIf(tr -> !none.contains(tr.from())) is an O(|pending|) scan. pending accumulates all unexpanded transitions; it grows large on bigger instances.
+    /** Returns the name of this synthesis instance. */
+    public String getInstanceName() {
+        return instanceName;
+    }
 
-  Fix: lazy invalidation — maintain a Set<String> classifiedSources updated in promoteToGoals/promoteToErrors. Filter at pick time without modifying the list, or
-  use a separate "active" count.
+    /** Returns the full action alphabet of the parallel composition. */
+    public Set<String> getAlphabet() {
+        return synthesisType == SynthesisType.GR1 ? gr1Engine.getAlphabet() : nbEngine.getAlphabet();
+    }
 
-  Relevant: GR1:788-790, DCSForPython.java:567-569.
+    /** Returns the component list used in the parallel composition. */
+    public List<LTS> getComponents() {
+        return components;
+    }
 
-  ---
-  8. pending.remove(index) is O(|pending|) on ArrayList
+    /**
+     * Returns the current frontier: the list of pending transitions (from a None state)
+     * that have not yet been expanded.
+     */
+    public List<ExtendedTransition> getFrontier() {
+        return synthesisType == SynthesisType.GR1 ? gr1Engine.getFrontier() : nbEngine.getFrontier();
+    }
 
-  Each expand() call removes from arbitrary index. For large frontiers this is expensive.
+    /**
+     * Returns {@code true} when no further expansion is possible.
+     */
+    public boolean isExplorationEnded() {
+        return synthesisType == SynthesisType.GR1 ? gr1Engine.isExplorationEnded() : nbEngine.isExplorationEnded();
+    }
 
-  Fix: swap-to-end before removal (pending.set(index, pending.get(pending.size()-1)); pending.remove(pending.size()-1)). Order in pending is irrelevant since the
-  heuristic re-ranks on each pick.
+    /**
+     * Performs one step of the DCS main loop by expanding the transition at position
+     * {@code index} in the current frontier.
+     */
+    public void expand(int index) {
+        if (synthesisType == SynthesisType.GR1) {
+            if (featuresCtx != null) {
+                ExtendedTransition t = gr1Engine.getFrontier().get(index);
+                int prevGoalCount = gr1Engine.getGoals().size();
+                gr1Engine.expand(index);
+                featuresCtx.lastExpandedFrom = t.from();
+                featuresCtx.lastExpandedTo   = t.to();
+                if (!featuresCtx.markedStateFound && gr1Engine.isMarked(t.to()))
+                    featuresCtx.markedStateFound = true;
+                if (gr1Engine.getGoals().size() > prevGoalCount)
+                    featuresCtx.closedWinningLoopsCount++;
+            } else {
+                gr1Engine.expand(index);
+            }
+        } else {
+            nbEngine.expand(index);
+        }
+    }
 
-  Relevant: GR1:303, DCSForPython.java:369.
+    /**
+     * Returns one binary feature vector per frontier transition.
+     */
+    public List<int[]> getFrontierWithFeatures() {
+        if (synthesisType == SynthesisType.GR1) {
+            if (featureCompute == null)
+                throw new IllegalStateException(
+                        "No FeatureCompute registered — use the constructor overload that accepts FeatureCompute");
+            List<ExtendedTransition> frontier = gr1Engine.getFrontier();
+            List<int[]> result = new ArrayList<>(frontier.size());
+            for (ExtendedTransition t : frontier) result.add(featureCompute.compute(t));
+            return result;
+        }
+        return nbEngine.getFrontierWithFeatures();
+    }
 
-  ---
-  9. findNewGoalsIn double-nested fixpoint with per-state attractor
+    /**
+     * Returns the synthesis result.
+     */
+    public SynthesisResult getSynthesisResult() {
+        return synthesisType == SynthesisType.GR1 ? gr1Engine.getSynthesisResult() : nbEngine.getSynthesisResult();
+    }
 
-  Two nested while(changed) loops call safeInRegion and canReachGoalOrMarkedIn per state per iteration. The inner loop already collapses correctly but rebuilding
-  attractor per-state is the bottleneck (see #1). Fixing #1 automatically fixes this.
+    // ── factory ───────────────────────────────────────────────────────────────
 
-  Relevant: GR1:577-599, DCSForPython.java:715-743.
+    /**
+     * Parse an FSP file and construct a ready-to-use {@link DCSForPython}.
+     * Automatically selects the non-blocking or GR(1) solver based on the
+     * controller spec found in the file.
+     */
+    public static DCSForPython fromPath(String fspPath,
+                                        String heuristicType,
+                                        String featureType) throws IOException {
+        Path      path  = Paths.get(fspPath);
+        FSPModel  model = FSPParser.parse(path);
+        String    name  = path.getFileName().toString().replace(".fsp", "");
+        Heuristic heuristic = HeuristicType.valueOf(heuristicType.toUpperCase()).create();
 
-  ---
-  10. String.split("\\|", -1) in GR1 vs -1 vs bounded
+        Optional<ControllerSpecDef> nbSpec = model.controllerSpecs().stream()
+            .filter(ControllerSpecDef::nonblocking)
+            .findFirst();
 
-  GR1's splitState uses -1 (unbounded split). DCSForPython correctly uses components.size(). A custom char-based split (scan for |) is ~3× faster than regex for
-  short strings.
+        if (nbSpec.isPresent()) {
+            ControllerSpecDef spec = nbSpec.get();
+            List<LtlPropertyDef> safetyProps = spec.safety().stream()
+                .flatMap(sn -> model.ltlProperties().stream().filter(p -> p.name().equals(sn)))
+                .toList();
+            FeatureCompute fc = (featureType != null && !featureType.isEmpty())
+                ? FeatureType.valueOf(featureType.toUpperCase()).create()
+                : null;
+            return new DCSForPython(name,
+                new ArrayList<>(model.processes()),
+                safetyProps,
+                new HashSet<>(spec.marking()),
+                new HashSet<>(spec.controllable()),
+                heuristic, fc);
+        }
 
-  Fix: hand-rolled splitOn('|', limit) helper.
+        // GR(1) / blocking path
+        ControllerSpecDef spec = model.controllerSpecs().stream()
+            .findFirst()
+            .orElseThrow(() -> new IllegalArgumentException(
+                "No controller spec found in: " + fspPath));
 
-  Relevant: GR1:391-393, DCSForPython.java:593-595.
+        List<LtlPropertyDef> guarantees = new ArrayList<>();
+        for (String n : spec.liveness()) {
+            model.asserts().stream().filter(p -> p.name().equals(n)).findFirst()
+                .or(() -> model.fluents().stream().filter(fl -> fl.name().equals(n))
+                    .map(fl -> new LtlPropertyDef(fl.name(), List.of(), fl)).findFirst())
+                .ifPresent(guarantees::add);
+        }
 
-  ---
-  LOW IMPACT / STRUCTURAL
+        List<LtlPropertyDef> assumptions = new ArrayList<>();
+        for (String n : spec.assumption()) {
+            model.asserts().stream().filter(p -> p.name().equals(n)).findFirst()
+                .or(() -> model.fluents().stream().filter(fl -> fl.name().equals(n))
+                    .map(fl -> new LtlPropertyDef(fl.name(), List.of(), fl)).findFirst())
+                .ifPresent(assumptions::add);
+        }
 
-  11. propagateError fixpoint: restart-from-scratch on each change
+        List<LTS> components = new ArrayList<>(model.processes());
+        for (LtlPropertyDef g : guarantees) components.add(g.lts());
+        for (LtlPropertyDef a : assumptions) {
+            if (components.stream().noneMatch(c -> c.name().equals(a.name())))
+                components.add(a.lts());
+        }
 
-  Iterator restarts from beginning of C when any state is promoted to error. Fix: use a predecessor worklist — when a state becomes an error, enqueue its none
-  parents (from parents map) as candidates for isForcedToError.
+        FeatureCompute fc = (featureType != null && !featureType.isEmpty())
+            ? FeatureType.valueOf(featureType.toUpperCase()).create()
+            : null;
+        return new DCSForPython(name, components, assumptions, guarantees,
+            new HashSet<>(spec.controllable()), heuristic, fc);
+    }
 
-  Relevant: GR1:691-703, DCSForPython.java:822-837.
+    // ── additional observable state ───────────────────────────────────────────
 
-  ---
-  12. exploreState: build successor string even for eventually-illegal states
+    /** Returns {@code true} when this instance runs non-blocking (not GR(1)) synthesis. */
+    public boolean isNonBlocking() {
+        return synthesisType == SynthesisType.NON_BLOCKING;
+    }
 
-  exploreState builds the full StringBuilder destination string before any illegality check. If a component would go to ERROR, the string is built needlessly.
+    /** Returns {@code true} iff the initial state has been classified as realizable. */
+    public boolean isRealizable() {
+        return synthesisType == SynthesisType.GR1 ? gr1Engine.isRealizable() : nbEngine.isRealizable();
+    }
 
-  Fix: detect ERROR destination inline during the component loop and break early.
+    /** Number of transitions expanded so far. */
+    public int getTransitionsExplored() {
+        return synthesisType == SynthesisType.GR1 ? gr1Engine.getTransitionsExplored() : nbEngine.getTransitionsExplored();
+    }
 
-  Relevant: GR1:495-526, DCSForPython.java:629-664.
-
-  ---
-  13. ancestorsNone and bfsBackward use LinkedHashSet for visited
-
-  LinkedHashSet has constant overhead vs HashSet for visited.add() / visited.contains(). No iteration-order guarantee is needed here.
-
-  Fix: replace with HashSet.
-
-  Relevant: GR1:538-565, DCSForPython.java:674-703.
-
-  ---
-  14. canBeWinningLoop duplicates isMarked check with goals check
-
-  Iterates loop twice: once for isMarked, once checking goal-successors. Could be merged into a single pass.
-
-  Relevant: GR1:567-575, DCSForPython.java:705-713.
-
-  ---
-  Summary table
-
-  ┌─────┬────────────────────────────────────┬──────────────────────────┬────────────────────────┐
-  │  #  │              Location              │           Type           │       Est. gain        │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 1   │ GR1 findNewGoalsIn/propagateGoal   │ Attractor reuse          │ Very high              │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 2   │ GR1 computeAttractor               │ Worklist fixpoint        │ High                   │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 3   │ getMaxLoop BFS limit               │ Prune BFS to none        │ High                   │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 4   │ All state maps                     │ State interning (int)    │ Very high (structural) │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 5   │ GR1 isMarked                       │ Cache phase parsing      │ Medium                 │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 6   │ GR1 controllerCanSatisfyAssumption │ Cache per state          │ Medium                 │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 7   │ prunePending                       │ Lazy invalidation        │ Medium                 │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 8   │ pending.remove(index)              │ Swap-to-end              │ Medium                 │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 9   │ findNewGoalsIn nested loops        │ Fixed by #1              │ —                      │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 10  │ splitState regex                   │ Custom char split        │ Low-medium             │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 11  │ propagateError fixpoint            │ Predecessor worklist     │ Low                    │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 12  │ exploreState ERROR check           │ Early break              │ Low                    │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 13  │ BFS visited sets                   │ HashSet vs LinkedHashSet │ Low                    │
-  ├─────┼────────────────────────────────────┼──────────────────────────┼────────────────────────┤
-  │ 14  │ canBeWinningLoop                   │ Single-pass              │ Low                    │
-  └─────┴────────────────────────────────────┴──────────────────────────┴────────────────────────┘
-
-  Most bang for buck without full refactor: #1 + #3 + #7 + #8. Full refactor worth: #4 (state interning) eliminates the dominant GC/hashing cost.
+    /** Number of composite states discovered so far. */
+    public int getStatesExplored() {
+        return synthesisType == SynthesisType.GR1 ? gr1Engine.getStatesExplored() : nbEngine.getStatesExplored();
+    }
+}
