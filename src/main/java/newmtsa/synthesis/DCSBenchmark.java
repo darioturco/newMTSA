@@ -371,17 +371,21 @@ public class DCSBenchmark {
 
     // ── hardcoded defaults (used when no CLI args are provided) ──────────────
     // Heuristic mode default. "RL" = RL model mode (uses DEFAULT_ONNX_PATH).
-    // Options: RL, FIRST, RANDOM, BFS, RA, RA_R, RA_E, RA_ER, RA_ERG,
+    // Options: RL, MCTS_RL, FIRST, RANDOM, BFS, RA, RA_R, RA_E, RA_ER, RA_ERG,
     //          RA_OPEN, RA_R_OPEN, RA_E_OPEN, RA_ER_OPEN, RA_ERG_OPEN
-    private static final String  DEFAULT_HEURISTIC_TYPE = "RL";
+    //private static final String  DEFAULT_HEURISTIC_TYPE = "RL";
+    private static final String  DEFAULT_HEURISTIC_TYPE = "MCTS_RL";
     // Feature set used when loading RL instances. Options: BASIC, ROL
     private static final String  DEFAULT_FEATURE_TYPE   = "ROL";
     //private static final String  DEFAULT_ONNX_PATH     = ".\\python\\results\\blocking\\AT\\rol\\ppo_flat\\ppo_ep0330.onnx";
     private static final String  DEFAULT_ONNX_PATH     = ".\\python\\results\\blocking\\TA\\rol\\ppo_flat\\ppo_ep0750.onnx";
     //private static final String  DEFAULT_ONNX_PATH     = ".\\python\\results\\blocking\\BW\\rol\\ppo_flat\\ppo_ep1115.onnx";
     //private static final String  DEFAULT_ONNX_PATH     = ".\\python\\results\\blocking\\BW\\basic\\ppo_flat\\ppo_ep0650.onnx";
+    // ONNX model used when DEFAULT_HEURISTIC_TYPE = "MCTS_RL"
+    private static final String  DEFAULT_MCTS_ONNX_PATH = ".\\python\\results\\blocking\\TL\\basic\\ppo_flat\\ppo_ep0415.onnx";
 
-    private static final String  DEFAULT_FSP_DIR        = ".\\fsp\\Blocking\\Benchmark\\BW\\";
+    //private static final String  DEFAULT_FSP_DIR        = ".\\fsp\\Blocking\\Benchmark\\BW\\";
+    private static final String  DEFAULT_FSP_DIR        = ".\\fsp\\Blocking\\Benchmark\\TL\\";
     private static final int     DEFAULT_BUDGET          = 2500;
     private static final boolean DEFAULT_SAVE_CSV        = true;
 
@@ -402,8 +406,14 @@ public class DCSBenchmark {
             budget        = DEFAULT_BUDGET;
             heuristicType = DEFAULT_HEURISTIC_TYPE;
             onnxPath      = DEFAULT_ONNX_PATH;
+            if ("MCTS_RL".equals(heuristicType)) {
+                System.setProperty("mcts.onnx.path", DEFAULT_MCTS_ONNX_PATH);
+            }
             System.out.println("[DCSBenchmark] No args — using hardcoded defaults:");
-            if (!"RL".equals(heuristicType)) {
+            if ("MCTS_RL".equals(heuristicType)) {
+                System.out.printf("  mode  = MCTS_RL%n  model = %s%n  dir   = %s%n  budget= %d%n%n",
+                    DEFAULT_MCTS_ONNX_PATH, fspDir, budget);
+            } else if (!"RL".equals(heuristicType)) {
                 System.out.printf("  mode  = heuristic (%s)%n  dir   = %s%n  budget= %d%n%n",
                     heuristicType, fspDir, budget);
             } else {

@@ -204,6 +204,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
                 this.components, compMarked, this.controllable) {
             @Override public Set<String>              exploredStates()       { return succMap.keySet(); }
             @Override public Set<String>              goals()                { return goals; }
+            @Override public Set<String>              errors()               { return errors; }
             @Override public List<ExtendedTransition> successorsOf(String s) {
                 return succMap.getOrDefault(s, List.of());
             }

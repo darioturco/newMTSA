@@ -40,6 +40,9 @@ public interface SynthesisContext {
     /** Composite states confirmed as winning (W⁺). */
     Set<String> goals();
 
+    /** Composite states confirmed as losing (W⁻). Default: empty (backward-compatible). */
+    default Set<String> errors() { return Set.of(); }
+
     /**
      * Outgoing transitions of the given composite state in the exploration
      * structure.  Returns an empty list if the state has not been expanded yet.
