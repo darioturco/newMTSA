@@ -2,6 +2,7 @@ package newmtsa.synthesis.features;
 
 import newmtsa.synthesis.ExtendedTransition;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -128,6 +129,37 @@ public class BasicFeatures implements FeatureCompute {
 
         return f;
     }
+
+    @Override
+    public List<String> getFeatureNames() {
+        List<String> names = new ArrayList<>();
+        List<String> alphabet = ctx.getNoIdxAlphabet();
+        for (String a : alphabet) names.add("event_" + a);
+        for (String a : alphabet) names.add("state_" + a);
+        names.add("controllable");
+        names.add("marked_from");
+        names.add("marked_to");
+        names.add("goals_found");
+        names.add("marked_found");
+        names.add("loop_closed");
+        names.add("child_goal");
+        names.add("child_error");
+        names.add("child_none");
+        names.add("src_unc_unexp");
+        names.add("src_unc_total");
+        names.add("child_unc_unexp");
+        names.add("child_unc_total");
+        names.add("src_explored");
+        names.add("child_explored");
+        names.add("is_last_to");
+        names.add("is_last_from");
+        names.add("child_deadlock");
+        names.add("has_index");
+        return names;
+    }
+
+    @Override
+    public String getFeatureGroupName() {
+        return "BASIC";
+    }
 }
-
-

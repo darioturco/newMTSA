@@ -30,6 +30,7 @@ Examples
 """
 
 import sys
+import os
 from pathlib import Path
 
 # Handle --graph before JVM-starting imports so it works without Java/ONNX.
@@ -170,10 +171,19 @@ def main() -> None:
     feature_type = sys.argv[5] if len(sys.argv) > 5 else FEATURE_TYPE
 
     #train_agent(fsp_path, mode, network, feature_type, episodes)
-    #train_agent("..\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp", "dqn", "flat", "BASIC")
-    train_agent("..\\fsp\\Blocking\\Benchmark\\TL\\TL-2-2.fsp", "dqn", "flat", "ROL")
-    #train_agent("..\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp", "ppo", "flat", "BASIC")
+    train_agent("..\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp", "dqn", "flat", "ROL")
+    train_agent("..\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp", "dqn", "flat", "ROL")
+    train_agent("..\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp", "dqn", "flat", "BASIC")
+    train_agent("..\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp", "dqn", "flat", "BASIC")
+    train_agent("..\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp", "dqn", "flat", "BASIC")
+    train_agent("..\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp", "dqn", "flat", "ROL")
+    train_agent("..\\fsp\\Blocking\\Benchmark\\TL\\TL-2-2.fsp", "dqn", "flat", "BASIC")
+    train_agent("..\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp", "dqn", "flat", "BASIC")
+    train_agent("..\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp", "ppo", "flat", "BASIC")
+    
 
+
+    os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0") # Computer sleep after training to save energy
 
 if __name__ == "__main__":
     main()

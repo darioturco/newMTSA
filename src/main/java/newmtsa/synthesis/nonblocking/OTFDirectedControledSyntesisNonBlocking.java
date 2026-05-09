@@ -5,6 +5,7 @@ import newmtsa.parser.ast.LtlPropertyDef;
 import newmtsa.parser.ast.Transition;
 import newmtsa.synthesis.Director;
 import newmtsa.synthesis.ExtendedTransition;
+import newmtsa.synthesis.OTFDirectedControlledSynthesis;
 import newmtsa.synthesis.SynthesisResult;
 import newmtsa.synthesis.features.FeatureCompute;
 import newmtsa.synthesis.features.FeaturesContext;
@@ -32,7 +33,7 @@ import java.util.*;
  * <p>Use {@link #expand(int)} to drive exploration step-by-step (suitable for RL environments),
  * or {@link #run()} to execute the full algorithm to completion.
  */
-public class OTFDirectedControledSyntesisNonBlocking {
+public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedControlledSynthesis {
 
     // ── inputs ────────────────────────────────────────────────────────────────
 
@@ -339,6 +340,9 @@ public class OTFDirectedControledSyntesisNonBlocking {
         for (ExtendedTransition tr : pending) result.add(featureCompute.compute(tr));
         return result;
     }
+
+    public List<String> getFeatureNames()    { return featureCompute != null ? featureCompute.getFeatureNames()    : Collections.emptyList(); }
+    public String       getFeatureGroupName(){ return featureCompute != null ? featureCompute.getFeatureGroupName() : null; }
 
     public boolean isMarked(String s) {
         String[] parts = splitState(s);

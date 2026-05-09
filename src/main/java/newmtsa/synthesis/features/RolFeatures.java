@@ -109,6 +109,22 @@ public class RolFeatures implements FeatureCompute {
         return f;
     }
 
+    @Override
+    public List<String> getFeatureNames() {
+        List<String> names = new ArrayList<>(basic.getFeatureNames());
+        for (String role : abstractRoles) names.add("role_parent_" + role);
+        for (String role : abstractRoles) names.add("role_child_"  + role);
+        for (String role : abstractRoles) names.add("role_local_"  + role);
+        for (String a   : ctx.getNoIdxAlphabet()) names.add("abstract_action_" + a);
+        names.add("has_index");
+        return names;
+    }
+
+    @Override
+    public String getFeatureGroupName() {
+        return "ROL";
+    }
+
     /**
      * Splits a composite state string by {@code |} into per-component parts and strips
      * any trailing {@code #...} phase suffix (present in GR(1) states).

@@ -26,12 +26,11 @@ import java.util.*;
  * environment.
  *
  * <p>Use {@link #getSynthesisType()} to determine which mode the instance is running.
- * GR(1) instances delegate internally to {@link OTFDirectedControledSyntesisGR1};
- * non-blocking instances delegate to {@link OTFDirectedControledSyntesisNonBlocking}.
+ * All exploration calls are dispatched through the common {@link OTFDirectedControlledSynthesis}
+ * interface; {@link #gr1Engine} and {@link #nbEngine} expose the typed engines for callers
+ * that need mode-specific API.
  */
 public class DCSForPython {
-
-    // TODO: refactor, both engines must be OTFDCS and GR1 and NB musr herideth from them and select the engine with polimorfism. SynthesisType must remain.
 
     /** Whether this instance is running a non-blocking or a GR(1) synthesis. */
     public enum SynthesisType { NON_BLOCKING, GR1 }
@@ -42,6 +41,9 @@ public class DCSForPython {
     public final SynthesisType synthesisType;
 
     // ── engines ───────────────────────────────────────────────────────────────
+
+    /** Polymorphic engine — all common exploration calls go here. */
+    public final OTFDirectedControlledSynthesis engine;
 
     /** GR(1) engine; {@code null} when {@link SynthesisType#NON_BLOCKING}. */
     public final OTFDirectedControledSyntesisGR1 gr1Engine;
@@ -87,9 +89,10 @@ public class DCSForPython {
                 components, safetyProperties, markingActions, controllable,
                 heuristic, false, Integer.MAX_VALUE, false, featureCompute);
 
+        this.engine       = this.nbEngine;
         this.components   = nbEngine.getComponents();
         this.controllable = nbEngine.getControllable();
-        this.heuristic    = nbEngine.heuristic;
+        this.heuristic    = heuristic;
     }
 
     /**
@@ -125,6 +128,7 @@ public class DCSForPython {
         this.gr1Engine     = new OTFDirectedControledSyntesisGR1(
                 components, assumptions, guarantees, controllable, heuristic, false, false, featureCompute);
 
+        this.engine       = this.gr1Engine;
         this.components   = gr1Engine.getComponents();
         this.controllable = gr1Engine.getControllable();
     }
@@ -142,54 +146,37 @@ public class DCSForPython {
     }
 
     /** Returns the full action alphabet of the parallel composition. */
-    public Set<String> getAlphabet() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.getAlphabet() : nbEngine.getAlphabet();
-    }
+    public Set<String> getAlphabet() { return engine.getAlphabet(); }
 
     /** Returns the component list used in the parallel composition. */
-    public List<LTS> getComponents() {
-        return components;
-    }
+    public List<LTS> getComponents() { return components; }
 
     /**
      * Returns the current frontier: the list of pending transitions (from a None state)
      * that have not yet been expanded.
      */
-    public List<ExtendedTransition> getFrontier() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.getFrontier() : nbEngine.getFrontier();
-    }
+    public List<ExtendedTransition> getFrontier() { return engine.getFrontier(); }
 
-    /**
-     * Returns {@code true} when no further expansion is possible.
-     */
-    public boolean isExplorationEnded() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.isExplorationEnded() : nbEngine.isExplorationEnded();
-    }
+    /** Returns {@code true} when no further expansion is possible. */
+    public boolean isExplorationEnded() { return engine.isExplorationEnded(); }
 
     /**
      * Performs one step of the DCS main loop by expanding the transition at position
      * {@code index} in the current frontier.
      */
-    public void expand(int index) {
-        if (synthesisType == SynthesisType.GR1) gr1Engine.expand(index);
-        else                                     nbEngine.expand(index);
-    }
+    public void expand(int index) { engine.expand(index); }
 
-    /**
-     * Returns one binary feature vector per frontier transition.
-     */
-    public List<int[]> getFrontierWithFeatures() {
-        return synthesisType == SynthesisType.GR1
-                ? gr1Engine.getFrontierWithFeatures()
-                : nbEngine.getFrontierWithFeatures();
-    }
+    /** Returns one binary feature vector per frontier transition. */
+    public List<int[]> getFrontierWithFeatures() { return engine.getFrontierWithFeatures(); }
 
-    /**
-     * Returns the synthesis result.
-     */
-    public SynthesisResult getSynthesisResult() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.getSynthesisResult() : nbEngine.getSynthesisResult();
-    }
+    /** Returns ordered feature names matching positions in feature vectors. Empty list when no FeatureCompute is set. */
+    public List<String> getFeatureNames()     { return engine.getFeatureNames(); }
+
+    /** Returns the feature group name (e.g. {@code "BASIC"}, {@code "ROL"}), or {@code null} when no FeatureCompute is set. */
+    public String getFeatureGroupName()        { return engine.getFeatureGroupName(); }
+
+    /** Returns the synthesis result. */
+    public SynthesisResult getSynthesisResult() { return engine.getSynthesisResult(); }
 
     // ── factory ───────────────────────────────────────────────────────────────
 
@@ -275,17 +262,11 @@ public class DCSForPython {
     }
 
     /** Returns {@code true} iff the initial state has been classified as realizable. */
-    public boolean isRealizable() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.isRealizable() : nbEngine.isRealizable();
-    }
+    public boolean isRealizable() { return engine.isRealizable(); }
 
     /** Number of transitions expanded so far. */
-    public int getTransitionsExplored() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.getTransitionsExplored() : nbEngine.getTransitionsExplored();
-    }
+    public int getTransitionsExplored() { return engine.getTransitionsExplored(); }
 
     /** Number of composite states discovered so far. */
-    public int getStatesExplored() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.getStatesExplored() : nbEngine.getStatesExplored();
-    }
+    public int getStatesExplored() { return engine.getStatesExplored(); }
 }

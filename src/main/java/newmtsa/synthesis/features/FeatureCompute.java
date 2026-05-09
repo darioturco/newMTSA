@@ -2,6 +2,8 @@ package newmtsa.synthesis.features;
 
 import newmtsa.synthesis.ExtendedTransition;
 
+import java.util.List;
+
 /**
  * Strategy interface for computing per-transition binary feature vectors during
  * DCS exploration.
@@ -30,4 +32,15 @@ public interface FeatureCompute {
      * The returned array must have the same length for every call within one episode.
      */
     int[] compute(ExtendedTransition transition);
+
+    /**
+     * Returns an ordered list of names, one per position in the vector returned by
+     * {@link #compute}. Must be called after {@link #init}.
+     */
+    List<String> getFeatureNames();
+
+    /**
+     * Returns a short identifier for this feature set (e.g. {@code "BASIC"}, {@code "ROL"}).
+     */
+    String getFeatureGroupName();
 }
