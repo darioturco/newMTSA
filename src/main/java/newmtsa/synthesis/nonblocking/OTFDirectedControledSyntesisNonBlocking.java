@@ -253,10 +253,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
         if (isExplorationEnded())
             throw new IllegalStateException("Exploration has already ended");
 
-        ExtendedTransition t = pending.get(index);
-        int _last = pending.size() - 1;
-        if (index != _last) pending.set(index, pending.get(_last));
-        pending.remove(_last);
+        ExtendedTransition t = pending.remove(index);
         transitionsExplored++;
 
         String e  = t.from();
