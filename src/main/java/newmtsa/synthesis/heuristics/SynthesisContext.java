@@ -60,4 +60,11 @@ public interface SynthesisContext {
     default String plantStateKey(String compositeState) {
         return compositeState;
     }
+
+    /**
+     * Returns the exploration depth of the given composite state, or -1 if unknown.
+     * Depth 0 = initial state; depth d+1 = one transition away from depth-d state.
+     * Default: -1 (depth not tracked).
+     */
+    default int depthOf(String compositeState) { return -1; }
 }
