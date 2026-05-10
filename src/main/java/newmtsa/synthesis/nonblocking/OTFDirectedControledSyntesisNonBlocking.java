@@ -499,7 +499,6 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
                 } else {
                     newParts[i] = cur;
                 }
-                if ("ERROR".equals(newParts[i])) { valid = false; break; }
             }
             if (!valid) continue;
 
@@ -516,7 +515,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
     }
 
     private Set<String> getMaxLoop(String loopEnd, String loopStart) {
-        Set<String> forward  = bfsForward(loopStart, none);
+        Set<String> forward  = bfsForward(loopStart, null);
         Set<String> backward = bfsBackward(loopStart, forward);
         forward.retainAll(backward);
         forward.removeIf(s -> errors.contains(s) || goals.contains(s));
@@ -577,16 +576,14 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
                     if (!safeInRegion(it.next(), C)) { it.remove(); innerChanged = true; outerChanged = true; }
                 }
             }
-            Set<String> reachable = computeForwardReachable(C);
             Iterator<String> it = C.iterator();
             while (it.hasNext()) {
-                if (!reachable.contains(it.next())) { it.remove(); outerChanged = true; }
+                if (!canReachGoalOrMarkedIn(it.next(), C)) { it.remove(); outerChanged = true; }
             }
         }
         return C;
     }
 
-    /** Backward BFS from seeds (marked or adjacent to goals) within C. Returns all states that can reach goals/marked within C. */
     private Set<String> computeForwardReachable(Set<String> C) {
         Set<String>   reachable = new HashSet<>();
         Queue<String> queue     = new ArrayDeque<>();
@@ -669,21 +666,16 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
 
     private void propagateGoal(Set<String> newGoals) {
         Set<String> C = ancestorsNone(newGoals);
-        boolean outerChanged = true;
-        while (outerChanged) {
-            outerChanged = false;
-            boolean innerChanged = true;
-            while (innerChanged) {
-                innerChanged = false;
-                Iterator<String> it = C.iterator();
-                while (it.hasNext()) {
-                    if (!safeInRegion(it.next(), C)) { it.remove(); innerChanged = true; outerChanged = true; }
-                }
-            }
-            Set<String> goalReach = computeGoalReachable(C);
+        boolean changed = true;
+        while (changed) {
+            changed = false;
             Iterator<String> it = C.iterator();
             while (it.hasNext()) {
-                if (!goalReach.contains(it.next())) { it.remove(); outerChanged = true; }
+                String s = it.next();
+                if (!safeInRegion(s, C) || !canReachGoalIn(s, C)) {
+                    it.remove();
+                    changed = true;
+                }
             }
         }
         promoteToGoals(C);
