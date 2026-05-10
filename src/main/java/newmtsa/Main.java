@@ -40,14 +40,14 @@ public class Main {
     //   RA_ER_OPEN    – RA.ER + open queue
     //   RA_ERG_OPEN   – RA.ERG + open queue
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
-    //static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
+    static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
     //static final HeuristicType HEURISTIC = HeuristicType.FIRST;
     //static final HeuristicType HEURISTIC = HeuristicType.BFS;
     //static final HeuristicType HEURISTIC = HeuristicType.HUMAN;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_R;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_E;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ER;
-    static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
+    //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_OPEN;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG_OPEN;
 

@@ -608,7 +608,6 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
                 } else {
                     newParts[i] = cur;
                 }
-                if ("ERROR".equals(newParts[i])) { valid = false; break; }
             }
             if (!valid) continue;
 
@@ -629,7 +628,7 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
     // ── loop analysis ─────────────────────────────────────────────────────────
 
     private Set<String> getMaxLoop(String loopEnd, String loopStart) {
-        Set<String> fwd = bfsForward(loopStart, none);
+        Set<String> fwd = bfsForward(loopStart, null);
         Set<String> bwd = bfsBackward(loopStart, fwd);
         fwd.retainAll(bwd);
         fwd.removeIf(s -> errors.contains(s) || goals.contains(s));
