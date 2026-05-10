@@ -68,7 +68,7 @@ public class Main {
         }else{
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\CM\\CM-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\DP\\DP-2-2.fsp");
-            file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-2-2.fsp");
+            file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TL\\TL-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TA\\TA-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\AT\\AT-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\BW\\BW-2-2.fsp");
