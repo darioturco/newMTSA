@@ -1,5 +1,6 @@
 package newmtsa.synthesis.heuristics;
 
+import newmtsa.synthesis.heuristics.mcts.MCTSHeuristic;
 import newmtsa.synthesis.heuristics.ra.RAHeuristic;
 
 /**
@@ -44,7 +45,13 @@ public enum HeuristicType {
     RA_R_OPEN,
     RA_E_OPEN,
     RA_ER_OPEN,
-    RA_ERG_OPEN;
+    RA_ERG_OPEN,
+    /**
+     * MCTS guided by a flat (MLP) ONNX model.
+     * Model path: JVM system property {@code mcts.onnx.path} (default: {@code model.onnx}).
+     * Simulation count / cPuct / depth: {@code mcts.simulations}, {@code mcts.cpuct}, {@code mcts.depth}.
+     */
+    MCTS_RL;
 
     /** Creates and returns a fresh {@link Heuristic} instance for this type. */
     public Heuristic create() {
@@ -63,6 +70,11 @@ public enum HeuristicType {
             case RA_E_OPEN     -> RAHeuristic.withE().withOpenQueue();
             case RA_ER_OPEN    -> RAHeuristic.withER().withOpenQueue();
             case RA_ERG_OPEN   -> RAHeuristic.withERG().withOpenQueue();
+            case MCTS_RL       -> new MCTSHeuristic(
+                    System.getProperty("mcts.onnx.path", "model.onnx"),
+                    Integer.parseInt(System.getProperty("mcts.simulations", "50")),
+                    Double.parseDouble(System.getProperty("mcts.cpuct",       "1.5")),
+                    Integer.parseInt(System.getProperty("mcts.depth",        "10")));
         };
     }
 }

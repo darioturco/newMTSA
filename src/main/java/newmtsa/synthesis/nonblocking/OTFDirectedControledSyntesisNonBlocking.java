@@ -66,6 +66,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
     private final Map<String, List<ExtendedTransition>> succMap = new HashMap<>();
     private final Map<String, Set<String>>              parents = new HashMap<>();
     private final Map<String, String[]>                 splitStateCache = new HashMap<>();
+    private final Map<String, Integer>                  depthMap = new HashMap<>();
     private       boolean                               pendingDirty = false;
 
     // ── step-by-step state ────────────────────────────────────────────────────
@@ -204,8 +205,12 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
                 this.components, compMarked, this.controllable) {
             @Override public Set<String>              exploredStates()       { return succMap.keySet(); }
             @Override public Set<String>              goals()                { return goals; }
+            @Override public Set<String>              errors()               { return errors; }
             @Override public List<ExtendedTransition> successorsOf(String s) {
                 return succMap.getOrDefault(s, List.of());
+            }
+            @Override public int depthOf(String s) {
+                return depthMap.getOrDefault(s, -1);
             }
         };
         heuristic.init(hCtx);
@@ -221,6 +226,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
         }
 
         s0 = initialState();
+        depthMap.put(s0, 0);
         exploreState(s0);
 
         if (isLosing(s0)) {
@@ -286,6 +292,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
                 }
             }
         } else {
+            depthMap.putIfAbsent(eʹ, depthMap.getOrDefault(e, 0) + 1);
             exploreState(eʹ);
             addParent(eʹ, e);
             if (isLosing(eʹ)) {

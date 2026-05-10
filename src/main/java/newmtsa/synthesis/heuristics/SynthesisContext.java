@@ -40,6 +40,9 @@ public interface SynthesisContext {
     /** Composite states confirmed as winning (W⁺). */
     Set<String> goals();
 
+    /** Composite states confirmed as losing (W⁻). Default: empty (backward-compatible). */
+    default Set<String> errors() { return Set.of(); }
+
     /**
      * Outgoing transitions of the given composite state in the exploration
      * structure.  Returns an empty list if the state has not been expanded yet.
@@ -57,4 +60,11 @@ public interface SynthesisContext {
     default String plantStateKey(String compositeState) {
         return compositeState;
     }
+
+    /**
+     * Returns the exploration depth of the given composite state, or -1 if unknown.
+     * Depth 0 = initial state; depth d+1 = one transition away from depth-d state.
+     * Default: -1 (depth not tracked).
+     */
+    default int depthOf(String compositeState) { return -1; }
 }

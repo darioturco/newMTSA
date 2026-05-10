@@ -40,14 +40,14 @@ public class Main {
     //   RA_ER_OPEN    – RA.ER + open queue
     //   RA_ERG_OPEN   – RA.ERG + open queue
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
-    static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
+    //static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
     //static final HeuristicType HEURISTIC = HeuristicType.FIRST;
     //static final HeuristicType HEURISTIC = HeuristicType.BFS;
     //static final HeuristicType HEURISTIC = HeuristicType.HUMAN;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_R;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_E;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ER;
-    //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
+    static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_OPEN;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG_OPEN;
 
@@ -68,7 +68,7 @@ public class Main {
         }else{
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\CM\\CM-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\DP\\DP-2-2.fsp");
-            file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TL\\TL-2-2.fsp");
+            file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TA\\TA-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\AT\\AT-2-2.fsp");
             //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\BW\\BW-2-2.fsp");

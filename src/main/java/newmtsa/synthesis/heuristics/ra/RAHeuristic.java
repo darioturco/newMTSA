@@ -358,7 +358,16 @@ public class RAHeuristic implements Heuristic {
 
         // Controllable: ascending (smaller estimate = closer to goal = preferred).
         // Uncontrollable: descending (larger estimate = harder state to classify first).
-        return aCtrl ? lex : -lex;
+        int cmp = aCtrl ? lex : -lex;
+        if (cmp != 0) return cmp;
+
+        // Depth tiebreaker: shallower first for both (matches original CompostateRanker c1.depth - c2.depth).
+        int depthA = ctx.depthOf(a.from());
+        int depthB = ctx.depthOf(b.from());
+        if (depthA >= 0 && depthB >= 0 && depthA != depthB) {
+            return depthA - depthB;
+        }
+        return 0;
     }
 
     // ── RA.E structural comparison ────────────────────────────────────────────
@@ -456,17 +465,18 @@ public class RAHeuristic implements Heuristic {
      * Called once per pick() invocation to propagate RA graph estimates across
      * the entire frontier before individual transitions are compared.
      *
-     * We rebuild estimates for all (compositeState, action) pairs in {@code pending}:
-     *  Phase 1 — direct component estimates (baseline per pair).
-     *  Phase 2 — RA graph enabling edges (s_l, l) → (s_t, t) + gap function.
-     *  Phase 3 — Bellman-Ford fixpoint: estimate(l) = min(estimate(l), gap(l,t) + estimate(t)).
+     * Phase 1 — direct component estimates (non-self-loop actions only).
+     * Phase 2 — RA graph enabling edges (s_l, l) → (s_t, t).
+     * Phase 3 — Bellman-Ford fixpoint with global gap and readyInLTS guard.
+     * Phase 4 — reconcilateShort: fill remaining UNREACHABLE with shortest+1.
+     * Phase 5 — write back to estimate cache.
      *
-     * Key format: compositeState + "\0" + action. One entry per (state, action) occurrence,
-     * so that the same action at different composite states is handled independently —
-     * each occurrence has its own component sub-states and enabling relationships.
+     * Key format: compositeState + "\0" + action.
      */
     private void applyRAGraphPropagation(List<ExtendedTransition> pending) {
-        // Collect unique (compositeState, action) pairs and pre-split their parts.
+        // Collect ALL unique (compositeState, action) pairs in the frontier.
+        // Recompute fresh every pick() so that per-compostate shortest is always based on
+        // the current frontier, matching original MTSA reconcilateShort semantics.
         Map<String, String[]> keyToParts = new LinkedHashMap<>();
         for (ExtendedTransition t : pending) {
             String key = t.from() + "\0" + t.action();
@@ -474,74 +484,96 @@ public class RAHeuristic implements Heuristic {
         }
         List<String> keys = new ArrayList<>(keyToParts.keySet());
 
-        // Phase 1: direct per-component estimates for every (compositeState, action) pair.
-        Map<String, int[]> estPerComp = new LinkedHashMap<>();
-        Map<String, int[]> mPerComp   = new LinkedHashMap<>();
+        // Phase 1: direct per-component estimates (non-self-loop only).
+        // readyComps[key]  = components where action fires (non-self-loop) from sub-state.
+        // shortestM/D[cs][j] = best estimate over all ready actions in j at composite state cs.
+        Map<String, int[]>        estPerComp = new LinkedHashMap<>();
+        Map<String, int[]>        mPerComp   = new LinkedHashMap<>();
+        Map<String, Set<Integer>> readyComps = new HashMap<>();
+
         for (String key : keys) {
             String[] parts  = keyToParts.get(key);
-            String   action = key.substring(key.indexOf('\0') + 1);
+            int      sep    = key.indexOf('\0');
+            String   action = key.substring(sep + 1);
             int[] ds = new int[numComponents];
             int[] ms = new int[numComponents];
             Arrays.fill(ds, Integer.MAX_VALUE / 2);
             Arrays.fill(ms, 2);
+            Set<Integer> ready = new HashSet<>();
+
             for (int j = 0; j < numComponents; j++) {
                 ComponentData cd = compData.get(j);
                 if (cd.markedStates.isEmpty()) continue;
                 String e_j = (j < parts.length) ? parts[j] : null;
                 if (e_j == null) continue;
-                EstimateTuple et = directComponentEstimate(j, e_j, action);
-                ms[j] = et.m();
-                ds[j] = et.d();
+                String succ = cd.trans.getOrDefault(action, Map.of()).get(e_j);
+                if (succ != null && !succ.equals(e_j)) {
+                    // Non-self-loop: direct estimate = 1 + dist(succ → nearest marked).
+                    ready.add(j);
+                    EstimateTuple base = bestDistanceToMarked(j, succ);
+                    if (base != EstimateTuple.UNREACHABLE) {
+                        ms[j] = base.m();
+                        ds[j] = base.d() + 1;
+                    }
+                }
+                // Self-loop or absent: leave UNREACHABLE — filled by Phase 4.
             }
+            readyComps.put(key, ready);
             estPerComp.put(key, ds);
             mPerComp.put(key, ms);
         }
 
         // Phase 2: RA graph — enabling edges (s_l, l) → (s_t, t).
-        // Edge exists when, from the specific sub-states of s_l, firing l can eventually enable t.
+        // Restrict to same source composite state: propagation uses estimates relative
+        // to the source sub-states, so mixing states from different compostates is wrong.
         Map<String, List<String>> predecessors = new HashMap<>();
         for (String key : keys) predecessors.put(key, new ArrayList<>());
 
         for (int li = 0; li < keys.size(); li++) {
             String   keyL   = keys.get(li);
             String[] partsL = keyToParts.get(keyL);
-            String   actL   = keyL.substring(keyL.indexOf('\0') + 1);
+            int      sepL   = keyL.indexOf('\0');
+            String   csL    = keyL.substring(0, sepL);
+            String   actL   = keyL.substring(sepL + 1);
             for (int ti = 0; ti < keys.size(); ti++) {
                 if (li == ti) continue;
                 String keyT = keys.get(ti);
-                String actT = keyT.substring(keyT.indexOf('\0') + 1);
+                int    sepT = keyT.indexOf('\0');
+                if (!csL.equals(keyT.substring(0, sepT))) continue;  // same-state only
+                String actT = keyT.substring(sepT + 1);
                 if (isEnablingEdge(actL, actT, partsL)) {
                     predecessors.get(keyT).add(keyL);
                 }
             }
         }
 
-        // Phase 3: Bellman-Ford fixpoint propagation.
+        // Phase 3: Bellman-Ford fixpoint with global gap and readyInLTS guard.
+        // gap(l,t) = max over {j : l ready in j, t in alphabet(j)} of steps(l_succ → t-enabling).
+        // Only propagate to components where l is NOT ready (its direct estimate is authoritative).
         Queue<String> workQueue = new ArrayDeque<>(keys);
         Set<String>   inQueue   = new HashSet<>(keys);
         int maxIter = keys.size() * keys.size() + 1;
         while (!workQueue.isEmpty() && maxIter-- > 0) {
             String keyT = workQueue.poll();
             inQueue.remove(keyT);
-            int[]  est_t = estPerComp.get(keyT);
-            int[]  m_t   = mPerComp.get(keyT);
-            String actT  = keyT.substring(keyT.indexOf('\0') + 1);
+            int[] est_t = estPerComp.get(keyT);
+            int[] m_t   = mPerComp.get(keyT);
 
             for (String keyL : predecessors.get(keyT)) {
-                String[] partsL = keyToParts.get(keyL);
-                String   actL   = keyL.substring(keyL.indexOf('\0') + 1);
-                int[] est_l = estPerComp.get(keyL);
-                int[] m_l   = mPerComp.get(keyL);
+                String[] partsL  = keyToParts.get(keyL);
+                String   actL    = keyL.substring(keyL.indexOf('\0') + 1);
+                String   actT    = keyT.substring(keyT.indexOf('\0') + 1);
+                int[]    est_l   = estPerComp.get(keyL);
+                int[]    m_l     = mPerComp.get(keyL);
+                Set<Integer> lReady = readyComps.get(keyL);
+
+                int gap = computeGlobalGap(partsL, actL, actT);
                 boolean improved = false;
 
                 for (int j = 0; j < numComponents; j++) {
-                    ComponentData cd = compData.get(j);
-                    if (cd.markedStates.isEmpty()) continue;
-                    String e_j = (j < partsL.length) ? partsL[j] : null;
-                    if (e_j == null) continue;
-
-                    int gap = gapComponent(j, e_j, actL, actT);
-                    if (gap == Integer.MAX_VALUE / 2) continue;
+                    if (compData.get(j).markedStates.isEmpty()) continue;
+                    if (lReady.contains(j)) continue;   // readyInLTS guard — direct estimate is authoritative
+                    if (est_t[j] >= Integer.MAX_VALUE / 2) continue;
 
                     int candidate_d = saturatingAdd(gap, est_t[j]);
                     int candidate_m = m_t[j];
@@ -558,7 +590,50 @@ public class RAHeuristic implements Heuristic {
             }
         }
 
-        // Write back to estimate cache.
+        // Phase 4: reconcilateShort — fill remaining UNREACHABLE estimates for non-ready components.
+        // Mirrors the original ReadyAbstraction.reconcilateShort().
+        // shortest = min direct estimate over ALL actions (non-self-loop) at e_j in component j,
+        // found via BFS over all component transitions (matches original Loop 1 BFS fallback).
+        for (String key : keys) {
+            String[] partsL = keyToParts.get(key);
+            int[]    est_l  = estPerComp.get(key);
+            int[]    m_l    = mPerComp.get(key);
+            Set<Integer> lReady = readyComps.get(key);
+
+            for (int j = 0; j < numComponents; j++) {
+                ComponentData cd = compData.get(j);
+                if (cd.markedStates.isEmpty()) continue;
+                if (lReady.contains(j)) continue;   // has direct estimate
+                if (m_l[j] < 2) continue;           // improved by propagation
+
+                String e_j = (j < partsL.length) ? partsL[j] : null;
+                if (e_j == null) continue;
+
+                if (cd.markedStates.contains(e_j)) {
+                    // Marked self-loop: action keeps component at marked state for 1 composite step.
+                    m_l[j]   = mFlag(j, e_j);
+                    est_l[j] = 1;
+                } else {
+                    // BFS fallback: shortest over all non-self-loop actions at e_j in component j.
+                    // Matches original Loop 1 of reconcilateShort (searches markedOrGoalReachable).
+                    int bestM = 2, bestD = Integer.MAX_VALUE / 2;
+                    for (Map<String, String> targets : cd.trans.values()) {
+                        String succ = targets.get(e_j);
+                        if (succ == null || succ.equals(e_j)) continue;
+                        EstimateTuple base = bestDistanceToMarked(j, succ);
+                        if (base == EstimateTuple.UNREACHABLE) continue;
+                        int m = base.m(), d = base.d() + 1;
+                        if (m < bestM || (m == bestM && d < bestD)) { bestM = m; bestD = d; }
+                    }
+                    if (bestM < 2) {
+                        m_l[j]   = bestM;
+                        est_l[j] = saturatingAdd(bestD, 1);
+                    }
+                }
+            }
+        }
+
+        // Phase 5: write back to estimate cache.
         for (String key : keys) {
             int    sep    = key.indexOf('\0');
             String cs     = key.substring(0, sep);
@@ -578,16 +653,14 @@ public class RAHeuristic implements Heuristic {
 
     /**
      * Returns true iff action {@code l} is an enabling predecessor of {@code t}
-     * in some component: specifically, l's successor in component j can reach a
-     * state where t is enabled, but t is not currently enabled at e_j.
+     * in some component: l fires (non-self-loop) in component j and from l's
+     * successor, t can eventually become enabled.
      */
     private boolean isEnablingEdge(String l, String t, String[] parts_l) {
         for (int j = 0; j < numComponents; j++) {
             ComponentData cd = compData.get(j);
             String e_j = (j < parts_l.length) ? parts_l[j] : null;
             if (e_j == null) continue;
-            // t must NOT be enabled at e_j already.
-            if (cd.enabledAt.getOrDefault(e_j, Set.of()).contains(t)) continue;
             // l must fire in component j (non-self-loop).
             String succ_l = cd.trans.getOrDefault(l, Map.of()).get(e_j);
             if (succ_l == null || succ_l.equals(e_j)) continue;
@@ -601,37 +674,29 @@ public class RAHeuristic implements Heuristic {
     }
 
     /**
-     * Gap cost for component {@code j} when firing {@code l} to eventually enable {@code t}.
+     * Global gap for the RA graph edge (l → t): maximum over all components j
+     * where l fires (non-self-loop) AND t is in the alphabet of j, of the
+     * steps from l's successor in j to FIRE t (enable it + 1 step to fire it).
      *
-     * = stepsToT (steps from l's successor to the nearest t-enabling state)
-     *   + dist(t-enabling state → nearest marked state in j).
-     *
-     * We iterate over all t-enabling states reachable from l's successor and take the
-     * minimum dist-to-marked, then add stepsToT as the shared approach cost.
-     *
-     * Returns {@code Integer.MAX_VALUE / 2} if t cannot be enabled from l's successor.
+     * Matches original MTSA: gap = manyStepsReachableActions[s][t][l] - 1
+     *                             = stepsToEnableAction[t][succ_l] + 1.
+     * The +1 accounts for the firing step of t itself.
      */
-    private int gapComponent(int j, String e_j, String l, String t) {
-        ComponentData cd = compData.get(j);
-        String succ_l = cd.trans.getOrDefault(l, Map.of()).get(e_j);
-        if (succ_l == null || succ_l.equals(e_j)) return Integer.MAX_VALUE / 2;
-
-        Integer stepsToT = cd.stepsToEnableAction.getOrDefault(t, Map.of()).get(succ_l);
-        if (stepsToT == null) return Integer.MAX_VALUE / 2;
-
-        // Iterate over t-enabling states reachable from succ_l; use the one with the
-        // best (minimum) distance to marked. gap = stepsToT + dist(t-enabling state → marked).
-        Set<String> reachable = cd.reachableFromState.getOrDefault(succ_l, Set.of());
-        int bestDist = Integer.MAX_VALUE / 2;
-        for (Map.Entry<String, Set<String>> entry : cd.enabledAt.entrySet()) {
-            String s = entry.getKey();
-            if (!entry.getValue().contains(t)) continue;
-            if (!reachable.contains(s)) continue;
-            EstimateTuple dt = bestDistanceToMarked(j, s);
-            if (dt != EstimateTuple.UNREACHABLE && dt.d() < bestDist) bestDist = dt.d();
+    private int computeGlobalGap(String[] partsL, String actL, String actT) {
+        int result = 0;
+        for (int j = 0; j < numComponents; j++) {
+            ComponentData cd = compData.get(j);
+            if (!cd.alphabet.contains(actT)) continue;
+            String e_j = (j < partsL.length) ? partsL[j] : null;
+            if (e_j == null) continue;
+            String succ_l = cd.trans.getOrDefault(actL, Map.of()).get(e_j);
+            if (succ_l == null || succ_l.equals(e_j)) continue;
+            Integer stepsToT = cd.stepsToEnableAction.getOrDefault(actT, Map.of()).get(succ_l);
+            if (stepsToT == null) continue;
+            int gapJ = stepsToT + 1;  // +1: cost of firing t itself (matches original gap formula)
+            if (gapJ > result) result = gapJ;
         }
-        if (bestDist == Integer.MAX_VALUE / 2) return Integer.MAX_VALUE / 2;
-        return saturatingAdd(stepsToT, bestDist);
+        return result;
     }
 
     private static int saturatingAdd(int a, int b) {
@@ -677,20 +742,9 @@ public class RAHeuristic implements Heuristic {
             return new EstimateTuple(mFlag(j, e_j), 1);
         }
 
-        // Cases 5/6: action absent/self-loop, use best alternative event β enabled at e_j.
-        // Formula: 1 (for firing action) + d(β, m) in ERA.
-        // d(β, m) in ERA = 1 (for β) + BFS dist from succ_β to m  →  total = 2 + BFS dist.
-        EstimateTuple best = EstimateTuple.UNREACHABLE;
-        for (String alt : cd.enabledAt.getOrDefault(e_j, Set.of())) {
-            if (alt.equals(action)) continue;
-            String alt_succ = cd.trans.getOrDefault(alt, Map.of()).get(e_j);
-            if (alt_succ == null || alt_succ.equals(e_j)) continue;
-            EstimateTuple reached = bestDistanceToMarked(j, alt_succ);
-            if (reached == EstimateTuple.UNREACHABLE) continue;
-            EstimateTuple candidate = new EstimateTuple(reached.m(), reached.d() + 2);
-            if (candidate.compareTo(best) < 0) best = candidate;
-        }
-        return best;
+        // Non-marked self-loop: return UNREACHABLE — filled by reconcilateShort
+        // in applyRAGraphPropagation using the global shortest estimate + 1.
+        return EstimateTuple.UNREACHABLE;
     }
 
     /**
