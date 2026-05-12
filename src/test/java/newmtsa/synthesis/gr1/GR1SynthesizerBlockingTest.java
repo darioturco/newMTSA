@@ -6,7 +6,7 @@ import newmtsa.parser.ast.FSPModel;
 import newmtsa.parser.ast.LTS;
 import newmtsa.parser.ast.LtlPropertyDef;
 import newmtsa.synthesis.Director;
-import newmtsa.synthesis.SynthesisResult;
+import newmtsa.synthesis.Director;
 import newmtsa.synthesis.heuristics.RandomHeuristic;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -53,7 +53,7 @@ class GR1SynthesizerBlockingTest {
      * component list (processes + guarantee fluents), and run GR(1) synthesis
      * with a fixed random seed for reproducibility.
      */
-    private SynthesisResult synthesize(FSPModel model) {
+    private Director synthesize(FSPModel model) {
         ControllerSpecDef spec = model.controllerSpecs().stream()
                 .filter(s -> !s.liveness().isEmpty())
                 .findFirst()
@@ -114,12 +114,12 @@ class GR1SynthesizerBlockingTest {
         assertTrue(model.errors().isEmpty(),
                 "Parse errors in " + file + ": " + model.errors());
 
-        SynthesisResult result = synthesize(model);
+        Director result = synthesize(model);
         assertTrue(result.isRealizable(),
                 file.getFileName() + " is in ControllableFSPs → must be REALIZABLE"
                         + " (states=" + result.statesExplored()
                         + ", transitions=" + result.transitionsExplored() + ")");
-        assertTrue(result.director().isPresent(),
+        assertTrue(result.isRealizable(),
                 "REALIZABLE result must carry a Director");
     }
 
@@ -130,10 +130,9 @@ class GR1SynthesizerBlockingTest {
     void gr1test1_directorIsNonEmpty() throws IOException {
         FSPModel model = FSPParser.parse(Paths.get("fsp/Blocking/ControllableFSPs/GR1test1.lts"));
         assertTrue(model.errors().isEmpty(), "Parse errors: " + model.errors());
-        SynthesisResult result = synthesize(model);
+        Director result = synthesize(model);
         assertTrue(result.isRealizable());
-        Director d = result.director().get();
-        assertFalse(d.enabled().isEmpty(), "Director should have at least one state entry");
+        assertFalse(result.enabled().isEmpty(), "Director should have at least one state entry");
     }
 
     /**
@@ -147,7 +146,7 @@ class GR1SynthesizerBlockingTest {
         assertTrue(model.errors().isEmpty(),
                 "Parse errors in " + file + ": " + model.errors());
 
-        SynthesisResult result = synthesize(model);
+        Director result = synthesize(model);
         assertFalse(result.isRealizable(),
                 file.getFileName() + " is in NoControllableFSPs → must be UNREALIZABLE"
                         + " (states=" + result.statesExplored()

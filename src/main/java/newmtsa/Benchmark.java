@@ -5,7 +5,7 @@ import newmtsa.parser.ast.ControllerSpecDef;
 import newmtsa.parser.ast.FSPModel;
 import newmtsa.parser.ast.LTS;
 import newmtsa.parser.ast.LtlPropertyDef;
-import newmtsa.synthesis.SynthesisResult;
+import newmtsa.synthesis.Director;
 import newmtsa.synthesis.heuristics.HeuristicType;
 import newmtsa.synthesis.nonblocking.OTFDirectedControledSyntesisNonBlocking;
 
@@ -148,7 +148,7 @@ public class Benchmark {
                                              ControllerSpecDef spec,
                                              HeuristicType type) {
         try {
-            SynthesisResult result = new OTFDirectedControledSyntesisNonBlocking(
+            Director result = new OTFDirectedControledSyntesisNonBlocking(
                     components,
                     safetyProps,
                     new HashSet<>(spec.marking()),

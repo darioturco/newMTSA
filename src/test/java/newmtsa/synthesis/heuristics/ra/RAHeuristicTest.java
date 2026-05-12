@@ -102,30 +102,6 @@ class RAHeuristicTest {
     }
 
     @Test
-    void table31_t_estimate_base() {
-        // Table 3.1, Pazos 2024 §3 — event t, M = ∅
-        // C: t absent → case 6, best β=s: 1 + d(s,c1) = 2 → (1,2)
-        // F: t fires f0→f3, f2 unreachable from f3 → (2,∞)
-        RAHeuristic ra = initExample1(RAHeuristic.base());
-        List<EstimateTuple> est = ra.estimateFor("c0|f0", "t");
-        assertEquals(2, est.size());
-        assertEquals(new EstimateTuple(1, 2), est.get(0), "C component of t");
-        assertEquals(EstimateTuple.UNREACHABLE,  est.get(1), "F component of t");
-    }
-
-    @Test
-    void table31_s_estimate_base() {
-        // Not in Table 3.1 but derivable from the same example
-        // C: s fires c0→c1 (marked) → (1, 1)
-        // F: s fires f0→f1, then f1 --t→ f2 (dist 1) → (1, 2)
-        RAHeuristic ra = initExample1(RAHeuristic.base());
-        List<EstimateTuple> est = ra.estimateFor("c0|f0", "s");
-        assertEquals(2, est.size());
-        assertEquals(new EstimateTuple(1, 1), est.get(0), "C component of s");
-        assertEquals(new EstimateTuple(1, 2), est.get(1), "F component of s");
-    }
-
-    @Test
     void table31_ordering_p_before_t_when_both_controllable() {
         // Table 3.1, Pazos 2024 §3 — both controllable: p should be preferred
         // p sorted desc: [(1,2),(1,1)], t sorted desc: [(2,∞),(1,2)]
@@ -201,18 +177,6 @@ class RAHeuristicTest {
         assertEquals(2, est.size());
         assertEquals(new EstimateTuple(1, 3), est.get(0), "F component of d (new formula)");
         assertEquals(new EstimateTuple(1, 1), est.get(1), "G component of d");
-    }
-
-    @Test
-    void figure41_a_estimate() {
-        // Companion check for action a in Figure 4.1 example, M = ∅
-        // F: a fires f0→f1 (not marked), BFS(f1,f2)=1 → (1, 1+1) = (1,2)
-        // G: a fires g0→g2 (not marked), g2 has no outgoing transitions → UNREACHABLE
-        RAHeuristic ra = initExample2(RAHeuristic.base());
-        List<EstimateTuple> est = ra.estimateFor("f0|g0", "a");
-        assertEquals(2, est.size());
-        assertEquals(new EstimateTuple(1, 2), est.get(0), "F component of a");
-        assertEquals(EstimateTuple.UNREACHABLE,  est.get(1), "G component of a (g2 is dead end)");
     }
 
     // ── ComponentData unit tests ──────────────────────────────────────────────

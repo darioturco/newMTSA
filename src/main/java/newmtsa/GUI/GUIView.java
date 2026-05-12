@@ -24,7 +24,7 @@ public final class GUIView {
     private static final Path HTML_DIR = Path.of("src", "main", "java", "newmtsa", "GUI", "HTML");
     private static final Path TEMPLATE_PATH = HTML_DIR.resolve("lts-template.html");
     private static final int MAX_STATE_RENDER = 120;
-    static final Path SOL_FILE = Path.of("python", "results", "traces", "DP", "RA_ERG_OPEN", "DP-2-2.sol");
+    static final Path SOL_FILE = Path.of("python", "results", "traces", "DP", "RA_ERG_OPEN", "DP-1-1.sol");
     //static final Path SOL_FILE = Path.of("python", "results", "traces", "DP", "RL", "ROL", "DP-2-2.sol");
 
     private GUIView() {}
@@ -32,7 +32,7 @@ public final class GUIView {
     public static void main(String[] args) throws IOException {
         Path sourceFile;
         if (args.length == 0) {
-            sourceFile = Path.of("E:\\Code\\Java\\NewMTSA\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp").toAbsolutePath().normalize();
+            sourceFile = Path.of("E:\\Code\\Java\\NewMTSA\\fsp\\Blocking\\Benchmark\\DP\\DP-1-1.fsp").toAbsolutePath().normalize();
         }else{
             sourceFile = Path.of(args[0]).toAbsolutePath().normalize();
         }
@@ -85,9 +85,22 @@ public final class GUIView {
 
     private static Path writeTempHtmlFile(Path sourceFile, String html) throws IOException {
         String prefix = stripExtension(sourceFile.getFileName().toString()) + "-lts-viewer-";
-        Path output = Files.createTempFile(prefix, ".html");
+        Path tempDir = Files.createTempDirectory(prefix);
+        tempDir.toFile().deleteOnExit();
+
+        Path output = tempDir.resolve("index.html");
         Files.writeString(output, html, StandardCharsets.UTF_8);
         output.toFile().deleteOnExit();
+
+        for (String name : new String[]{"lts-viewer.css", "lts-viewer.js"}) {
+            Path src = HTML_DIR.resolve(name);
+            if (Files.exists(src)) {
+                Path dst = tempDir.resolve(name);
+                Files.copy(src, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                dst.toFile().deleteOnExit();
+            }
+        }
+
         return output;
     }
 

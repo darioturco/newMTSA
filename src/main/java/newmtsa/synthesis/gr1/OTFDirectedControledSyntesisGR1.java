@@ -6,7 +6,7 @@ import newmtsa.parser.ast.Transition;
 import newmtsa.synthesis.Director;
 import newmtsa.synthesis.ExtendedTransition;
 import newmtsa.synthesis.OTFDirectedControlledSynthesis;
-import newmtsa.synthesis.SynthesisResult;
+
 import newmtsa.synthesis.features.FeatureCompute;
 import newmtsa.synthesis.features.FeaturesContext;
 import newmtsa.synthesis.heuristics.Heuristic;
@@ -266,10 +266,10 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
     /**
      * Runs the otf-dcs-GR(1) algorithm.
      *
-     * @return {@link SynthesisResult#isRealizable()} true iff a GR(1) controller
+     * @return {@link Director#isRealizable()} true iff a GR(1) controller
      *         exists from the initial state.
      */
-    public SynthesisResult run() {
+    public Director run() {
         log("Initial state explored | states=" + succMap.size());
 
         if (explorationEnded) {
@@ -421,14 +421,14 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
     public Map<String, Set<String>>              getParents()    { return parents; }
     public List<Set<String>>                     getCompMarked() { return compMarked; }
 
-    public SynthesisResult getSynthesisResult() {
+    public Director getSynthesisResult() {
         if (goals.contains(s0))
-            return SynthesisResult.of(buildDirector(), succMap.size(), transitionsExplored);
-        SynthesisResult.TerminationReason reason;
-        if (errors.contains(s0))    reason = SynthesisResult.TerminationReason.ERROR;
-        else if (pending.isEmpty()) reason = SynthesisResult.TerminationReason.FRONTIER_EMPTY;
-        else                        reason = SynthesisResult.TerminationReason.NONE;
-        return SynthesisResult.unrealizable(succMap.size(), transitionsExplored, reason);
+            return Director.realizable(buildDirector(), succMap.size(), transitionsExplored);
+        Director.TerminationReason reason;
+        if (errors.contains(s0))    reason = Director.TerminationReason.ERROR;
+        else if (pending.isEmpty()) reason = Director.TerminationReason.FRONTIER_EMPTY;
+        else                        reason = Director.TerminationReason.NONE;
+        return Director.unrealizable(succMap.size(), transitionsExplored, reason);
     }
 
     // ── state helpers ─────────────────────────────────────────────────────────
@@ -863,7 +863,7 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
 
     // ── director ──────────────────────────────────────────────────────────────
 
-    private Director buildDirector() {
+    private Map<String, Set<String>> buildDirector() {
         // Build reverse adjacency within the goal set.
         Map<String, Set<String>> goalRevAdj = new HashMap<>();
         for (String s : goals) {
@@ -905,7 +905,7 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
             }
             enabled.merge(plantPart(s), ena, (a, b) -> { a.addAll(b); return a; });
         }
-        return new Director(enabled);
+        return enabled;
     }
 
     // ── pending pruning ───────────────────────────────────────────────────────

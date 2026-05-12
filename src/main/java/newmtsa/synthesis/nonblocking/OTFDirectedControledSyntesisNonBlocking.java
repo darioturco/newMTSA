@@ -6,7 +6,7 @@ import newmtsa.parser.ast.Transition;
 import newmtsa.synthesis.Director;
 import newmtsa.synthesis.ExtendedTransition;
 import newmtsa.synthesis.OTFDirectedControlledSynthesis;
-import newmtsa.synthesis.SynthesisResult;
+
 import newmtsa.synthesis.features.FeatureCompute;
 import newmtsa.synthesis.features.FeaturesContext;
 import newmtsa.synthesis.heuristics.Heuristic;
@@ -331,14 +331,14 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
     public Map<String, Set<String>>              getParents()      { return parents; }
     public List<Set<String>>                     getCompMarked()   { return compMarked; }
 
-    public SynthesisResult getSynthesisResult() {
+    public Director getSynthesisResult() {
         if (goals.contains(s0))
-            return SynthesisResult.of(buildDirector(), succMap.size(), transitionsExplored);
-        SynthesisResult.TerminationReason reason;
-        if (errors.contains(s0))    reason = SynthesisResult.TerminationReason.ERROR;
-        else if (pending.isEmpty()) reason = SynthesisResult.TerminationReason.FRONTIER_EMPTY;
-        else                        reason = SynthesisResult.TerminationReason.NONE;
-        return SynthesisResult.unrealizable(succMap.size(), transitionsExplored, reason);
+            return Director.realizable(buildDirector(), succMap.size(), transitionsExplored);
+        Director.TerminationReason reason;
+        if (errors.contains(s0))    reason = Director.TerminationReason.ERROR;
+        else if (pending.isEmpty()) reason = Director.TerminationReason.FRONTIER_EMPTY;
+        else                        reason = Director.TerminationReason.NONE;
+        return Director.unrealizable(succMap.size(), transitionsExplored, reason);
     }
 
     public List<int[]> getFrontierWithFeatures() {
@@ -365,7 +365,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
 
     // ── full run loop ─────────────────────────────────────────────────────────
 
-    public SynthesisResult run() {
+    public Director run() {
         log("Initial state explored | states=" + getStatesExplored());
 
         if (isExplorationEnded()) {
@@ -408,7 +408,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
             }
             if (getTransitionsExplored() >= expansionLimit) {
                 log("Budget exhausted (" + expansionLimit + ") — aborting");
-                return SynthesisResult.unrealizable(getStatesExplored(), getTransitionsExplored());
+                return Director.unrealizable(getStatesExplored(), getTransitionsExplored(), Director.TerminationReason.BUDGET_EXHAUSTED);
             }
         }
 
@@ -763,7 +763,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
         return !hasNonError;
     }
 
-    private Director buildDirector() {
+    private Map<String, Set<String>> buildDirector() {
         Map<String, Set<String>> goalRevAdj = new HashMap<>();
         for (String s : goals) {
             for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
@@ -804,7 +804,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
             }
             enabled.put(s, enabledActions);
         }
-        return new Director(enabled);
+        return enabled;
     }
 
     // ── verbose helpers ───────────────────────────────────────────────────────

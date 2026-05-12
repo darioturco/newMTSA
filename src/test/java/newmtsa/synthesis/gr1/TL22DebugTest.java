@@ -2,7 +2,7 @@ package newmtsa.synthesis.gr1;
 
 import newmtsa.parser.FSPParser;
 import newmtsa.parser.ast.*;
-import newmtsa.synthesis.SynthesisResult;
+import newmtsa.synthesis.Director;
 import newmtsa.synthesis.heuristics.HeuristicType;
 import org.junit.jupiter.api.Test;
 
@@ -48,7 +48,7 @@ class TL22DebugTest {
                     new HashSet<>(spec.controllable()),
                     type.create(),
                     false, true);
-            SynthesisResult result = engine.run();
+            Director result = engine.run();
             System.out.println(type + ": transitions=" + engine.getTransitionsExplored()
                 + " states=" + engine.getStatesExplored()
                 + " realizable=" + result.isRealizable());

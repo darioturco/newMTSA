@@ -5,7 +5,7 @@ import newmtsa.parser.ast.ControllerSpecDef;
 import newmtsa.parser.ast.FSPModel;
 import newmtsa.parser.ast.LTS;
 import newmtsa.parser.ast.LtlPropertyDef;
-import newmtsa.synthesis.SynthesisResult;
+import newmtsa.synthesis.Director;
 import newmtsa.synthesis.heuristics.RandomHeuristic;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -51,7 +51,7 @@ class OTFDirectedControledSyntesisNonBlockingTest {
      * component list from the model's processes, and run non-blocking DCS with a
      * fixed random seed for reproducibility.
      */
-    private SynthesisResult synthesize(FSPModel model) {
+    private Director synthesize(FSPModel model) {
         List<ControllerSpecDef> specs = model.controllerSpecs();
         ControllerSpecDef spec = null;
         for (int i = specs.size() - 1; i >= 0; i--) {
@@ -89,12 +89,12 @@ class OTFDirectedControledSyntesisNonBlockingTest {
         assertTrue(model.errors().isEmpty(),
                 "Parse errors in " + file + ": " + model.errors());
 
-        SynthesisResult result = synthesize(model);
+        Director result = synthesize(model);
         assertTrue(result.isRealizable(),
                 file.getFileName() + " is in ControllableFSPs → must be REALIZABLE"
                         + " (states=" + result.statesExplored()
                         + ", transitions=" + result.transitionsExplored() + ")");
-        assertTrue(result.director().isPresent(),
+        assertTrue(result.isRealizable(),
                 "REALIZABLE result must carry a Director");
     }
 
@@ -105,7 +105,7 @@ class OTFDirectedControledSyntesisNonBlockingTest {
         assertTrue(model.errors().isEmpty(),
                 "Parse errors in " + file + ": " + model.errors());
 
-        SynthesisResult result = synthesize(model);
+        Director result = synthesize(model);
         assertFalse(result.isRealizable(),
                 file.getFileName() + " is in NoControllableFSPs → must be UNREALIZABLE"
                         + " (states=" + result.statesExplored()

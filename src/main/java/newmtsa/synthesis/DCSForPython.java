@@ -176,7 +176,7 @@ public class DCSForPython {
     public String getFeatureGroupName()        { return engine.getFeatureGroupName(); }
 
     /** Returns the synthesis result. */
-    public SynthesisResult getSynthesisResult() { return engine.getSynthesisResult(); }
+    public Director getSynthesisResult() { return engine.getSynthesisResult(); }
 
     // ── factory ───────────────────────────────────────────────────────────────
 

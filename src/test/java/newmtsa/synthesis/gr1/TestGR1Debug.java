@@ -5,7 +5,7 @@ import newmtsa.parser.ast.ControllerSpecDef;
 import newmtsa.parser.ast.FSPModel;
 import newmtsa.parser.ast.LTS;
 import newmtsa.parser.ast.LtlPropertyDef;
-import newmtsa.synthesis.SynthesisResult;
+import newmtsa.synthesis.Director;
 import newmtsa.synthesis.heuristics.RandomHeuristic;
 
 import java.io.IOException;
@@ -64,7 +64,7 @@ public class TestGR1Debug {
                 + "  guarantees=" + spec.liveness()
                 + "  controllable=" + spec.controllable());
 
-            SynthesisResult result = new OTFDirectedControledSyntesisGR1(
+            Director result = new OTFDirectedControledSyntesisGR1(
                 components, assumptions, guarantees,
                 new HashSet<>(spec.controllable()),
                 new RandomHeuristic(42L),
