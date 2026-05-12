@@ -228,8 +228,11 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
         heuristic.init(new SimpleSynthesisContext(this.components, this.compMarked, this.controllable) {
             @Override public Set<String>              exploredStates()            { return succMap.keySet(); }
             @Override public Set<String>              goals()                     { return goals; }
+            @Override public Set<String>              errors()                    { return errors; }
             @Override public List<ExtendedTransition> successorsOf(String s)      { return succMap.getOrDefault(s, List.of()); }
+            @Override public Set<String>              predecessorsOf(String s)    { return parents.getOrDefault(s, Set.of()); }
             @Override public String                   plantStateKey(String nodeId) { return plantPart(nodeId); }
+            @Override public boolean                  verbose()                   { return OTFDirectedControledSyntesisGR1.this.verbose; }
         });
 
         this.featureCompute = featureCompute;
@@ -285,6 +288,7 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
                 index = Math.max(0, Math.min(index, frontier.size() - 1));
             }
             ExtendedTransition t = frontier.get(index);
+            heuristic.printFrontier(frontier, index);
 
             log("  step " + (transitionsExplored + 1)
                     + " | " + displayNodeId(t.from()) + " --[" + t.action() + "]--> " + displayNodeId(t.to()));

@@ -5,7 +5,9 @@ import newmtsa.parser.ast.LTS;
 import newmtsa.parser.ast.Transition;
 import newmtsa.synthesis.ExtendedTransition;
 import newmtsa.synthesis.features.BasicFeatures;
+import newmtsa.synthesis.features.FeatureCompute;
 import newmtsa.synthesis.features.FeaturesContext;
+import newmtsa.synthesis.features.FeatureType;
 import newmtsa.synthesis.heuristics.Heuristic;
 import newmtsa.synthesis.heuristics.SynthesisContext;
 
@@ -40,6 +42,7 @@ public class MCTSHeuristic implements Heuristic, AutoCloseable {
     // ── ONNX ─────────────────────────────────────────────────────────────────
 
     private final String         onnxPath;
+    private final FeatureType    featureType;
     private       OrtEnvironment ortEnv;
     private       OrtSession     ortSession;
     private       String         outputName;
@@ -50,7 +53,7 @@ public class MCTSHeuristic implements Heuristic, AutoCloseable {
     private List<Map<String, Map<String, String>>>      compTrans;
     private List<Set<String>>                           compAlpha;
     private FeaturesContext                             featCtx;
-    private BasicFeatures                               features;
+    private FeatureCompute                              features;
 
     // ── MCTS tree state (persists across pick() calls) ────────────────────────
 
@@ -63,12 +66,13 @@ public class MCTSHeuristic implements Heuristic, AutoCloseable {
 
     // ── constructors ──────────────────────────────────────────────────────────
 
-    public MCTSHeuristic(String onnxPath) {
-        this(onnxPath, 50, 1.5, 10);
+    public MCTSHeuristic(String onnxPath, String featureType) {
+        this(onnxPath, featureType, 50, 1.5, 10);
     }
 
-    public MCTSHeuristic(String onnxPath, int numSimulations, double cPuct, int maxDepth) {
+    public MCTSHeuristic(String onnxPath, String featureType, int numSimulations, double cPuct, int maxDepth) {
         this.onnxPath       = onnxPath;
+        this.featureType    = FeatureType.valueOf(featureType);
         this.numSimulations = numSimulations;
         this.cPuct          = cPuct;
         this.maxDepth       = maxDepth;
@@ -128,7 +132,7 @@ public class MCTSHeuristic implements Heuristic, AutoCloseable {
                 ctx.controllable(), Collections.unmodifiableSet(alphabet),
                 ctx.components(), ctx.componentMarked());
 
-        features = new BasicFeatures();
+        features = featureType.create();
         features.init(featCtx);
 
         // Load ONNX model

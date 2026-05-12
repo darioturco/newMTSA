@@ -20,6 +20,7 @@ public class SimpleSynthesisContext implements SynthesisContext {
     private final List<LTS>         components;
     private final List<Set<String>> componentMarked;
     private final Set<String>       controllable;
+    private boolean                 verbose = false;
 
     public final Set<String> exploredStates = new LinkedHashSet<>();
     public final Set<String> goals          = new LinkedHashSet<>();
@@ -34,6 +35,9 @@ public class SimpleSynthesisContext implements SynthesisContext {
         this.controllable    = Set.copyOf(controllable);
     }
 
+    /** Set verbose output for frontier printing. */
+    public void setVerbose(boolean v) { this.verbose = v; }
+
     /** Registers {@code state} as explored and records its outgoing transitions. */
     public void addState(String state, List<ExtendedTransition> transitions) {
         exploredStates.add(state);
@@ -45,6 +49,7 @@ public class SimpleSynthesisContext implements SynthesisContext {
     @Override public Set<String>       controllable()    { return controllable; }
     @Override public Set<String>       exploredStates()  { return exploredStates; }
     @Override public Set<String>       goals()           { return goals; }
+    @Override public boolean           verbose()         { return verbose; }
     @Override public List<ExtendedTransition> successorsOf(String s) {
         return successors.getOrDefault(s, List.of());
     }

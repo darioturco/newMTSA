@@ -2,16 +2,15 @@ package newmtsa.synthesis.heuristics;
 
 import newmtsa.synthesis.ExtendedTransition;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Scanner;
+import java.util.Set;
 
-/**
- * Interactive heuristic that prints the frontier and asks a human to pick
- * which transition to expand next.
- */
 public class HumanHeuristic implements Heuristic {
 
     private final Scanner scanner;
+    private final Set<String> hidden = new HashSet<>();
 
     public HumanHeuristic() {
         this.scanner = new Scanner(System.in);
@@ -19,25 +18,79 @@ public class HumanHeuristic implements Heuristic {
 
     @Override
     public int pick(List<ExtendedTransition> pending) {
-        System.out.println("[HumanHeuristic] Current frontier (" + pending.size() + " transitions):");
-        for (int i = 0; i < pending.size(); i++) {
-            ExtendedTransition t = pending.get(i);
-            System.out.printf("  [%d] %s --[%s]--> %s%n", i, t.from(), t.action(), t.to());
-        }
+        printFrontier(pending);
 
-        int choice = -1;
-        while (choice < 0 || choice >= pending.size()) {
-            System.out.print("Choose transition index [0-" + (pending.size() - 1) + "]: ");
+        while (true) {
+            System.out.print("Choose index (or 'del i'/'del i-j'/'reset'): ");
             String line = scanner.nextLine().trim();
+
+            if (line.equalsIgnoreCase("reset")) {
+                hidden.clear();
+                System.out.println("  Hidden transitions cleared.");
+                printFrontier(pending);
+                continue;
+            }
+
+            if (line.toLowerCase().startsWith("del ")) {
+                handleDel(line.substring(4).trim(), pending);
+                printFrontier(pending);
+                continue;
+            }
+
             try {
-                choice = Integer.parseInt(line);
+                int choice = Integer.parseInt(line);
                 if (choice < 0 || choice >= pending.size()) {
                     System.out.println("  Out of range. Try again.");
+                } else if (hidden.contains(key(pending.get(choice)))) {
+                    System.out.println("  Transition " + choice + " is hidden. Choose a visible index.");
+                } else {
+                    return choice;
                 }
             } catch (NumberFormatException e) {
-                System.out.println("  Not a number. Try again.");
+                System.out.println("  Unknown command. Enter an index, 'del i', 'del i-j', or 'reset'.");
             }
         }
-        return choice;
+    }
+
+    private void printFrontier(List<ExtendedTransition> pending) {
+        long visible = pending.stream().filter(t -> !hidden.contains(key(t))).count();
+        System.out.println("[HumanHeuristic] Frontier: " + pending.size() + " total, " + visible + " visible:");
+        for (int i = 0; i < pending.size(); i++) {
+            ExtendedTransition t = pending.get(i);
+            if (hidden.contains(key(t))) continue;
+            System.out.printf("  [%d] %s --[%s]--> %s%n", i, t.from(), t.action(), t.to());
+        }
+    }
+
+    private void handleDel(String range, List<ExtendedTransition> pending) {
+        String[] parts = range.split("-");
+        try {
+            if (parts.length == 1) {
+                int idx = Integer.parseInt(parts[0].trim());
+                if (idx < 0 || idx >= pending.size()) {
+                    System.out.println("  Index out of bounds [0-" + (pending.size() - 1) + "].");
+                    return;
+                }
+                hidden.add(key(pending.get(idx)));
+                System.out.println("  Hidden transition " + idx + ".");
+            } else if (parts.length == 2) {
+                int lo = Integer.parseInt(parts[0].trim());
+                int hi = Integer.parseInt(parts[1].trim());
+                if (lo > hi || lo < 0 || hi >= pending.size()) {
+                    System.out.println("  Range out of bounds [0-" + (pending.size() - 1) + "].");
+                    return;
+                }
+                for (int i = lo; i <= hi; i++) hidden.add(key(pending.get(i)));
+                System.out.println("  Hidden transitions " + lo + "-" + hi + ".");
+            } else {
+                System.out.println("  Bad format. Use: del i  or  del i-j");
+            }
+        } catch (NumberFormatException e) {
+            System.out.println("  Bad format. Use: del i  or  del i-j");
+        }
+    }
+
+    private static String key(ExtendedTransition t) {
+        return t.from() + "||" + t.action() + "||" + t.to();
     }
 }

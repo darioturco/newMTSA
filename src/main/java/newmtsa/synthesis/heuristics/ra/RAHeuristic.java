@@ -101,8 +101,8 @@ public class RAHeuristic implements Heuristic {
     public static RAHeuristic withE()   { return new RAHeuristic(false, true,  false, false); }
     /** RA.ER — recompute + structure-aware (best single-improvement combination). */
     public static RAHeuristic withER()  { return new RAHeuristic(true,  true,  false, false); }
-    /** RA.ERG — all improvements enabled. */
-    public static RAHeuristic withERG() { return new RAHeuristic(true,  true,  true,  false); }
+    /** RA.ERG — all improvements enabled (R + E + G + open queue tie-break). */
+    public static RAHeuristic withERG() { return new RAHeuristic(true,  true,  true,  true); }
 
     /**
      * Returns a new instance identical to this one but with the open queue enabled.
@@ -164,37 +164,64 @@ public class RAHeuristic implements Heuristic {
         refreshVisitedStates();
         if (useG) refreshGoalStates();
 
-        // Restrict to open states when the open-queue flag is enabled.
-        List<ExtendedTransition> candidates = useOpenQueue ? openQueueCandidates(pending) : pending;
-        if (candidates.isEmpty()) candidates = pending;  // fallback: all closed, use full pending
+        // Rebuild RA graph estimates over full pending.
+        applyRAGraphPropagation(pending);
 
-        // Rebuild RA graph estimates for the candidate set before comparing.
-        applyRAGraphPropagation(candidates);
+        // Sync open queue state (track classifications, discoveries) without hard filtering.
+        if (useOpenQueue) openQueueCandidates(pending);
 
-        // Linear scan: find the transition that is "smallest" under the RA ordering.
+        if (ctx.verbose() && useOpenQueue) {
+            System.out.println("[OQ] pending=" + pending.size()
+                    + " openStates=" + openStates.size() + " closedStates=" + closedStates.size()
+                    + " classified=" + (ctx.goals().size() + ctx.errors().size()));
+        }
+
+        // Pick best transition. With useOpenQueue, restrict candidates to transitions
+        // from open states (hard filter, mirroring original MTSA OpenSetExplorationHeuristic
+        // where closed compostates are absent from the priority queue). Sticky:
+        // if no open candidates exist (deadlock), fall back to full pending to keep
+        // exploration alive.
+        List<ExtendedTransition> candidates = pending;
+        if (useOpenQueue) {
+            List<ExtendedTransition> open = new ArrayList<>(pending.size());
+            for (ExtendedTransition t : pending) {
+                if (openStates.contains(t.from())) open.add(t);
+            }
+            if (!open.isEmpty()) candidates = open;
+        }
+
         ExtendedTransition best = null;
         for (ExtendedTransition t : candidates) {
-            if (best == null || compareTransitions(t, best) < 0) {
-                best = t;
-            }
+            if (best == null) { best = t; continue; }
+            if (compareTransitions(t, best) < 0) best = t;
         }
         lastPicked = best;
+
+        // After pick: if state has unresolved uncontrollables remaining, close it (defer).
+        if (useOpenQueue && best != null) {
+            updateOpenStatePostPick(best, pending);
+        }
+
+        if (best == null) return 0;
+        // Map back to pending index (candidates may be a filtered sub-list).
         int idx = pending.indexOf(best);
         return idx >= 0 ? idx : 0;
     }
 
-    // ── open queue ───────────────────────────────────────────────────────────
+    // ── state-level open queue ───────────────────────────────────────────────
 
     /**
-     * States that are currently <em>closed</em> (excluded from picks).
-     *
-     * <p>A state is closed when the heuristic last picked a transition from it
-     * and it still had at least one uncontrollable transition remaining in
-     * {@code pending}.  It reopens naturally once all its uncontrollable
-     * transitions leave {@code pending} (because the synthesis engine classified
-     * their source or target states and the pruning step removed them).
+     * Composite states currently open for expansion.
+     * A state is open when picking from it does not violate the DFS bias
+     * (i.e., its already-fired uncontrollable children are all classified).
      */
+    private final Set<String> openStates = new LinkedHashSet<>();
+
+    /** States deferred (have unresolved uncontrollable transitions). */
     private final Set<String> closedStates = new HashSet<>();
+
+    /** All states ever seen in any pending list. */
+    private final Set<String> knownStates = new HashSet<>();
 
     /** The transition returned by the most recent {@link #pick} call. */
     private ExtendedTransition lastPicked = null;
@@ -203,64 +230,136 @@ public class RAHeuristic implements Heuristic {
     private List<ExtendedTransition> currentPending = List.of();
 
     /**
-     * Maintains the open/closed state sets and returns the open-queue view of
-     * {@code pending} (transitions from states not in {@link #closedStates}).
+     * Compute the open-queue view of {@code pending}: transitions from open states only.
      *
-     * <p><b>Closing rule</b> (Ciolek §5.1.3, Pazos §2.3.1): after picking from
-     * state A, if A still has at least one uncontrollable transition in
-     * {@code pending}, A is closed.  The environment could force those
-     * transitions, so the algorithm defers them until the current branch is
-     * resolved.  If A has only controllable transitions remaining, it stays open
-     * — the controller can freely choose not to take them.
-     *
-     * <p><b>Reopening rule</b>: a closed state reopens when all its uncontrollable
-     * transitions have left {@code pending}.  This happens implicitly whenever the
-     * synthesis engine's classification-and-prune step removes those transitions
-     * (their source or target became a Goal or Error).
-     *
-     * @return transitions from open states; falls back to full {@code pending} if
-     *         every state is closed (prevents deadlock)
+     * <p>State-level open queue (mirrors original MTSA OpenSetExplorationHeuristic):
+     * <ul>
+     *   <li>Newly-discovered states from pending → added to {@link #openStates}.</li>
+     *   <li>Classified states (in goals/errors) → removed; parents conditionally reopened.</li>
+     *   <li>States already in {@link #closedStates} → excluded from candidates.</li>
+     * </ul>
      */
     private List<ExtendedTransition> openQueueCandidates(List<ExtendedTransition> pending) {
-        // Step 1: close the source of the last picked transition if it still has
-        // uncontrollable transitions in pending.
-        if (lastPicked != null) {
-            String src = lastPicked.from();
-            for (ExtendedTransition t : pending) {
-                if (t.from().equals(src) && !controllable.contains(t.action())) {
-                    closedStates.add(src);
-                    break;
-                }
+        // Step 1: discover new states from pending.
+        for (ExtendedTransition t : pending) {
+            String src = t.from();
+            if (knownStates.add(src)) {
+                if (!isClassified(src)) openStates.add(src);
             }
         }
 
-        // Step 2: reopen closed states whose uncontrollable transitions have all
-        // left pending (classification pruning removed them).
-        closedStates.removeIf(s -> {
-            for (ExtendedTransition t : pending) {
-                if (t.from().equals(s) && !controllable.contains(t.action())) return false;
-            }
-            return true;  // no uncontrollable remaining → reopen
-        });
+        // Step 2: process newly classified states (recursive reopen of NONE parents).
+        for (String s : ctx.goals())  processClassified(s);
+        for (String s : ctx.errors()) processClassified(s);
 
-        // Step 3: build the open-queue view.
+        // Step 3: build candidates from open states (excluding closed and classified).
         List<ExtendedTransition> open = new ArrayList<>();
         for (ExtendedTransition t : pending) {
-            if (!closedStates.contains(t.from())) open.add(t);
+            if (openStates.contains(t.from())) open.add(t);
         }
         return open;
     }
 
+    /** True if state is in goals or errors set. */
+    private boolean isClassified(String s) {
+        return ctx.goals().contains(s) || ctx.errors().contains(s);
+    }
+
     /**
-     * Returns the current open-queue size for the given {@code pending} list.
-     * Useful for testing and instrumentation; does not modify internal state.
+     * Process state {@code s} that has been classified.
+     * Removes {@code s} from open/closed, then re-opens its NONE predecessors
+     * via the recursive {@link #reopen} logic (mirrors original MTSA
+     * {@code OpenSetExplorationHeuristic.open}).
      */
+    private void processClassified(String s) {
+        openStates.remove(s);
+        closedStates.remove(s);
+        for (String p : ctx.predecessorsOf(s)) {
+            if (isClassified(p)) continue;
+            reopen(p);
+        }
+    }
+
+    /**
+     * Reopens {@code s} according to the original MTSA {@code open()} recursion:
+     * <ol>
+     *   <li>If {@code s} is already open or classified, do nothing.</li>
+     *   <li>If {@code s} has no still-NONE explored child with pending transitions,
+     *       add {@code s} to {@link #openStates}.</li>
+     *   <li>Otherwise, recursively try to reopen each such NONE child first
+     *       (DFS bias — prefer deeper exploration before re-firing {@code s}'s
+     *       own remaining actions). Only add {@code s} to {@link #openStates}
+     *       if either no child was opened OR {@code s} is a controllable state
+     *       ({@code state.isControlled()} in the original).</li>
+     * </ol>
+     *
+     * @return true iff {@code s} (or one of its NONE descendants) was opened.
+     */
+    private boolean reopen(String s) {
+        if (isClassified(s)) return false;
+        if (openStates.contains(s)) return true;
+
+        List<String> noneChildren = new ArrayList<>();
+        for (ExtendedTransition t : ctx.successorsOf(s)) {
+            String c = t.to();
+            if (c.equals(s)) continue;
+            if (!ctx.exploredStates().contains(c)) continue;  // not yet explored
+            if (isClassified(c)) continue;
+            if (openStates.contains(c)) continue;
+            if (!hasPendingFromState(c)) continue;             // fullyExplored
+            if (!noneChildren.contains(c)) noneChildren.add(c);
+        }
+
+        boolean childOpened = false;
+        for (String c : noneChildren) {
+            if (reopen(c)) childOpened = true;
+        }
+
+        if (!childOpened || isControllableState(s)) {
+            closedStates.remove(s);
+            openStates.add(s);
+            return true;
+        }
+        return childOpened;
+    }
+
+    /** True iff at least one transition in the current pending frontier has {@code s} as source. */
+    private boolean hasPendingFromState(String s) {
+        for (ExtendedTransition t : currentPending) {
+            if (t.from().equals(s)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Called after a transition is picked. Defers the source state if it still
+     * has any uncontrollable in pending (DFS bias — defer until current branch resolved).
+     * Mirrors original MTSA OpenSetExplorationHeuristic.expansionDone():
+     * "if state is controlled and still NONE, re-queue it" — i.e., close otherwise.
+     */
+    private void updateOpenStatePostPick(ExtendedTransition picked, List<ExtendedTransition> pending) {
+        String src = picked.from();
+        if (isClassified(src)) {
+            openStates.remove(src);
+            return;
+        }
+        // Mirror old MTSA Compostate.isControlled(): state is "controlled" iff it has
+        // NO uncontrollable transition in its alphabet at all. Old expansionDone() only
+        // re-adds a state to the open queue when state.isControlled(); otherwise the
+        // state stays closed (deferred) until a child gets classified. This is the
+        // DFS bias.
+        if (!isControllableState(src)) {
+            openStates.remove(src);
+            closedStates.add(src);
+        }
+        // Else: pure controllable state — stays open.
+    }
+
+    /** Inspection API for tests. Returns count of transitions from open states. */
     public int openQueueSize(List<ExtendedTransition> pending) {
         if (!useOpenQueue) return pending.size();
-        // Count transitions from states with no pending uncontrollable (closed or not).
-        Set<String> closed = new HashSet<>(closedStates);
         return (int) pending.stream()
-                .filter(t -> !closed.contains(t.from()))
+                .filter(t -> openStates.contains(t.from()) || !knownStates.contains(t.from()))
                 .count();
     }
 
@@ -465,114 +564,165 @@ public class RAHeuristic implements Heuristic {
      * Called once per pick() invocation to propagate RA graph estimates across
      * the entire frontier before individual transitions are compared.
      *
-     * Phase 1 — direct component estimates (non-self-loop actions only).
-     * Phase 2 — RA graph enabling edges (s_l, l) → (s_t, t).
-     * Phase 3 — Bellman-Ford fixpoint with global gap and readyInLTS guard.
-     * Phase 4 — reconcilateShort: fill remaining UNREACHABLE with shortest+1.
-     * Phase 5 — write back to estimate cache.
+     * <p>Evaluates RA per source composite state (mirroring original MTSA
+     * {@code ReadyAbstraction.eval(compostate)}): for each pending source
+     * {@code cs} not yet in the cache, build a fresh RA graph over its
+     * <em>locally-enabled-non-self-loop</em> vertex set (across all components),
+     * run Bellman-Ford propagation with gap/readyInLTS guard, apply
+     * reconcilateShort, and cache the estimate for every globally-enabled action.
      *
-     * Key format: compositeState + "\0" + action.
+     * <p>Crucially the vertex set includes actions that are NOT in the current
+     * pending frontier (e.g. {@code accept}, {@code reject}, intermediate
+     * {@code put}/{@code return}) — these "phantom" vertices carry the
+     * propagation chain from marked-reaching actions back through to the
+     * controllable frontier actions, just as in the original MTSA.
      */
     private void applyRAGraphPropagation(List<ExtendedTransition> pending) {
-        // Collect ALL unique (compositeState, action) pairs in the frontier.
-        // Recompute fresh every pick() so that per-compostate shortest is always based on
-        // the current frontier, matching original MTSA reconcilateShort semantics.
-        Map<String, String[]> keyToParts = new LinkedHashMap<>();
+        // Group pending transitions by their source composite state, preserving order.
+        Map<String, List<String>> pendingActionsBySource = new LinkedHashMap<>();
         for (ExtendedTransition t : pending) {
-            String key = t.from() + "\0" + t.action();
-            keyToParts.putIfAbsent(key, splitCompositeState(t.from()));
+            pendingActionsBySource
+                    .computeIfAbsent(t.from(), k -> new ArrayList<>())
+                    .add(t.action());
         }
-        List<String> keys = new ArrayList<>(keyToParts.keySet());
 
-        // Phase 1: direct per-component estimates (non-self-loop only).
-        // readyComps[key]  = components where action fires (non-self-loop) from sub-state.
-        // shortestM/D[cs][j] = best estimate over all ready actions in j at composite state cs.
-        Map<String, int[]>        estPerComp = new LinkedHashMap<>();
-        Map<String, int[]>        mPerComp   = new LinkedHashMap<>();
-        Map<String, Set<Integer>> readyComps = new HashMap<>();
+        for (Map.Entry<String, List<String>> entry : pendingActionsBySource.entrySet()) {
+            String cs = entry.getKey();
+            if (estimateCache.containsKey(cs)) continue;   // already evaluated (isEvaluated guard)
+            evaluateCompostate(cs, new LinkedHashSet<>(entry.getValue()));
+        }
+    }
 
-        for (String key : keys) {
-            String[] parts  = keyToParts.get(key);
-            int      sep    = key.indexOf('\0');
-            String   action = key.substring(sep + 1);
+    /**
+     * Evaluates the RA estimate for a single composite state {@code cs}.
+     * Mirrors original {@code ReadyAbstraction.eval} + {@code buildRA} +
+     * {@code evaluateRA} + {@code reconcilateShort}.
+     */
+    private void evaluateCompostate(String cs, Set<String> availableActions) {
+        String[] parts = splitCompositeState(cs);
+
+        // ── Build vertices: actions that fire non-self-loop in some component at parts[j] ──
+        // Also collect readyInLTS[vertex] = {j : vertex non-self-loop in j at parts[j]}.
+        Map<String, Set<Integer>> readyInLTS = new LinkedHashMap<>();
+        for (int j = 0; j < numComponents; j++) {
+            ComponentData cd = compData.get(j);
+            String e_j = (j < parts.length) ? parts[j] : null;
+            if (e_j == null) continue;
+            for (String act : cd.enabledAt.getOrDefault(e_j, Set.of())) {
+                String succ = cd.trans.getOrDefault(act, Map.of()).get(e_j);
+                if (succ == null || succ.equals(e_j)) continue;   // self-loop or absent
+                readyInLTS.computeIfAbsent(act, k -> new HashSet<>()).add(j);
+            }
+        }
+        if (readyInLTS.isEmpty()) {
+            // No vertices — cache empty estimates for available actions and return.
+            Map<String, List<EstimateTuple>> bucket = new HashMap<>();
+            for (String a : availableActions) bucket.put(a, List.of());
+            estimateCache.put(cs, bucket);
+            return;
+        }
+
+        // ── Estimate arrays per vertex (indexed by vertex name) ──
+        // Layout: ds[v][j], ms[v][j] over all components (only marked components matter).
+        Map<String, int[]> dsByVertex = new HashMap<>();
+        Map<String, int[]> msByVertex = new HashMap<>();
+        for (String v : readyInLTS.keySet()) {
             int[] ds = new int[numComponents];
             int[] ms = new int[numComponents];
             Arrays.fill(ds, Integer.MAX_VALUE / 2);
             Arrays.fill(ms, 2);
-            Set<Integer> ready = new HashSet<>();
+            dsByVertex.put(v, ds);
+            msByVertex.put(v, ms);
+        }
 
-            for (int j = 0; j < numComponents; j++) {
-                ComponentData cd = compData.get(j);
-                if (cd.markedStates.isEmpty()) continue;
-                String e_j = (j < parts.length) ? parts[j] : null;
-                if (e_j == null) continue;
-                String succ = cd.trans.getOrDefault(action, Map.of()).get(e_j);
-                if (succ != null && !succ.equals(e_j)) {
-                    // Non-self-loop: direct estimate = 1 + dist(succ → nearest marked).
-                    ready.add(j);
-                    EstimateTuple base = bestDistanceToMarked(j, succ);
-                    if (base != EstimateTuple.UNREACHABLE) {
-                        ms[j] = base.m();
-                        ds[j] = base.d() + 1;
+        // shortest[j] tracks min HDist over registered (vertex,j) where vertex is available.
+        int[] shortestD = new int[numComponents];
+        int[] shortestM = new int[numComponents];
+        Arrays.fill(shortestD, Integer.MAX_VALUE / 2);
+        Arrays.fill(shortestM, 2);
+
+        Deque<String> fresh = new ArrayDeque<>();
+        Set<String>   inFresh = new HashSet<>();
+
+        // ── Phase 1: per-LTS first loop ──
+        // For each marked LTS j, iterate local transitions at parts[j]. For each
+        // (l, target) where target is marked: set direct est. For others: search
+        // markedReachable from target. Mirrors original first loop in evaluateRA.
+        for (int j = 0; j < numComponents; j++) {
+            ComponentData cd = compData.get(j);
+            if (cd.markedStates.isEmpty()) continue;
+            String e_j = (j < parts.length) ? parts[j] : null;
+            if (e_j == null) continue;
+
+            for (String l : cd.enabledAt.getOrDefault(e_j, Set.of())) {
+                String target = cd.trans.getOrDefault(l, Map.of()).get(e_j);
+                if (target == null) continue;
+                if (l.equals(target)) continue;   // sentinel safety (shouldn't happen)
+
+                int mt, dt;
+                if (cd.markedStates.contains(target)) {
+                    mt = mFlag(j, target);
+                    dt = 1;
+                } else if (e_j.equals(target)) {
+                    continue;   // self-loop with non-marked target: skip
+                } else {
+                    EstimateTuple base = bestDistanceToMarked(j, target);
+                    if (base == EstimateTuple.UNREACHABLE) continue;
+                    mt = base.m();
+                    dt = base.d() + 1;
+                }
+
+                int[] ds = dsByVertex.get(l);
+                int[] ms = msByVertex.get(l);
+                if (ds == null) continue;          // l not in vertex set (self-loop everywhere)
+                if (mt < ms[j] || (mt == ms[j] && dt < ds[j])) {
+                    ms[j] = mt;
+                    ds[j] = dt;
+                    if (!inFresh.contains(l)) { fresh.add(l); inFresh.add(l); }
+                    if (availableActions.contains(l)) {
+                        if (mt < shortestM[j] || (mt == shortestM[j] && dt < shortestD[j])) {
+                            shortestM[j] = mt;
+                            shortestD[j] = dt;
+                        }
                     }
                 }
-                // Self-loop or absent: leave UNREACHABLE — filled by Phase 4.
             }
-            readyComps.put(key, ready);
-            estPerComp.put(key, ds);
-            mPerComp.put(key, ms);
         }
 
-        // Phase 2: RA graph — enabling edges (s_l, l) → (s_t, t).
-        // Restrict to same source composite state: propagation uses estimates relative
-        // to the source sub-states, so mixing states from different compostates is wrong.
-        Map<String, List<String>> predecessors = new HashMap<>();
-        for (String key : keys) predecessors.put(key, new ArrayList<>());
-
-        for (int li = 0; li < keys.size(); li++) {
-            String   keyL   = keys.get(li);
-            String[] partsL = keyToParts.get(keyL);
-            int      sepL   = keyL.indexOf('\0');
-            String   csL    = keyL.substring(0, sepL);
-            String   actL   = keyL.substring(sepL + 1);
-            for (int ti = 0; ti < keys.size(); ti++) {
-                if (li == ti) continue;
-                String keyT = keys.get(ti);
-                int    sepT = keyT.indexOf('\0');
-                if (!csL.equals(keyT.substring(0, sepT))) continue;  // same-state only
-                String actT = keyT.substring(sepT + 1);
-                if (isEnablingEdge(actL, actT, partsL)) {
-                    predecessors.get(keyT).add(keyL);
+        // ── Phase 2: Build edges within vertices ──
+        // edge l → t iff l is in vertices AND in some LTS j (containing both l and t),
+        // from succ_l(j), t can eventually become enabled. Mirrors original buildRA.
+        Map<String, List<String>> predOfT = new HashMap<>();
+        for (String t : readyInLTS.keySet()) predOfT.put(t, new ArrayList<>());
+        List<String> vertices = new ArrayList<>(readyInLTS.keySet());
+        for (String l : vertices) {
+            for (String t : vertices) {
+                if (l.equals(t)) continue;
+                if (isEnablingEdge(l, t, parts)) {
+                    predOfT.get(t).add(l);
                 }
             }
         }
 
-        // Phase 3: Bellman-Ford fixpoint with global gap and readyInLTS guard.
-        // gap(l,t) = max over {j : l ready in j, t in alphabet(j)} of steps(l_succ → t-enabling).
-        // Only propagate to components where l is NOT ready (its direct estimate is authoritative).
-        Queue<String> workQueue = new ArrayDeque<>(keys);
-        Set<String>   inQueue   = new HashSet<>(keys);
-        int maxIter = keys.size() * keys.size() + 1;
-        while (!workQueue.isEmpty() && maxIter-- > 0) {
-            String keyT = workQueue.poll();
-            inQueue.remove(keyT);
-            int[] est_t = estPerComp.get(keyT);
-            int[] m_t   = mPerComp.get(keyT);
+        // ── Phase 3: Bellman-Ford propagation from fresh ──
+        int maxIter = vertices.size() * vertices.size() + 1;
+        while (!fresh.isEmpty() && maxIter-- > 0) {
+            String t = fresh.poll();
+            inFresh.remove(t);
+            int[] est_t = dsByVertex.get(t);
+            int[] m_t   = msByVertex.get(t);
 
-            for (String keyL : predecessors.get(keyT)) {
-                String[] partsL  = keyToParts.get(keyL);
-                String   actL    = keyL.substring(keyL.indexOf('\0') + 1);
-                String   actT    = keyT.substring(keyT.indexOf('\0') + 1);
-                int[]    est_l   = estPerComp.get(keyL);
-                int[]    m_l     = mPerComp.get(keyL);
-                Set<Integer> lReady = readyComps.get(keyL);
+            for (String l : predOfT.getOrDefault(t, List.of())) {
+                int[]        est_l   = dsByVertex.get(l);
+                int[]        m_l     = msByVertex.get(l);
+                Set<Integer> lReady  = readyInLTS.get(l);
 
-                int gap = computeGlobalGap(partsL, actL, actT);
+                int gap = computeGlobalGap(parts, l, t);
                 boolean improved = false;
 
                 for (int j = 0; j < numComponents; j++) {
                     if (compData.get(j).markedStates.isEmpty()) continue;
-                    if (lReady.contains(j)) continue;   // readyInLTS guard — direct estimate is authoritative
+                    if (lReady.contains(j)) continue;        // direct estimate authoritative for l in j
                     if (est_t[j] >= Integer.MAX_VALUE / 2) continue;
 
                     int candidate_d = saturatingAdd(gap, est_t[j]);
@@ -581,74 +731,81 @@ public class RAHeuristic implements Heuristic {
                             || (candidate_m == m_l[j] && candidate_d < est_l[j])) {
                         est_l[j] = candidate_d;
                         m_l[j]   = candidate_m;
-                        improved  = true;
+                        improved = true;
+                        if (availableActions.contains(l)) {
+                            if (candidate_m < shortestM[j]
+                                    || (candidate_m == shortestM[j] && candidate_d < shortestD[j])) {
+                                shortestM[j] = candidate_m;
+                                shortestD[j] = candidate_d;
+                            }
+                        }
                     }
                 }
-                if (improved && !inQueue.contains(keyL)) {
-                    workQueue.add(keyL); inQueue.add(keyL);
-                }
-            }
-        }
-
-        // Phase 4: reconcilateShort — fill remaining UNREACHABLE estimates for non-ready components.
-        // Mirrors the original ReadyAbstraction.reconcilateShort().
-        // shortest = min direct estimate over ALL actions (non-self-loop) at e_j in component j,
-        // found via BFS over all component transitions (matches original Loop 1 BFS fallback).
-        for (String key : keys) {
-            String[] partsL = keyToParts.get(key);
-            int[]    est_l  = estPerComp.get(key);
-            int[]    m_l    = mPerComp.get(key);
-            Set<Integer> lReady = readyComps.get(key);
-
-            for (int j = 0; j < numComponents; j++) {
-                ComponentData cd = compData.get(j);
-                if (cd.markedStates.isEmpty()) continue;
-                if (lReady.contains(j)) continue;   // has direct estimate
-                if (m_l[j] < 2) continue;           // improved by propagation
-
-                String e_j = (j < partsL.length) ? partsL[j] : null;
-                if (e_j == null) continue;
-
-                if (cd.markedStates.contains(e_j)) {
-                    // Marked self-loop: action keeps component at marked state for 1 composite step.
-                    m_l[j]   = mFlag(j, e_j);
-                    est_l[j] = 1;
-                } else {
-                    // BFS fallback: shortest over all non-self-loop actions at e_j in component j.
-                    // Matches original Loop 1 of reconcilateShort (searches markedOrGoalReachable).
-                    int bestM = 2, bestD = Integer.MAX_VALUE / 2;
-                    for (Map<String, String> targets : cd.trans.values()) {
-                        String succ = targets.get(e_j);
-                        if (succ == null || succ.equals(e_j)) continue;
-                        EstimateTuple base = bestDistanceToMarked(j, succ);
-                        if (base == EstimateTuple.UNREACHABLE) continue;
-                        int m = base.m(), d = base.d() + 1;
-                        if (m < bestM || (m == bestM && d < bestD)) { bestM = m; bestD = d; }
-                    }
-                    if (bestM < 2) {
-                        m_l[j]   = bestM;
-                        est_l[j] = saturatingAdd(bestD, 1);
-                    }
+                if (improved && !inFresh.contains(l)) {
+                    fresh.add(l);
+                    inFresh.add(l);
                 }
             }
         }
 
-        // Phase 5: write back to estimate cache.
-        for (String key : keys) {
-            int    sep    = key.indexOf('\0');
-            String cs     = key.substring(0, sep);
-            String action = key.substring(sep + 1);
-            int[]  ds     = estPerComp.get(key);
-            int[]  ms     = mPerComp.get(key);
+        // ── Phase 4: reconcilateShort — fill missing shortest then chasm slots ──
+        // First, fill shortest[j] for components where no available action registered.
+        // Mirrors original reconcilateShort loop 1 (uses markedReachableStates fallback).
+        for (int j = 0; j < numComponents; j++) {
+            ComponentData cd = compData.get(j);
+            if (cd.markedStates.isEmpty()) continue;
+            if (shortestM[j] < 2) continue;            // already set
+            String e_j = (j < parts.length) ? parts[j] : null;
+            if (e_j == null) continue;
+
+            // BFS over labels reachable from e_j to any marked state.
+            // shortest = best (m, d) over (markedState m_dest, label l) where d=dist(e_j, m_dest)
+            // restricted to labels currently enabled — old uses entry value which is map (action, dist).
+            int bestM = 2, bestD = Integer.MAX_VALUE / 2;
+            for (String m : cd.markedStates) {
+                Map<String, Integer> distMap = cd.distToEachMarked.get(m);
+                if (distMap == null) continue;
+                Integer d = distMap.get(e_j);
+                if (d == null) continue;
+                int mFlag_m = mFlag(j, m);
+                if (mFlag_m < bestM || (mFlag_m == bestM && d < bestD)) {
+                    bestM = mFlag_m;
+                    bestD = d;
+                }
+            }
+            if (bestM < 2) {
+                shortestM[j] = bestM;
+                shortestD[j] = bestD;
+            }
+        }
+
+        // Second, fill chasm slots in each available action's estimate via shortest+1.
+        // Mirrors original reconcilateShort loop 2: for each available action l,
+        // for each LTS j where l is NOT ready (or is self-loop in j), fill with shortest[j].inc().
+        Map<String, List<EstimateTuple>> bucket = new HashMap<>();
+        for (String a : availableActions) {
+            int[] ds = dsByVertex.get(a);
+            int[] ms = msByVertex.get(a);
             List<EstimateTuple> tuples = new ArrayList<>();
             for (int j = 0; j < numComponents; j++) {
                 if (compData.get(j).markedStates.isEmpty()) continue;
-                tuples.add(ds[j] >= Integer.MAX_VALUE / 2
-                        ? EstimateTuple.UNREACHABLE
-                        : new EstimateTuple(ms[j], ds[j]));
+                int m, d;
+                if (ds != null && ms[j] < 2) {
+                    m = ms[j];
+                    d = ds[j];
+                } else if (shortestM[j] < 2) {
+                    // Self-loop or not in vertex set for j: fall back to shortest+1.
+                    m = shortestM[j];
+                    d = saturatingAdd(shortestD[j], 1);
+                } else {
+                    tuples.add(EstimateTuple.UNREACHABLE);
+                    continue;
+                }
+                tuples.add(new EstimateTuple(m, d));
             }
-            estimateCache.computeIfAbsent(cs, k -> new HashMap<>()).put(action, tuples);
+            bucket.put(a, tuples);
         }
+        estimateCache.put(cs, bucket);
     }
 
     /**
@@ -778,6 +935,43 @@ public class RAHeuristic implements Heuristic {
         return 1;
     }
 
+    // ── verbose output ───────────────────────────────────────────────────────
+
+    @Override
+    public void printFrontier(List<ExtendedTransition> pending, int pickedIndex) {
+        if (ctx == null || !ctx.verbose()) return;
+
+        System.out.println("\n=== RA Frontier (size=" + pending.size() + ") ===");
+        if (useOpenQueue) {
+            System.out.println("Open states: " + openStates.size()
+                    + " | Closed states: " + closedStates.size()
+                    + " | Classified: " + (ctx.goals().size() + ctx.errors().size()));
+        }
+        System.out.printf("%-3s %-3s %-25s %-8s %-25s | Estimate%n", "", "Idx", "From", "Action", "To");
+        System.out.println("----" + "-".repeat(95));
+
+        for (int i = 0; i < pending.size(); i++) {
+            ExtendedTransition t = pending.get(i);
+            String mark = (i == pickedIndex) ? " >>> " : "     ";
+            String state = useOpenQueue
+                    ? (openStates.contains(t.from()) ? "O" : (closedStates.contains(t.from()) ? "C" : "?"))
+                    : " ";
+            List<EstimateTuple> est = getOrComputeEstimate(t);
+            String estStr = est.isEmpty() ? "N/A" : est.toString();
+            System.out.printf("%s[%s] %-2d %-25s %-8s %-25s | %s%n",
+                    mark, state, i,
+                    truncate(t.from(), 25),
+                    truncate(t.action(), 8),
+                    truncate(t.to(), 25),
+                    estStr);
+        }
+        System.out.println();
+    }
+
+    private static String truncate(String s, int len) {
+        return s.length() <= len ? s : s.substring(0, len - 2) + "..";
+    }
+
     // ── test / inspection API ────────────────────────────────────────────────
 
     /**
@@ -787,6 +981,12 @@ public class RAHeuristic implements Heuristic {
      *
      * <p>Requires {@link #init(SynthesisContext)} to have been called first.
      */
+    /** Read-only cache accessor — does NOT trigger computation. */
+    public List<EstimateTuple> estimateCacheFor(String compositeState, String action) {
+        return estimateCache.getOrDefault(compositeState, Map.of())
+                            .getOrDefault(action, List.of());
+    }
+
     public List<EstimateTuple> estimateFor(String compositeState, String action) {
         refreshVisitedStates();
         if (useG) refreshGoalStates();

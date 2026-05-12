@@ -209,8 +209,14 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
             @Override public List<ExtendedTransition> successorsOf(String s) {
                 return succMap.getOrDefault(s, List.of());
             }
+            @Override public Set<String> predecessorsOf(String s) {
+                return parents.getOrDefault(s, Set.of());
+            }
             @Override public int depthOf(String s) {
                 return depthMap.getOrDefault(s, -1);
+            }
+            @Override public boolean verbose() {
+                return OTFDirectedControledSyntesisNonBlocking.this.verbose;
             }
         };
         heuristic.init(hCtx);
@@ -380,6 +386,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
                 index = Math.max(0, Math.min(index, frontier.size() - 1));
             }
             ExtendedTransition picked = frontier.get(index);
+            heuristic.printFrontier(frontier, index);
 
             log("  step " + (getTransitionsExplored() + 1)
                     + " | " + index + " | " + formatState(picked.from())

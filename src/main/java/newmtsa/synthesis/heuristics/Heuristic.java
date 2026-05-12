@@ -23,4 +23,14 @@ public interface Heuristic {
      * @param ctx live, read-only view of the synthesis engine's internal state
      */
     default void init(SynthesisContext ctx) {}
+
+    /**
+     * Print frontier state and transition scores before expansion (if verbose enabled).
+     * Heuristics should override to show relevant scoring info (e.g., RA shows distances).
+     * Called by the synthesis engine after a transition is picked but before expansion.
+     *
+     * @param pending current frontier
+     * @param pickedIndex index of the transition that was picked
+     */
+    default void printFrontier(List<ExtendedTransition> pending, int pickedIndex) {}
 }

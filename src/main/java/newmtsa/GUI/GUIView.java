@@ -1,6 +1,7 @@
 package newmtsa.GUI;
 
 import newmtsa.parser.FSPParser;
+import newmtsa.parser.ast.ControllerSpecDef;
 import newmtsa.parser.ast.FSPModel;
 import newmtsa.parser.ast.LTS;
 import newmtsa.parser.ast.LtlPropertyDef;
@@ -12,7 +13,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Generates an HTML visualization for LTS graphs parsed from an FSP/LTS file.
@@ -21,6 +24,8 @@ public final class GUIView {
     private static final Path HTML_DIR = Path.of("src", "main", "java", "newmtsa", "GUI", "HTML");
     private static final Path TEMPLATE_PATH = HTML_DIR.resolve("lts-template.html");
     private static final int MAX_STATE_RENDER = 120;
+    static final Path SOL_FILE = Path.of("python", "results", "traces", "DP", "RA_ERG_OPEN", "DP-2-2.sol");
+    //static final Path SOL_FILE = Path.of("python", "results", "traces", "DP", "RL", "ROL", "DP-2-2.sol");
 
     private GUIView() {}
 
@@ -46,7 +51,13 @@ public final class GUIView {
             return;
         }
 
-        String html = buildHtmlFromTemplate(ltsMap, sourceFile.getFileName().toString());
+        Set<String> controllable = new LinkedHashSet<>();
+        for (ControllerSpecDef cs : model.controllerSpecs()) {
+            controllable.addAll(cs.controllable());
+        }
+        String traceJson = TraceView.buildTraceJson(SOL_FILE, controllable);
+
+        String html = buildHtmlFromTemplate(ltsMap, sourceFile.getFileName().toString(), traceJson);
         Path output = writeTempHtmlFile(sourceFile, html);
 
         System.out.println("Temporary HTML generated at: " + output);
@@ -80,7 +91,7 @@ public final class GUIView {
         return output;
     }
 
-    private static String buildHtmlFromTemplate(Map<String, LTS> ltsMap, String sourceName) throws IOException {
+    private static String buildHtmlFromTemplate(Map<String, LTS> ltsMap, String sourceName, String traceJson) throws IOException {
         if (!Files.exists(TEMPLATE_PATH)) {
             throw new IOException("Template not found: " + TEMPLATE_PATH.toAbsolutePath());
         }
@@ -168,7 +179,8 @@ public final class GUIView {
                 .replace("{{SOURCE_NAME}}", escapeHtml(sourceName))
                 .replace("{{SELECT_OPTIONS}}", selectOptions.toString())
                 .replace("{{MAX_STATE_RENDER}}", String.valueOf(MAX_STATE_RENDER))
-                .replace("{{GRAPH_DATA}}", "{" + graphJson + "}");
+                .replace("{{GRAPH_DATA}}", "{" + graphJson + "}")
+                .replace("{{TRACE_DATA}}", traceJson);
     }
 
     private static String stripExtension(String name) {

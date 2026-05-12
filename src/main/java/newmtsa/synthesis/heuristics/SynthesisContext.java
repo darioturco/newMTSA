@@ -67,4 +67,16 @@ public interface SynthesisContext {
      * Default: -1 (depth not tracked).
      */
     default int depthOf(String compositeState) { return -1; }
+
+    /**
+     * Verbose output enabled. When true, heuristics print frontier state and
+     * transition scores before each pick. Default: false.
+     */
+    default boolean verbose() { return false; }
+
+    /**
+     * Predecessors of the given composite state in the exploration structure.
+     * Default: empty (no parent tracking).
+     */
+    default Set<String> predecessorsOf(String compositeState) { return Set.of(); }
 }

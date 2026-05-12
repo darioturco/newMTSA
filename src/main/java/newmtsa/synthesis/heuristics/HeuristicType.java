@@ -28,6 +28,12 @@ import newmtsa.synthesis.heuristics.ra.RAHeuristic;
  * RA_E_OPEN     – RA.E + open queue
  * RA_ER_OPEN    – RA.ER + open queue
  * RA_ERG_OPEN   – RA.ERG + open queue
+ *
+ * RL            – Marker for Python-driven Reinforcement Learning training.
+ *                 Selection is overridden externally via DCSForPython.expand(idx);
+ *                 features (BASIC/ROL) computed by FeatureCompute. Falls back
+ *                 to FIRST when the engine runs autonomously.
+ * MCTS_RL       – MCTS guided by an ONNX policy/value model (autonomous run).
  * </pre>
  */
 public enum HeuristicType {
@@ -46,6 +52,13 @@ public enum HeuristicType {
     RA_E_OPEN,
     RA_ER_OPEN,
     RA_ERG_OPEN,
+    /**
+     * Marker for Python-driven RL training.
+     * Frontier picks come from the Python agent via {@code DCSForPython.expand(idx)};
+     * this Java heuristic is bypassed and only used as a fallback (picks first).
+     * Pair with a {@code FeatureType} (BASIC / ROL) at the {@code DCSForPython} level.
+     */
+    RL,
     /**
      * MCTS guided by a flat (MLP) ONNX model.
      * Model path: JVM system property {@code mcts.onnx.path} (default: {@code model.onnx}).
@@ -70,8 +83,12 @@ public enum HeuristicType {
             case RA_E_OPEN     -> RAHeuristic.withE().withOpenQueue();
             case RA_ER_OPEN    -> RAHeuristic.withER().withOpenQueue();
             case RA_ERG_OPEN   -> RAHeuristic.withERG().withOpenQueue();
+            case RL            -> new RLHeuristic(
+                    System.getProperty("rl.onnx.path"),
+                    System.getProperty("feature_type", "ROL"));
             case MCTS_RL       -> new MCTSHeuristic(
                     System.getProperty("mcts.onnx.path", "model.onnx"),
+                    System.getProperty("feature_type", "ROL"),
                     Integer.parseInt(System.getProperty("mcts.simulations", "50")),
                     Double.parseDouble(System.getProperty("mcts.cpuct",       "1.5")),
                     Integer.parseInt(System.getProperty("mcts.depth",        "10")));
