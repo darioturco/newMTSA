@@ -243,6 +243,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
             none.add(s0);
             if (featuresCtx != null && isMarked(s0)) featuresCtx.markedStateFound = true;
             pending          = new ArrayList<>(succMap.getOrDefault(s0, List.of()));
+            for (ExtendedTransition t : pending) t.setStep(0);
             explorationEnded = false;
         }
     }
@@ -267,6 +268,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
 
         ExtendedTransition t = pending.remove(index);
         transitionsExplored++;
+        int frontierStep = transitionsExplored;
 
         String e  = t.from();
         String eʹ = t.to();
@@ -307,7 +309,9 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
             } else {
                 none.add(eʹ);
                 if (featuresCtx != null && isMarked(eʹ)) featuresCtx.markedStateFound = true;
-                pending.addAll(succMap.getOrDefault(eʹ, List.of()));
+                List<ExtendedTransition> newTransitions = succMap.getOrDefault(eʹ, List.of());
+                for (ExtendedTransition nt : newTransitions) nt.setStep(frontierStep);
+                pending.addAll(newTransitions);
             }
         }
 
@@ -763,7 +767,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
         return !hasNonError;
     }
 
-    private Map<String, Set<String>> buildDirector() {
+    private Map<String, List<ExtendedTransition>> buildDirector() {
         Map<String, Set<String>> goalRevAdj = new HashMap<>();
         for (String s : goals) {
             for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
@@ -786,24 +790,39 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
             }
         }
 
-        Map<String, Set<String>> enabled = new HashMap<>();
+        Map<String, List<ExtendedTransition>> enabled = new HashMap<>();
         for (String s : goals) {
             int minRank = Integer.MAX_VALUE;
+            ExtendedTransition bestCtrl = null;
             for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
                 if (controllable.contains(t.action()) && goals.contains(t.to())) {
                     int r = rank.getOrDefault(t.to(), Integer.MAX_VALUE);
-                    if (r < minRank) minRank = r;
+                    if (r < minRank) { minRank = r; bestCtrl = t; }
                 }
             }
-            Set<String> enabledActions = new LinkedHashSet<>();
+            List<ExtendedTransition> trans = new ArrayList<>();
+            if (bestCtrl != null) trans.add(bestCtrl);
             for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-                if (controllable.contains(t.action()) && goals.contains(t.to())
-                        && rank.getOrDefault(t.to(), Integer.MAX_VALUE) == minRank) {
-                    enabledActions.add(t.action());
+                if (!controllable.contains(t.action())) {
+                    trans.add(t);
                 }
             }
-            enabled.put(s, enabledActions);
+            enabled.put(s, trans);
         }
+
+        Set<String> reachable = new LinkedHashSet<>();
+        Queue<String> bfs = new ArrayDeque<>();
+        if (enabled.containsKey(s0)) { reachable.add(s0); bfs.add(s0); }
+        while (!bfs.isEmpty()) {
+            String s = bfs.poll();
+            for (ExtendedTransition t : enabled.getOrDefault(s, List.of())) {
+                if (enabled.containsKey(t.to()) && !reachable.contains(t.to())) {
+                    reachable.add(t.to());
+                    bfs.add(t.to());
+                }
+            }
+        }
+        enabled.keySet().retainAll(reachable);
         return enabled;
     }
 

@@ -36,7 +36,7 @@
       <div id="actionsList"></div>
     </div>
 
-    <div class="legend">Initial or Selected state: blue · Accepting state: green.</div>
+    <div class="legend"><span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#bfdbfe;border:2px solid #2563eb;vertical-align:middle;margin-right:3px"></span> Initial &middot; <span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#bbf7d0;border:2px solid #16a34a;vertical-align:middle;margin-right:3px"></span> Marked state &middot; <span style="display:inline-block;width:11px;height:11px;border-radius:50%;background:#fee2e2;border:2px solid #dc2626;vertical-align:middle;margin-right:3px"></span> Error state</div>
   </div>
 
   <!-- TRACE TAB -->
@@ -58,9 +58,9 @@
         <button class="t-btn" id="goEndBtn" title="Go to end">End ⏭</button>
         <span id="stepCounter">Step 0 / 0</span>
         <button class="t-btn" id="hideUnknownBtn" onclick="toggleUnknown()">Hide Unknown</button>
-        <button class="t-btn" id="toggleLabelsBtn" style="margin-left:auto" onclick="toggleLabels()">Show IDs</button>
+        <button class="t-btn" id="toggleLabelsBtn" style="margin-left:auto" onclick="toggleLabels()">Show Names</button>
         <button class="t-btn" id="directorBtn">Show Director</button>
-        <button class="t-btn" id="resetZoomBtn" style="padding:7px 10px;font-size:13px">Z</button>
+        <button class="t-btn" id="resetZoomBtn" title="Reset Zoom">🔍</button>
       </div>
 
       <div id="traceStepInfo"></div>
@@ -74,7 +74,8 @@
         <span class="tl-item"><span class="tl-box"></span>unknown (super-state)</span>
         <span class="tl-item"><span class="tl-line" style="background:#000000"></span>Controllable</span>
         <span class="tl-item"><span class="tl-line" style="background:#78350f"></span>Uncontrollable</span>
-        <span class="tl-item"><span class="tl-line" style="background:#16a34a"></span>Selected</span>
+        <span class="tl-item"><span class="tl-line" style="background:#000000"></span>Selected</span>
+        <span class="tl-item"><span class="tl-line" style="background:#15803d"></span>Director</span>
       </div>
     </div>
   </div>

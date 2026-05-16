@@ -157,9 +157,32 @@ Trace:
 
 Director Transitions:
 
-  Ready|OnHand|Done|Hungry|OnTable|Monitor(1)|off --[take[0][1]]-->
-  Ready|OnHand|Monitor(0)|Hungry|OnTable|Monitor(1)|off --[take[0][1]]-->
-  Hungry|OnTable|Done|Ready|OnHand|Monitor(1)|off --[take[1][0]]-->
-  Hungry|OnTable|Done|Hungry|OnTable|Monitor(1)|off --[take[1][1]]-->
-  Hungry|OnTable|Monitor(0)|Hungry|OnTable|Monitor(1)|on --[take[0][0]]-->
-  Hungry|OnTable|Monitor(0)|Hungry|OnTable|Monitor(1)|off --[take[0][0]]-->
+  Hungry|OnHand|Done|___Ready_0_1_2|OnTable|Done|off#0 --[release[1][0]]--> Hungry|OnTable|Done|Idle|OnTable|Done|off#0
+  Hungry|OnHand|Done|___Ready_0_1_2|OnTable|Done|off#0 --[eat.all]--> Hungry|OnHand|Monitor(0)|___Ready_0_1_2|OnTable|Monitor(1)|on#0
+  Hungry|OnHand|Done|__Ready_0_1|OnHand|Done|off#0 --[eat.all]--> Hungry|OnHand|Monitor(0)|__Ready_0_1|OnHand|Monitor(1)|on#0
+  Hungry|OnHand|Done|__Ready_0_1|OnHand|Done|off#0 --[release[1][1]]--> Hungry|OnHand|Done|___Ready_0_1_2|OnTable|Done|off#0
+  Hungry|OnTable|Done|Idle|OnTable|Done|off#0 --[eat.all]--> Hungry|OnTable|Monitor(0)|Idle|OnTable|Monitor(1)|on#0
+  Hungry|OnTable|Done|Idle|OnTable|Done|off#0 --[think[1]]--> Hungry|OnTable|Done|Hungry|OnTable|Done|off#0
+  Hungry|OnHand|Monitor(0)|__Ready_0_1|OnHand|Monitor(1)|on#0 --[release[1][1]]--> Hungry|OnHand|Monitor(0)|___Ready_0_1_2|OnTable|Monitor(1)|off#0
+  _Ready_0|OnHand|Monitor(0)|Hungry|OnHand|Monitor(1)|off#0 --[eat[0]]--> __Ready_0_1|OnHand|Done|Hungry|OnHand|Monitor(1)|off#0
+  Hungry|OnHand|Done|_Ready_0|OnHand|Monitor(1)|off#0 --[eat[1]]--> Hungry|OnHand|Done|__Ready_0_1|OnHand|Done|off#0
+  Hungry|OnTable|Done|Hungry|OnTable|Done|off#0 --[eat.all]--> Hungry|OnTable|Monitor(0)|Hungry|OnTable|Monitor(1)|on#0
+  Hungry|OnTable|Done|Etiquete[2]|OnHand|Monitor(1)|off#0 --[step[1]]--> Hungry|OnTable|Done|Etiquete[1]|OnHand|Monitor(1)|off#0
+  Ready|OnHand|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0 --[take[0][1]]--> _Ready_0|OnHand|Monitor(0)|Hungry|OnHand|Monitor(1)|off#0
+  Idle|OnTable|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0 --[think[0]]--> Hungry|OnTable|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0
+  Hungry|OnTable|Done|Ready|OnHand|Monitor(1)|off#0 --[take[1][0]]--> Hungry|OnHand|Done|_Ready_0|OnHand|Monitor(1)|off#0
+  Hungry|OnTable|Done|Hungry|OnTable|Monitor(1)|off#0 --[take[1][1]]--> Hungry|OnTable|Done|Etiquete[2]|OnHand|Monitor(1)|off#0
+  Idle|OnTable|Done|Hungry|OnTable|Monitor(1)|off#0 --[think[0]]--> Hungry|OnTable|Done|Hungry|OnTable|Monitor(1)|off#0
+  Etiquete[1]|OnHand|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0 --[step[0]]--> Ready|OnHand|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0
+  __Ready_0_1|OnHand|Done|Hungry|OnHand|Monitor(1)|off#0 --[release[0][0]]--> ___Ready_0_1_2|OnTable|Done|Hungry|OnHand|Monitor(1)|off#0
+  Idle|OnTable|Monitor(0)|Idle|OnTable|Monitor(1)|off#0 --[think[0]]--> Hungry|OnTable|Monitor(0)|Idle|OnTable|Monitor(1)|off#0
+  Idle|OnTable|Monitor(0)|Idle|OnTable|Monitor(1)|off#0 --[think[1]]--> Idle|OnTable|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0
+  Hungry|OnHand|Monitor(0)|___Ready_0_1_2|OnTable|Monitor(1)|on#0 --[release[1][0]]--> Hungry|OnTable|Monitor(0)|Idle|OnTable|Monitor(1)|off#0
+  Hungry|OnTable|Monitor(0)|Hungry|OnTable|Monitor(1)|on#0 --[take[0][0]]--> Etiquete[2]|OnHand|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0
+  Etiquete[2]|OnHand|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0 --[step[0]]--> Etiquete[1]|OnHand|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0
+  Hungry|OnTable|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0 --[take[0][0]]--> Etiquete[2]|OnHand|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0
+  Hungry|OnTable|Monitor(0)|Idle|OnTable|Monitor(1)|on#0 --[think[1]]--> Hungry|OnTable|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0
+  ___Ready_0_1_2|OnTable|Done|Hungry|OnHand|Monitor(1)|off#0 --[release[0][1]]--> Idle|OnTable|Done|Hungry|OnTable|Monitor(1)|off#0
+  Hungry|OnHand|Monitor(0)|___Ready_0_1_2|OnTable|Monitor(1)|off#0 --[release[1][0]]--> Hungry|OnTable|Monitor(0)|Idle|OnTable|Monitor(1)|off#0
+  Hungry|OnTable|Done|Etiquete[1]|OnHand|Monitor(1)|off#0 --[step[1]]--> Hungry|OnTable|Done|Ready|OnHand|Monitor(1)|off#0
+  Hungry|OnTable|Monitor(0)|Idle|OnTable|Monitor(1)|off#0 --[think[1]]--> Hungry|OnTable|Monitor(0)|Hungry|OnTable|Monitor(1)|off#0

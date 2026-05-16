@@ -25,7 +25,8 @@ public final class TraceView {
     record ParsedTrace(
         String instanceName, int traceLen, boolean realizable,
         String mode, String heuristic, String heuristicParams,
-        List<Step> steps
+        List<Step> steps,
+        List<Transition> directorTransitions
     ) {}
 
     // ── public API ────────────────────────────────────────────────────────────
@@ -61,9 +62,12 @@ public final class TraceView {
 
         List<Step> steps = new ArrayList<>();
         while (i < lines.size()) {
+            String raw = lines.get(i).trim();
+            if (raw.contains("Director Transitions:")) break;
+            if (raw.isEmpty()) { i++; continue; }
+            if (!raw.startsWith("[")) { i++; continue; }
+
             String frontierLine = lines.get(i++).trim();
-            if (frontierLine.isEmpty()) continue;
-            if (!frontierLine.startsWith("[")) continue;
             if (i >= lines.size()) break;
 
             String selectedLine = lines.get(i++).trim();
@@ -78,8 +82,24 @@ public final class TraceView {
             steps.add(new Step(frontier, selIdx, sel));
         }
 
+        List<Transition> directorTransitions = new ArrayList<>();
+        while (i < lines.size()) {
+            String line = lines.get(i).trim();
+            if (line.contains("Director Transitions:")) {
+                i++;
+                while (i < lines.size()) {
+                    String dl = lines.get(i++).trim();
+                    if (dl.isEmpty()) continue;
+                    if (!dl.contains("--[")) break;
+                    directorTransitions.add(parseTransition(dl));
+                }
+                break;
+            }
+            i++;
+        }
+
         return new ParsedTrace(instanceName, traceLen, realizable, mode,
-                               heuristic, heuristicParams, steps);
+                               heuristic, heuristicParams, steps, directorTransitions);
     }
 
     static List<Transition> parseFrontier(String line) {
@@ -132,6 +152,13 @@ public final class TraceView {
             sb.append("],\"selectedIndex\":").append(s.selectedIndex())
               .append(",\"selected\":").append(transJson(s.selected()))
               .append("}");
+        }
+        sb.append("],\"directorEdges\":[");
+        List<Transition> dt = trace.directorTransitions();
+        for (int j = 0; j < dt.size(); j++) {
+            if (j > 0) sb.append(",");
+            Transition t = dt.get(j);
+            sb.append('"').append(esc(t.from() + "\u0001" + t.action() + "\u0001" + t.to())).append('"');
         }
         sb.append("]}");
         return sb.toString();

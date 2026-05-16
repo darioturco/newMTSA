@@ -23,23 +23,45 @@ import java.util.Set;
 public final class GUIView {
     private static final Path HTML_DIR = Path.of("src", "main", "java", "newmtsa", "GUI", "HTML");
     private static final Path TEMPLATE_PATH = HTML_DIR.resolve("lts-template.html");
-    private static final int MAX_STATE_RENDER = 120;
-    static final Path SOL_FILE = Path.of("python", "results", "traces", "DP", "RA_ERG_OPEN", "DP-1-1.sol");
-    //static final Path SOL_FILE = Path.of("python", "results", "traces", "DP", "RL", "ROL", "DP-2-2.sol");
+    private static final int MAX_STATE_RENDER = 600;
+    //private static final String DEFAULT_SOL_PATH = "python/results/traces/BW/RA_ERG_OPEN/BW-3-3.sol";
+    private static final String DEFAULT_SOL_PATH = "python/results/traces/AT/HUMAN/AT-2-2.sol";
 
     private GUIView() {}
 
+    private static Path resolveFspFromSol(Path solFile, String instanceName) {
+        String fspName = instanceName + ".fsp";
+        Path solParent = solFile.getParent();
+        String family = (solParent != null && solParent.getParent() != null)
+                ? solParent.getParent().getFileName().toString()
+                : instanceName;
+        for (String kind : new String[]{"Blocking", "NonBlocking"}) {
+            Path candidate = Path.of("fsp", kind, "Benchmark", family, fspName);
+            if (Files.exists(candidate)) {
+                return candidate.toAbsolutePath().normalize();
+            }
+        }
+        return null;
+    }
+
     public static void main(String[] args) throws IOException {
-        Path sourceFile;
+        Path solFile;
         if (args.length == 0) {
-            sourceFile = Path.of("E:\\Code\\Java\\NewMTSA\\fsp\\Blocking\\Benchmark\\DP\\DP-1-1.fsp").toAbsolutePath().normalize();
-        }else{
-            sourceFile = Path.of(args[0]).toAbsolutePath().normalize();
+            solFile = Path.of(DEFAULT_SOL_PATH);
+        } else {
+            solFile = Path.of(args[0]).toAbsolutePath().normalize();
         }
 
+        if (!Files.exists(solFile)) {
+            System.err.println("SOL file does not exist: " + solFile);
+            return;
+        }
 
-        if (!Files.exists(sourceFile)) {
-            System.err.println("Input file does not exist: " + sourceFile);
+        String instanceName = Files.readAllLines(solFile, StandardCharsets.UTF_8).get(0).trim();
+        Path sourceFile = resolveFspFromSol(solFile, instanceName);
+
+        if (sourceFile == null) {
+            System.err.println("Could not find .fsp file for instance: " + instanceName);
             return;
         }
 
@@ -55,7 +77,7 @@ public final class GUIView {
         for (ControllerSpecDef cs : model.controllerSpecs()) {
             controllable.addAll(cs.controllable());
         }
-        String traceJson = TraceView.buildTraceJson(SOL_FILE, controllable);
+        String traceJson = TraceView.buildTraceJson(solFile, controllable);
 
         String html = buildHtmlFromTemplate(ltsMap, sourceFile.getFileName().toString(), traceJson);
         Path output = writeTempHtmlFile(sourceFile, html);
@@ -152,12 +174,24 @@ public final class GUIView {
                         graphJson.append(",");
                     }
 
-                    String color = initial ? "#b3e5fc" : (accepting ? "#c8e6c9" : "#ffffff");
+                    boolean isAssertLtl = key.startsWith("assert:") || key.startsWith("ltl_property:");
+                    String grp;
+                    if (initial) {
+                        grp = "initial";
+                    } else if (accepting) {
+                        grp = "marked";
+                    } else if (isAssertLtl) {
+                        grp = "error";
+                    } else if (state.equals("ERROR")) {
+                        grp = "error";
+                    } else {
+                        grp = "normal";
+                    }
                     graphJson.append("{")
                             .append("\"id\":").append(id).append(",")
                             .append("\"label\":\"").append(escapeJson(state)).append("\",")
                             .append("\"shape\":\"ellipse\",")
-                            .append("\"color\":\"").append(color).append("\"")
+                            .append("\"group\":\"").append(grp).append("\"")
                             .append("}");
                 }
                 graphJson.append("],");

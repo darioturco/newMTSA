@@ -40,6 +40,12 @@ const ltsOpts = {
     borderWidth: 1,
     margin: 12
   },
+  groups: {
+    initial: { color: { background: '#bfdbfe', border: '#2563eb' }, borderWidth: 3 },
+    marked:  { color: { background: '#bbf7d0', border: '#16a34a' }, borderWidth: 3 },
+    error:   { color: { background: '#fee2e2', border: '#dc2626' }, borderWidth: 3 },
+    normal:  { color: { background: '#ffffff', border: '#9ca3af' }, borderWidth: 1 }
+  },
   edges: {
     font: {
       align: 'top',
@@ -168,7 +174,7 @@ const traceNetOpts = {
   }
 };
 
-let showIds = false;
+let showIds = true;
 let hideUnknown = true;
 let showDirector = false;
 let selectedNodeId = null;
@@ -200,9 +206,10 @@ function toggleDirector() {
   showDirector = !showDirector;
   const btn = document.getElementById('directorBtn');
   btn.textContent = showDirector ? 'Hide Director' : 'Show Director';
-  // TODO: toggle director overlay when implemented
-  if (!traceData || !traceData.realizable) {
-    flashRed(btn);
+  const dirEdges = traceData && traceData.directorEdges || [];
+  if (dirEdges.length === 0) return;
+  if (traceNetwork !== null) {
+    renderTraceAtStep(currentStep);
   }
 }
 
@@ -294,6 +301,10 @@ function buildGraphAtStep(step) {
       bg = '#bfdbfe';
       border = '#2563eb';
       bw = 3;
+    } else if (isMarkedState(state)) {
+      bg = '#bbf7d0';
+      border = '#16a34a';
+      bw = 2;
     } else if (isError) {
       bg = '#fee2e2';
       border = '#dc2626';
@@ -301,10 +312,6 @@ function buildGraphAtStep(step) {
     } else if (state === newlyDisc) {
       bg = '#fef3c7';
       border = '#d97706';
-      bw = 2;
-    } else if (isMarkedState(state)) {
-      bg = '#bbf7d0';
-      border = '#16a34a';
       bw = 2;
     } else {
       bg = '#f9fafb';
@@ -341,20 +348,32 @@ function buildGraphAtStep(step) {
       ...nodeExtra
     });
   }
+  const directorEdgeSet = traceData?.directorEdges ? new Set(traceData.directorEdges) : null;
+  function alpha(c, a) {
+    if (!c || c.startsWith('rgba')) return c;
+    const m = c.match(/^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i);
+    if (!m) return c;
+    return `rgba(${parseInt(m[1],16)},${parseInt(m[2],16)},${parseInt(m[3],16)},${a})`;
+  }
   const edgesArr = [];
   let eid = 0;
   for (const [k, t] of edgeMap) {
     const inFront = frontierKeys.has(k);
     const isSel = k === selectedKey;
     const isCtrl = ctrlSet.has(t.action);
+    const isDirector = showDirector && directorEdgeSet && directorEdgeSet.has(k);
     const toNode = expanded.has(t.to) ? t.to : UNKNOWN_ID;
     if (toNode === UNKNOWN_ID) {
       hasUnknown = true;
     }
     let color, width, dashes;
-    if (isSel) {
-      color = '#16a34a';
+    if (isDirector) {
+      color = '#15803d';
       width = 3;
+      dashes = false;
+    } else if (isSel) {
+      color = '#000000';
+      width = 2.5;
       dashes = false;
     } else if (inFront) {
       color = isCtrl ? '#000000' : '#78350f';
@@ -378,15 +397,25 @@ function buildGraphAtStep(step) {
     let fontColor;
     if (selectedNodeId !== null && t.from === selectedNodeId) {
       fontColor = '#1e40af';
+    } else if (isDirector) {
+      fontColor = '#15803d';
     } else if (hideUnknown && toNode === UNKNOWN_ID) {
       fontColor = '#6b7280';
     } else if (isSel) {
-      fontColor = '#166534';
+      fontColor = '#374151';
     } else if (inFront) {
       fontColor = isCtrl ? '#4b5563' : '#92400e';
     } else {
       fontColor = '#c0c0c0';
     }
+    if (showDirector && !isDirector) {
+      if (hideUnknown && toNode === UNKNOWN_ID) continue;
+      color = alpha(color, 0.35);
+      fontColor = alpha(fontColor, 0.35);
+      width = 0.5;
+      dashes = true;
+    }
+    if (toNode === UNKNOWN_ID && !isDirector && !(selectedNodeId !== null && t.from === selectedNodeId)) dashes = true;
     edgesArr.push({
       id: eid++,
       from: t.from,
@@ -495,17 +524,42 @@ function updateStepDisplay(step) {
     const title = document.createElement('span');
     title.innerHTML = `<strong>Exploration complete — ${traceData.realizable ? 'REALIZABLE \u2713' : 'UNREALIZABLE \u2717'}</strong>`;
     msg.appendChild(title);
-    const expandedTitle = document.createElement('span');
-    expandedTitle.style.marginTop = '4px';
-    expandedTitle.innerHTML = '<strong>Expanded transitions:</strong>';
-    msg.appendChild(expandedTitle);
-    for (let i = 0; i < N; i++) {
-      const s = traceData.steps[i];
-      const t = s.selected;
-      const row = document.createElement('span');
-      row.className = 'frontier-item selected';
-      row.innerHTML = `<span class="frontier-idx">[${i}]</span>${t.from} \u2014\u2014[${t.action}]\u2014\u2014\u25b6 ${t.to}`;
-      msg.appendChild(row);
+    const dirEdges = traceData.directorEdges || [];
+    if (dirEdges.length > 0) {
+      const expandedKeys = new Set();
+      for (let i = 0; i < N; i++) {
+        const t = traceData.steps[i].selected;
+        expandedKeys.add(t.from + '\x01' + t.action + '\x01' + t.to);
+      }
+      const expandedTitle = document.createElement('span');
+      expandedTitle.style.marginTop = '4px';
+      expandedTitle.innerHTML = '<strong>Director transitions:</strong>';
+      msg.appendChild(expandedTitle);
+      for (let i = 0; i < dirEdges.length; i++) {
+        const parts = dirEdges[i].split('');
+        const key = parts[0] + '\x01' + parts[1] + '\x01' + parts[2];
+        const wasExpanded = expandedKeys.has(key);
+        const row = document.createElement('span');
+        row.style.fontWeight = '700';
+        row.style.whiteSpace = 'nowrap';
+        row.style.fontFamily = 'monospace';
+        row.style.color = wasExpanded ? '#000' : '#dc2626';
+        row.innerHTML = `<span class="frontier-idx">[${i+1}]</span>${parts[0]} ——[${parts[1]}]——▶ ${parts[2]}`;
+        msg.appendChild(row);
+      }
+    } else {
+      const expandedTitle = document.createElement('span');
+      expandedTitle.style.marginTop = '4px';
+      expandedTitle.innerHTML = '<strong>Expanded transitions:</strong>';
+      msg.appendChild(expandedTitle);
+      for (let i = 0; i < N; i++) {
+        const s = traceData.steps[i];
+        const t = s.selected;
+        const row = document.createElement('span');
+        row.className = 'frontier-item selected';
+        row.innerHTML = `<span class="frontier-idx">[${i+1}]</span>${t.from} ——[${t.action}]——▶ ${t.to}`;
+        msg.appendChild(row);
+      }
     }
     info.appendChild(msg);
     return;
@@ -516,7 +570,7 @@ function updateStepDisplay(step) {
     const sel = i === s.selectedIndex;
     const span = document.createElement('span');
     span.className = 'frontier-item ' + (sel ? 'selected' : 'unselected');
-    span.innerHTML = `<span class="frontier-idx">[${i}]</span>${t.from} \u2014\u2014[${t.action}]\u2014\u2014\u25b6 ${t.to}`;
+    span.innerHTML = `<span class="frontier-idx">[${i+1}]</span>${t.from} \u2014\u2014[${t.action}]\u2014\u2014\u25b6 ${t.to}`;
     info.appendChild(span);
   }
 }
@@ -557,12 +611,13 @@ function initTraceTabIfNeeded() {
   document.getElementById('traceNoData').style.display = 'none';
   document.getElementById('traceContent').style.display = '';
   const meta = document.getElementById('traceMeta');
+  const dirEdges = traceData.directorEdges || [];
   [
     ['Instance', traceData.instanceName],
     ['Mode', traceData.mode],
     ['Heuristic', traceData.heuristic],
     ['Steps', traceData.steps.length],
-    ['Realizable', traceData.realizable ? '\u2713 Yes' : '\u2717 No'],
+    ['Director', dirEdges.length],
     ['File', traceData.solFile]
   ].forEach(([k, v]) => {
     const span = document.createElement('span');
@@ -571,17 +626,6 @@ function initTraceTabIfNeeded() {
     meta.appendChild(span);
   });
   renderTraceAtStep(0);
-  if (!traceData.realizable) {
-    const badges = meta.querySelectorAll('.trace-badge');
-    for (const b of badges) {
-      if (b.textContent.includes('Realizable')) {
-        b.classList.add('animate-shake');
-        flashRed(b);
-        b.addEventListener('animationend', () => b.classList.remove('animate-shake'), { once: true });
-        break;
-      }
-    }
-  }
 }
 
 document.getElementById('stepBackBtn').addEventListener('click', () => {

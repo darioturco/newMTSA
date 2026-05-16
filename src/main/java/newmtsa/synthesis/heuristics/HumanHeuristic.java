@@ -3,7 +3,9 @@ package newmtsa.synthesis.heuristics;
 import newmtsa.synthesis.ExtendedTransition;
 
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
 
@@ -11,6 +13,8 @@ public class HumanHeuristic implements Heuristic {
 
     private final Scanner scanner;
     private final Set<String> hidden = new HashSet<>();
+    private final Map<String, Integer> marked = new LinkedHashMap<>();
+    private int markCounter = 1;
 
     public HumanHeuristic() {
         this.scanner = new Scanner(System.in);
@@ -21,7 +25,7 @@ public class HumanHeuristic implements Heuristic {
         printFrontier(pending);
 
         while (true) {
-            System.out.print("Choose index (or 'del i'/'del i-j'/'reset'): ");
+            System.out.print("Choose index (or 'del i'/'del i-j'/'reset'/'mark i'): ");
             String line = scanner.nextLine().trim();
 
             if (line.equalsIgnoreCase("reset")) {
@@ -37,6 +41,12 @@ public class HumanHeuristic implements Heuristic {
                 continue;
             }
 
+            if (line.toLowerCase().startsWith("mark ")) {
+                handleMark(line.substring(5).trim(), pending);
+                printFrontier(pending);
+                continue;
+            }
+
             try {
                 int choice = Integer.parseInt(line);
                 if (choice < 0 || choice >= pending.size()) {
@@ -44,10 +54,11 @@ public class HumanHeuristic implements Heuristic {
                 } else if (hidden.contains(key(pending.get(choice)))) {
                     System.out.println("  Transition " + choice + " is hidden. Choose a visible index.");
                 } else {
+                    marked.remove(key(pending.get(choice)));
                     return choice;
                 }
             } catch (NumberFormatException e) {
-                System.out.println("  Unknown command. Enter an index, 'del i', 'del i-j', or 'reset'.");
+                System.out.println("  Unknown command. Enter an index, 'del i', 'del i-j', 'reset', or 'mark i'.");
             }
         }
     }
@@ -58,7 +69,9 @@ public class HumanHeuristic implements Heuristic {
         for (int i = 0; i < pending.size(); i++) {
             ExtendedTransition t = pending.get(i);
             if (hidden.contains(key(t))) continue;
-            System.out.printf("  [%d] %s --[%s]--> %s%n", i, t.from(), t.action(), t.to());
+            Integer markLevel = marked.get(key(t));
+            String stars = markLevel != null ? " [34m" + "*".repeat(markLevel) + "[0m" : "";
+            System.out.printf("  [%d] %s --[%s]--> %s%s%n", i, t.from(), t.action(), t.to(), stars);
         }
     }
 
@@ -87,6 +100,23 @@ public class HumanHeuristic implements Heuristic {
             }
         } catch (NumberFormatException e) {
             System.out.println("  Bad format. Use: del i  or  del i-j");
+        }
+    }
+
+    private void handleMark(String indexStr, List<ExtendedTransition> pending) {
+        try {
+            int idx = Integer.parseInt(indexStr);
+            if (idx < 0 || idx >= pending.size()) {
+                System.out.println("  Index out of bounds [0-" + (pending.size() - 1) + "].");
+                return;
+            }
+            String k = key(pending.get(idx));
+            if (!marked.containsKey(k)) {
+                marked.put(k, markCounter++);
+            }
+            System.out.println("  Marked transition " + idx + " with level " + marked.get(k) + ".");
+        } catch (NumberFormatException e) {
+            System.out.println("  Bad format. Use: mark i");
         }
     }
 

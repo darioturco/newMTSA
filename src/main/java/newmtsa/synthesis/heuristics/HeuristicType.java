@@ -64,7 +64,23 @@ public enum HeuristicType {
      * Model path: JVM system property {@code mcts.onnx.path} (default: {@code model.onnx}).
      * Simulation count / cPuct / depth: {@code mcts.simulations}, {@code mcts.cpuct}, {@code mcts.depth}.
      */
-    MCTS_RL;
+    MCTS_RL,
+    HAND;
+
+    /** Human-readable parameter string for the trace file. */
+    public String params() {
+        return switch (this) {
+            case RANDOM  -> "SCRIPT=" + System.getProperty("random.script", "[]");
+            case RL      -> "model_path=" + System.getProperty("rl.onnx.path", "")
+                    + ", feature_type=" + System.getProperty("feature_type", "ROL");
+            case MCTS_RL -> "model_path=" + System.getProperty("mcts.onnx.path", "model.onnx")
+                    + ", feature_type=" + System.getProperty("feature_type", "ROL")
+                    + ", simulations=" + System.getProperty("mcts.simulations", "50")
+                    + ", cpuct=" + System.getProperty("mcts.cpuct", "1.5")
+                    + ", depth=" + System.getProperty("mcts.depth", "10");
+            default -> "(none)";
+        };
+    }
 
     /** Creates and returns a fresh {@link Heuristic} instance for this type. */
     public Heuristic create() {
@@ -92,6 +108,8 @@ public enum HeuristicType {
                     Integer.parseInt(System.getProperty("mcts.simulations", "50")),
                     Double.parseDouble(System.getProperty("mcts.cpuct",       "1.5")),
                     Integer.parseInt(System.getProperty("mcts.depth",        "10")));
+            case HAND          -> new HandHeuristic(
+                    System.getProperty("hand.family", "unknown"), 0, 0);
         };
     }
 }

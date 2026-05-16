@@ -302,8 +302,8 @@ h2 {
   border: 1px solid var(--info-border);
   min-height: 28px;
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+  flex-direction: column;
+  gap: 4px;
   align-items: baseline;
 }
 

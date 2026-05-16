@@ -7,18 +7,15 @@ import newmtsa.synthesis.Director;
 import newmtsa.synthesis.gr1.OTFDirectedControledSyntesisGR1;
 import newmtsa.synthesis.heuristics.Heuristic;
 import newmtsa.synthesis.heuristics.HeuristicType;
+import newmtsa.synthesis.heuristics.HandHeuristic;
 import newmtsa.synthesis.heuristics.RandomHeuristic;
 import newmtsa.synthesis.heuristics.SynthesisContext;
 import newmtsa.synthesis.nonblocking.OTFDirectedControledSyntesisNonBlocking;
-
 import java.io.IOException;
-import java.io.PrintWriter;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-
 
 public class Main {
 
@@ -52,20 +49,20 @@ public class Main {
     //static final HeuristicType HEURISTIC = HeuristicType.RANDOM;
     //static final HeuristicType HEURISTIC = HeuristicType.FIRST;
     //static final HeuristicType HEURISTIC = HeuristicType.BFS;
-    //static final HeuristicType HEURISTIC = HeuristicType.HUMAN;
+    static final HeuristicType HEURISTIC = HeuristicType.HUMAN;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_R;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_E;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ER;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
-    //static final HeuristicType HEURISTIC = HeuristicType.RA_OPEN;
-    static final HeuristicType HEURISTIC = HeuristicType.RA_ERG_OPEN;
+    //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG_OPEN;
+    //static final HeuristicType HEURISTIC = HeuristicType.HAND;
     //static final HeuristicType HEURISTIC = HeuristicType.RL;
     //static final HeuristicType HEURISTIC = HeuristicType.MCTS_RL;
 
     // Print composite states as names (false) or numeric indices (true).
-    static final boolean USE_NUMERIC_STATE_IDS = true;
+    static final boolean USE_NUMERIC_STATE_IDS = false;
 
-    static final boolean VERBOSE = false; // Print heuristic frontier and transition scores before each expansion (RA shows distances).
+    static final boolean VERBOSE = true; // Print heuristic frontier and transition scores before each expansion (RA shows distances).
     static final boolean SAVE_SOL = true; // Flag to save the trace in a .sol file
 
     // Path of the ONNX model loaded by RL and MCTS_RL heuristics.
@@ -115,15 +112,16 @@ public class Main {
         if(args.length > 0){
             file = Path.of(args[0]);
         }else{
-            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\CM\\CM-2-2.fsp");
-            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\DP\\DP-2-2.fsp");
-            file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-1-1.fsp");
-            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\TA\\TA-2-2.fsp");
-            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\AT\\AT-2-2.fsp");
-            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\BW\\BW-2-2.fsp");
-            //file = Path.of(".\\fsp\\NonBlocking\\ControllableFSPs\\test21.lts");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-14-14.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-4-4.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp");
+            file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\test21.lts");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
-            //file = Path.of(".\\fsp\\NonBlocking\\Benchmark\\CM\\CM-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-2.fsp");
             //file = Path.of("C:\\Users\\diort\\Downloads\\data\\krka_et_al_FSE14\\reference_models\\ElemNumber$NumberFormatStringTokenizer.lts");
 
         }
@@ -141,6 +139,7 @@ public class Main {
         System.setProperty("rl.onnx.path",   MODEL_PATH);
         System.setProperty("mcts.onnx.path", MODEL_PATH);
         System.setProperty("feature_type", FEATURE_TYPE);
+        System.setProperty("random.script", SCRIPT.toString());
 
         runSynthesis(model, true, file);
     }
@@ -153,7 +152,24 @@ public class Main {
         }
         ControllerSpecDef spec = specs.get(specs.size() - 1);
 
-        Heuristic baseH = (HEURISTIC == HeuristicType.RANDOM) ? new RandomHeuristic(SCRIPT) : HEURISTIC.create();
+        Heuristic baseH;
+        if (HEURISTIC == HeuristicType.RANDOM) {
+            baseH = new RandomHeuristic(SCRIPT);
+        } else if (HEURISTIC == HeuristicType.HAND) {
+            String family = (file.getParent() != null) ? file.getParent().getFileName().toString() : "unknown";
+            String fname = file.getFileName().toString();
+            int n = 0, k = 0;
+            if (fname.endsWith(".fsp")) {
+                String[] parts = fname.substring(0, fname.length() - 4).split("-");
+                if (parts.length >= 3) {
+                    n = Integer.parseInt(parts[parts.length - 2]);
+                    k = Integer.parseInt(parts[parts.length - 1]);
+                }
+            }
+            baseH = new HandHeuristic(family, n, k);
+        } else {
+            baseH = HEURISTIC.create();
+        }
         TraceRecordingHeuristic recorder = new TraceRecordingHeuristic(baseH);
 
         Director result;
@@ -168,10 +184,15 @@ public class Main {
             result = runGR1(model, spec, verbose, VERBOSE, recorder);
         }
 
-        System.out.println("  Result: " + (result.isRealizable() ? "REALIZABLE" : "UNREALIZABLE"));
+        boolean realizable = result.isRealizable();
+        System.out.println("  Result: " + (realizable ? "REALIZABLE" : "UNREALIZABLE"));
+
+        System.out.println("  Expansions: " + recorder.getTrace().size());
+        int directorTransitionCount = result.enabled().values().stream().mapToInt(List::size).sum();
+        System.out.println("  Director transitions: " + directorTransitionCount);
 
         try {
-            if(SAVE_SOL) saveSol(file, result, mode, recorder.getTrace());
+            if(SAVE_SOL) SolutionSaver.saveSol(file, result, mode, recorder.getTrace(), HEURISTIC, FEATURE_TYPE);
         } catch (IOException e) {
             System.err.println("WARNING: could not save .sol file: " + e.getMessage());
         }
@@ -240,77 +261,5 @@ public class Main {
                 verbose || heuristicVerbose,
                 USE_NUMERIC_STATE_IDS
         ).run();
-    }
-
-    // ── .sol file writer ──────────────────────────────────────────────────────
-
-    private static void saveSol(Path file, Director result, String mode, List<TraceStep> trace) throws IOException {
-        String fileName = file.getFileName().toString();
-        String instanceName = fileName.contains(".")
-                ? fileName.substring(0, fileName.lastIndexOf('.'))
-                : fileName;
-        String family = (file.getParent() != null) ? file.getParent().getFileName().toString() : "unknown";
-
-        Path outDir;
-        if (HEURISTIC == HeuristicType.RL || HEURISTIC == HeuristicType.MCTS_RL) {
-            outDir = Path.of("python", "results", "traces", family, HEURISTIC.name(), FEATURE_TYPE);
-        } else {
-            outDir = Path.of("python", "results", "traces", family, HEURISTIC.name());
-        }
-        Files.createDirectories(outDir);
-        Path outFile = outDir.resolve(instanceName + ".sol");
-
-        try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(outFile))) {
-            pw.println(instanceName);
-            pw.println("Trace Len: " + trace.size());
-            pw.println("Realizable: " + (result.isRealizable() ? "True" : "False"));
-            pw.println("Mode: " + mode);
-            pw.println("Heuristic Used: " + HEURISTIC.name());
-            pw.println("Heuristic Parameters: " + heuristicParams());
-            pw.println("Trace: ");
-            pw.println();
-            for (TraceStep step : trace) {
-                pw.println(formatFrontier(step.frontier()));
-                pw.println(step.index() + " | " + formatTransition(step.selected()));
-            }
-            if (result.isRealizable()) {
-                pw.println();
-                pw.println("Director Transitions:");
-                pw.println();
-                for (var entry : result.enabled().entrySet()) {
-                    for (String action : entry.getValue()) {
-                        pw.println("  " + entry.getKey() + " --[" + action + "]-->");
-                    }
-                }
-            }
-        }
-
-        System.out.println("  Saved: " + outFile);
-    }
-
-    private static String heuristicParams() {
-        return switch (HEURISTIC) {
-            case RANDOM  -> "SCRIPT=" + SCRIPT;
-            case RL      -> "model_path=" + MODEL_PATH + ", feature_type=" + FEATURE_TYPE;
-            case MCTS_RL -> "model_path=" + MODEL_PATH + ", feature_type=" + FEATURE_TYPE
-                    + ", simulations=" + System.getProperty("mcts.simulations", "50")
-                    + ", cpuct=" + System.getProperty("mcts.cpuct", "1.5")
-                    + ", depth=" + System.getProperty("mcts.depth", "10");
-            default -> "(none)";
-        };
-    }
-
-    private static String formatTransition(ExtendedTransition t) {
-        return t.from() + " --[" + t.action() + "]--> " + t.to();
-    }
-
-    private static String formatFrontier(List<ExtendedTransition> frontier) {
-        StringBuilder sb = new StringBuilder("[");
-        for (int i = 0; i < frontier.size(); i++) {
-            if (i > 0) sb.append(", ");
-            sb.append(formatTransition(frontier.get(i)));
-        }
-        sb.append("]");
-        return sb.toString();
     }
 }

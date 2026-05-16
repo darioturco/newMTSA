@@ -257,6 +257,7 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
             none.add(s0);
             if (featuresCtx != null && isMarked(s0)) featuresCtx.markedStateFound = true;
             pending          = new ArrayList<>(succMap.getOrDefault(s0, List.of()));
+            for (ExtendedTransition t : pending) t.setStep(0);
             explorationEnded = false;
         }
     }
@@ -349,6 +350,7 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
         // the new ordering, or change the test to use Set comparison instead of List.
         ExtendedTransition t = pending.remove(index);
         transitionsExplored++;
+        int frontierStep = transitionsExplored;
 
         String e  = t.from();
         String eʹ = t.to();
@@ -388,7 +390,9 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
             } else {
                 none.add(eʹ);
                 if (featuresCtx != null && isMarked(eʹ)) featuresCtx.markedStateFound = true;
-                pending.addAll(succMap.getOrDefault(eʹ, List.of()));
+                List<ExtendedTransition> newTransitions = succMap.getOrDefault(eʹ, List.of());
+                for (ExtendedTransition nt : newTransitions) nt.setStep(frontierStep);
+                pending.addAll(newTransitions);
             }
         }
 
@@ -863,8 +867,7 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
 
     // ── director ──────────────────────────────────────────────────────────────
 
-    private Map<String, Set<String>> buildDirector() {
-        // Build reverse adjacency within the goal set.
+    private Map<String, List<ExtendedTransition>> buildDirector() {
         Map<String, Set<String>> goalRevAdj = new HashMap<>();
         for (String s : goals) {
             for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
@@ -873,7 +876,6 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
             }
         }
 
-        // BFS rank: marked goal states have rank 0.
         Map<String, Integer> rank  = new HashMap<>();
         Queue<String>        queue = new ArrayDeque<>();
         for (String s : goals) {
@@ -887,24 +889,47 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
             }
         }
 
-        // Enable controllable actions toward minimum-rank goal successors.
-        // Key on plant state (phase stripped) — the phase is internal to the algorithm.
-        Map<String, Set<String>> enabled = new HashMap<>();
+        Map<String, List<ExtendedTransition>> enabled = new HashMap<>();
         for (String s : goals) {
             int minRank = Integer.MAX_VALUE;
+            ExtendedTransition bestCtrl = null;
             for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-                if (controllable.contains(t.action()) && goals.contains(t.to()))
-                    minRank = Math.min(minRank, rank.getOrDefault(t.to(), Integer.MAX_VALUE));
-            }
-            Set<String> ena = new LinkedHashSet<>();
-            for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
-                if (controllable.contains(t.action()) && goals.contains(t.to())
-                        && rank.getOrDefault(t.to(), Integer.MAX_VALUE) == minRank) {
-                    ena.add(t.action());
+                if (controllable.contains(t.action()) && goals.contains(t.to())) {
+                    int r = rank.getOrDefault(t.to(), Integer.MAX_VALUE);
+                    if (r < minRank) { minRank = r; bestCtrl = t; }
                 }
             }
-            enabled.merge(plantPart(s), ena, (a, b) -> { a.addAll(b); return a; });
+            List<ExtendedTransition> trans = new ArrayList<>();
+            if (bestCtrl != null) trans.add(bestCtrl);
+            for (ExtendedTransition t : succMap.getOrDefault(s, List.of())) {
+                if (!controllable.contains(t.action())) {
+                    trans.add(t);
+                }
+            }
+            String key = plantPart(s);
+            enabled.merge(key, trans, (a, b) -> {
+                for (ExtendedTransition t : b) {
+                    if (!controllable.contains(t.action())) a.add(t);
+                }
+                return a;
+            });
         }
+
+        Set<String> reachable = new LinkedHashSet<>();
+        Queue<String> bfs = new ArrayDeque<>();
+        String s0plant = plantPart(s0);
+        if (enabled.containsKey(s0plant)) { reachable.add(s0plant); bfs.add(s0plant); }
+        while (!bfs.isEmpty()) {
+            String s = bfs.poll();
+            for (ExtendedTransition t : enabled.getOrDefault(s, List.of())) {
+                String tp = plantPart(t.to());
+                if (enabled.containsKey(tp) && !reachable.contains(tp)) {
+                    reachable.add(tp);
+                    bfs.add(tp);
+                }
+            }
+        }
+        enabled.keySet().retainAll(reachable);
         return enabled;
     }
 
