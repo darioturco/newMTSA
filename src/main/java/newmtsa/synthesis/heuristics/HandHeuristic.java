@@ -6,8 +6,6 @@ import java.util.Set;
 
 public class HandHeuristic implements Heuristic {
 
-    private static final Set<String> KNOWN_FAMILIES = Set.of("DP", "TA", "AT", "TL", "BW", "CM");
-
     private final String family;
     private final int n;
     private final int k;
@@ -16,11 +14,14 @@ public class HandHeuristic implements Heuristic {
     private String state = "noncontrolable";
     private Set<String> controllable;
     private int currentStep;
+    private int r = 0;
+    private final int safePlace; // Only for CM
 
     public HandHeuristic(String family, int n, int k) {
         this.family = family;
         this.n = n;
         this.k = k;
+        this.safePlace = (2 * k + 1) / 2;
     }
 
     @Override
@@ -37,14 +38,7 @@ public class HandHeuristic implements Heuristic {
 
     @Override
     public int pick(List<ExtendedTransition> pending) {
-        if (KNOWN_FAMILIES.contains(family)) {
-            currentStep++;
-            return pickForFamily(pending);
-        }
-        return pending.size() - 1;
-    }
-
-    private int pickForFamily(List<ExtendedTransition> pending) {
+        currentStep++;
         return switch (family) {
             case "DP" -> dpPick(pending);
             case "TA" -> taPick(pending);
@@ -172,35 +166,62 @@ public class HandHeuristic implements Heuristic {
         return pending.size() - 1;
     }
 
-    private long countHungry(String compositeState) {
-        long count = 0;
-        for (String part : compositeState.split("\\|")) {
-            if (part.equals("Hungry")) count++;
-        }
-        return count;
-    }
-
     private int taPick(List<ExtendedTransition> pending) {
         return pending.size() - 1;
     }
 
+    // Esto es extremadamente dificil. No parece ser posible de resolcer si guardar el estado de cada avion en cada estado de la planta (PARA, eso lo tenes en los subestados!!!)
     private int atPick(List<ExtendedTransition> pending) {
         int i = state.contains(".") ? Integer.parseInt(state.substring(state.indexOf(".") + 1)) : 0;
         String baseState = state.contains(".") ? state.substring(0, state.indexOf(".")) : state;
         switch (baseState) {
             case "noncontrolable":
+                setState("descend.0");
+                i = 0;
+                r = 0;
+                // fall through
+            case "descend":
+                String descendTarget = "descend[" + i + "][" + r + "]";
                 for (int j = 0; j < pending.size(); j++) {
-                    if (pending.get(j).action().startsWith("requestLand")) {
-                        setState("descend.0");
+                    ExtendedTransition t = pending.get(j);
+                    if (descendTarget.equals(t.action()) && t.step() == currentStep - 1) {
+                        r = r + 1;
+                        if (i >= n - 1) {
+                            setState("descend.all");
+                        } else {
+                            setState("descend." + (i + 1));
+                        }
+                        return j;
+                    }
+                }
+                String requestTarget = "requestLand[" + i + "]";
+                for (int j = 0; j < pending.size(); j++) {
+                    if (requestTarget.equals(pending.get(j).action())) {
                         return j;
                     }
                 }
                 break;
-            case "descend":
-                String target = "descend[" + i + "][0]";
+            case "descend.all":
+                int pickIdx = findMaxDescend(pending);
+                if (pickIdx != -1) {
+                    if (descendY(pending.get(pickIdx).action()) == 0) {
+                        setState("approach." + descendX(pending.get(pickIdx).action()));
+                    }
+                    return pickIdx;
+                }
+                break;
+            case "approach":
+                String landTarget = "land[" + i + "]";
                 for (int j = 0; j < pending.size(); j++) {
                     ExtendedTransition t = pending.get(j);
-                    if (target.equals(t.action()) && t.step() == currentStep - 1) {
+                    if (landTarget.equals(t.action()) && t.step() == currentStep - 1) {
+                        setState("descend.all");
+                        return j;
+                    }
+                }
+                String approachTarget = "approach[" + i + "]";
+                for (int j = 0; j < pending.size(); j++) {
+                    if (approachTarget.equals(pending.get(j).action())) {
                         return j;
                     }
                 }
@@ -358,6 +379,66 @@ public class HandHeuristic implements Heuristic {
         return pending.size() - 1;
     }
 
+    private int cmPick(List<ExtendedTransition> pending) {
+        int i = 0;
+        String baseState = state;
+        if (state.contains(".")) {
+            String lastPart = state.substring(state.lastIndexOf(".") + 1);
+            try {
+                i = Integer.parseInt(lastPart);
+                baseState = state.substring(0, state.lastIndexOf("."));
+            } catch (NumberFormatException e) {
+                // keep full state as base (e.g. "cat.turn")
+            }
+        }
+
+        switch (baseState) {
+            case "noncontrolable":
+                for (int j = 0; j < pending.size(); j++) {
+                    if (!controllable.contains(pending.get(j).action())) {
+                        return j;
+                    }
+                }
+                setState("mouse.turn.0");
+                i = 0;
+                // fall through
+            case "mouse.turn":
+                int bestIdx = findBestMouseMove(pending, i);
+                if (bestIdx != -1) {
+                    if (i + 1 >= n) {
+                        setState("cat.turn");
+                    } else {
+                        setState("mouse.turn." + (i + 1));
+                    }
+                    return bestIdx;
+                }
+                break;
+            case "cat.turn":
+                for (int j = 0; j < pending.size(); j++) {
+                    String action = pending.get(j).action();
+                    if (!controllable.contains(action) && !"mouse.turn".equals(action)) {
+                        return j;
+                    }
+                }
+                for (int j = 0; j < pending.size(); j++) {
+                    if ("mouse.turn".equals(pending.get(j).action())) {
+                        setState("mouse.turn.0");
+                        return j;
+                    }
+                }
+                break;
+        }
+        return pending.size() - 1;
+    }
+
+    private long countHungry(String compositeState) {
+        long count = 0;
+        for (String part : compositeState.split("\\|")) {
+            if (part.equals("Hungry")) count++;
+        }
+        return count;
+    }
+
     private int firstIndexOfReject(String action) {
         int firstBracket = action.indexOf("[");
         int secondBracket = action.indexOf("]");
@@ -371,7 +452,63 @@ public class HandHeuristic implements Heuristic {
         return Integer.parseInt(action.substring(thirdBracket + 1, fourthBracket));
     }
 
-    private int cmPick(List<ExtendedTransition> pending) {
-        return pending.size() - 1;
+    private int findMaxDescend(List<ExtendedTransition> pending) {
+        int maxY = -1;
+        int pickIdx = -1;
+        for (int j = 0; j < pending.size(); j++) {
+            ExtendedTransition t = pending.get(j);
+            String a = t.action();
+            if (a.startsWith("descend[") && a.contains("][") && t.step() == currentStep - 1) {
+                int y = descendY(a);
+                if (y > maxY) {
+                    maxY = y;
+                    pickIdx = j;
+                }
+            }
+        }
+        return pickIdx;
+    }
+
+    private int descendX(String action) {
+        int bracket1 = action.indexOf("[");
+        int bracket2 = action.indexOf("]");
+        return Integer.parseInt(action.substring(bracket1 + 1, bracket2));
+    }
+
+    private int descendY(String action) {
+        int bracket2 = action.indexOf("]");
+        int bracket3 = action.indexOf("[", bracket2);
+        int bracket4 = action.indexOf("]", bracket3);
+        return Integer.parseInt(action.substring(bracket3 + 1, bracket4));
+    }
+
+    private int findBestMouseMove(List<ExtendedTransition> pending, int mouseIdx) {
+        int bestIdx = -1;
+        int bestDist = Integer.MAX_VALUE;
+        boolean bestIsFresh = false;
+        String targetPrefix = "mouse[" + mouseIdx + "].move[";
+        for (int j = 0; j < pending.size(); j++) {
+            ExtendedTransition t = pending.get(j);
+            String a = t.action();
+            if (a.startsWith(targetPrefix)) {
+                int p = extractMovePosition(a);
+                int dist = Math.abs(p - safePlace);
+                boolean fresh = t.step() == currentStep - 1;
+                if (bestIdx == -1 ||
+                    (fresh && !bestIsFresh) ||
+                    (fresh == bestIsFresh && dist < bestDist)) {
+                    bestIdx = j;
+                    bestDist = dist;
+                    bestIsFresh = fresh;
+                }
+            }
+        }
+        return bestIdx;
+    }
+
+    private int extractMovePosition(String action) {
+        int lastBracket = action.lastIndexOf("[");
+        int closeBracket = action.lastIndexOf("]");
+        return Integer.parseInt(action.substring(lastBracket + 1, closeBracket));
     }
 }

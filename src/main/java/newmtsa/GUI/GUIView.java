@@ -23,9 +23,9 @@ import java.util.Set;
 public final class GUIView {
     private static final Path HTML_DIR = Path.of("src", "main", "java", "newmtsa", "GUI", "HTML");
     private static final Path TEMPLATE_PATH = HTML_DIR.resolve("lts-template.html");
-    private static final int MAX_STATE_RENDER = 600;
-    //private static final String DEFAULT_SOL_PATH = "python/results/traces/BW/RA_ERG_OPEN/BW-3-3.sol";
-    private static final String DEFAULT_SOL_PATH = "python/results/traces/AT/HUMAN/AT-2-2.sol";
+    private static final int MAX_STATE_RENDER = 2600;
+    private static final String DEFAULT_SOL_PATH = "python/results/traces/CM/RA_ERG_OPEN/CM-2-2.sol";
+    //private static final String DEFAULT_SOL_PATH = "python/results/traces/AT/RA_ERG_OPEN/AT-3-3.sol";
 
     private GUIView() {}
 

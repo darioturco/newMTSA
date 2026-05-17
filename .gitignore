@@ -31,6 +31,7 @@ plan.txt
 run_test.txt
 *.png
 *.pdf
+*.sol
 
 # Python
 __pycache__/
