@@ -14,7 +14,6 @@ public class HandHeuristic implements Heuristic {
     private String state = "noncontrolable";
     private Set<String> controllable;
     private int currentStep;
-    private int r = 0;
     private final int safePlace; // Only for CM
 
     public HandHeuristic(String family, int n, int k) {
@@ -51,8 +50,8 @@ public class HandHeuristic implements Heuristic {
     }
 
     private int dpPick(List<ExtendedTransition> pending) {
-        int i = state.contains("[") ? Integer.parseInt(state.substring(state.indexOf("[") + 1, state.indexOf("]"))) : 0;
-        String baseState = state.contains("[") ? state.substring(0, state.indexOf("[")) : state;
+        int i = extractIndex();
+        String baseState = i != -1 ? state.substring(0, state.lastIndexOf(".")) : state;
         switch (baseState) {
             case "noncontrolable":
                 for (int j = 0; j < pending.size(); j++) {
@@ -60,13 +59,10 @@ public class HandHeuristic implements Heuristic {
                         return j;
                     }
                 }
-                setState("init.exploration");
-                // fall through
-            case "init.exploration":
                 for (int j = 0; j < pending.size(); j++) {
                     ExtendedTransition t = pending.get(j);
                     if ("take[0][0]".equals(t.action()) && countHungry(t.from()) == n) {
-                        setState("step[0]");
+                        setState("step.0");
                         return j;
                     }
                 }
@@ -76,7 +72,7 @@ public class HandHeuristic implements Heuristic {
                 for (int j = 0; j < pending.size(); j++) {
                     ExtendedTransition t = pending.get(j);
                     if (targetAction.equals(t.action()) && t.step() == currentStep - 1) {
-                        setState("step[" + i + "]");
+                        setState("step." + i);
                         return j;
                     }
                 }
@@ -91,7 +87,7 @@ public class HandHeuristic implements Heuristic {
                 String rightTake = "take[" + i + "][" + ((i + 1) % n) + "]";
                 for (int j = 0; j < pending.size(); j++) {
                     if (rightTake.equals(pending.get(j).action())) {
-                        setState("eat[" + i + "]");
+                        setState("eat." + i);
                         return j;
                     }
                 }
@@ -112,7 +108,7 @@ public class HandHeuristic implements Heuristic {
                 String thinkAction = "think[" + i + "]";
                 for (int j = 0; j < pending.size(); j++) {
                     if (thinkAction.equals(pending.get(j).action())) {
-                        setState((i == n - 1) ? "eat.all.first" : "feeding[" + (i + 1) + "]");
+                        setState((i == n - 1) ? "eat.all.first" : "feeding." + (i + 1));
                         return j;
                     }
                 }
@@ -172,56 +168,102 @@ public class HandHeuristic implements Heuristic {
 
     // Esto es extremadamente dificil. No parece ser posible de resolcer si guardar el estado de cada avion en cada estado de la planta (PARA, eso lo tenes en los subestados!!!)
     private int atPick(List<ExtendedTransition> pending) {
-        int i = state.contains(".") ? Integer.parseInt(state.substring(state.indexOf(".") + 1)) : 0;
-        String baseState = state.contains(".") ? state.substring(0, state.indexOf(".")) : state;
+        int i = extractIndex();
+        boolean newFrontier = pending.get(pending.size() - 1).step() == currentStep - 1;
+        String baseState = i != -1 ? state.substring(0, state.lastIndexOf(".")) : state;
+        if (("descend".equals(baseState) || "descend_alt".equals(baseState)) && !newFrontier) {
+            setState("control.all");
+            baseState = "control.all";
+        }
         switch (baseState) {
             case "noncontrolable":
                 setState("descend.0");
                 i = 0;
-                r = 0;
                 // fall through
             case "descend":
-                String descendTarget = "descend[" + i + "][" + r + "]";
-                for (int j = 0; j < pending.size(); j++) {
-                    ExtendedTransition t = pending.get(j);
-                    if (descendTarget.equals(t.action()) && t.step() == currentStep - 1) {
-                        r = r + 1;
-                        if (i >= n - 1) {
-                            setState("descend.all");
-                        } else {
-                            setState("descend." + (i + 1));
-                        }
-                        return j;
+                int bestIdx = findLowestDescend(pending, i);
+                if (bestIdx != -1) {
+                    ExtendedTransition t = pending.get(bestIdx);
+                    if (!allPlanesHaveHeight(t.to())) {
+                        setState("descend." + ((i + 1) % n));
+                    } else {
+                        int p0 = planeAtHeight0(t.to());
+                        if (p0 != -1) setState("approach." + p0);
                     }
+                    return bestIdx;
                 }
                 String requestTarget = "requestLand[" + i + "]";
                 for (int j = 0; j < pending.size(); j++) {
-                    if (requestTarget.equals(pending.get(j).action())) {
+                    if (requestTarget.equals(pending.get(j).action()) && pending.get(j).step() == currentStep - 1) {
+                        return j;
+                    }
+                }
+                break;
+            case "descend_alt":
+                int bestIdxAlt = findLowestDescend(pending, i);
+                if (bestIdxAlt != -1) {
+                    ExtendedTransition tAlt = pending.get(bestIdxAlt);
+                    if (!allPlanesHaveHeight(tAlt.to())) {
+                        // Order: 1 → 0 → 2 → 3 → ... → n-1
+                        int nextI = (i == 1) ? 0 : (i == 0) ? 2 : i + 1;
+                        setState("descend_alt." + nextI);
+                    } else {
+                        int p0alt = planeAtHeight0(tAlt.to());
+                        if (p0alt != -1) setState("approach." + p0alt);
+                    }
+                    return bestIdxAlt;
+                }
+                String requestTargetAlt = "requestLand[" + i + "]";
+                for (int j = 0; j < pending.size(); j++) {
+                    if (requestTargetAlt.equals(pending.get(j).action()) && pending.get(j).step() == currentStep - 1) {
                         return j;
                     }
                 }
                 break;
             case "descend.all":
-                int pickIdx = findMaxDescend(pending);
+                // Busca acciones 'descend[i][a]' donde el from tenga Occupied[i]|Empty
+                int pickIdx = findDescendWithEmptyBelow(pending);
                 if (pickIdx != -1) {
-                    if (descendY(pending.get(pickIdx).action()) == 0) {
-                        setState("approach." + descendX(pending.get(pickIdx).action()));
-                    }
                     return pickIdx;
                 }
-                break;
+                // No hay descensos disponibles → pasamos a approach con el avion en altura 0
+                int planeAt0 = planeAtHeight0(pending);
+                if (planeAt0 != -1) { i = planeAt0; setState("approach." + i); }
+                // fall through
             case "approach":
                 String landTarget = "land[" + i + "]";
                 for (int j = 0; j < pending.size(); j++) {
                     ExtendedTransition t = pending.get(j);
                     if (landTarget.equals(t.action()) && t.step() == currentStep - 1) {
-                        setState("descend.all");
+                        setState(countEnd(t.to()) == n ? "control.all" : "descend.all");
                         return j;
                     }
                 }
                 String approachTarget = "approach[" + i + "]";
                 for (int j = 0; j < pending.size(); j++) {
-                    if (approachTarget.equals(pending.get(j).action())) {
+                    if (approachTarget.equals(pending.get(j).action()) && pending.get(j).step() == currentStep - 1) {
+                        return j;
+                    }
+                }
+                break;
+            case "control.all":
+                for (int j = 0; j < pending.size(); j++) {
+                    if ("control.all".equals(pending.get(j).action())) {
+                        setState("descend_alt.1");
+                        return j;
+                    }
+                }
+                if (newFrontier) {
+                    int rlIdx = findMinRequestLand(pending);
+                    if (rlIdx != -1) {
+                        int plane = extractRLIndex(pending.get(rlIdx).action());
+                        setState("descend." + plane);
+                        return rlIdx;
+                    }
+                }
+                for (int j = pending.size() - 1; j >= 0; j--) {
+                    ExtendedTransition t = pending.get(j);
+                    if (!controllable.contains(t.action()) && t.action().startsWith("extendFlight") && hasOff(t.from())) {
                         return j;
                     }
                 }
@@ -231,17 +273,17 @@ public class HandHeuristic implements Heuristic {
     }
 
     private int tlPick(List<ExtendedTransition> pending) {
-        int i = state.contains("[") ? Integer.parseInt(state.substring(state.indexOf("[") + 1, state.indexOf("]"))) : 0;
-        String baseState = state.contains("[") ? state.substring(0, state.indexOf("[")) : state;
+        int i = extractIndex();
+        String baseState = i != -1 ? state.substring(0, state.lastIndexOf(".")) : state;
         switch (baseState) {
             case "noncontrolable":
-                setState("get[0]");
+                setState("get.0");
                 // fall through
             case "get":
                 for (int j = pending.size() - 1; j >= 0; j--) {
                     ExtendedTransition t = pending.get(j);
                     if (("get[" + i + "]").equals(t.action()) && (i == 0 || t.step() == currentStep - 1)) {
-                        setState(i == n ? "returning" : "put[" + (i + 1) + "]");
+                        setState(i == n ? "returning" : "put." + (i + 1));
                         return j;
                     }
                 }
@@ -249,7 +291,7 @@ public class HandHeuristic implements Heuristic {
             case "put":
                 for (int j = pending.size() - 1; j >= 0; j--) {
                     if (("put[" + i + "]").equals(pending.get(j).action())) {
-                        setState("get[" + i + "]");
+                        setState("get." + i);
                         return j;
                     }
                 }
@@ -299,8 +341,8 @@ public class HandHeuristic implements Heuristic {
 
     // No funciona para BW-3-3
     private int bwPick(List<ExtendedTransition> pending) {
-        int i = state.contains(".") ? Integer.parseInt(state.substring(state.indexOf(".") + 1)) : 0;
-        String baseState = state.contains(".") ? state.substring(0, state.indexOf(".")) : state;
+        int i = extractIndex();
+        String baseState = i != -1 ? state.substring(0, state.lastIndexOf(".")) : state;
         switch (baseState) {
             case "noncontrolable":
                 setState("accept.0");
@@ -352,10 +394,19 @@ public class HandHeuristic implements Heuristic {
                     if (a.startsWith("reject[") && a.contains("][") && a.endsWith("]")) {
                         int r = secondIndexOfReject(a);
                         i = firstIndexOfReject(a);
-                        if (r != k) {
+                        if (r != k && n > 1) {
                             setState("recover." + i);
                         }
                         return j;
+                    }
+                }
+                if (i != -1) {
+                    String acceptAct = "accept[" + i + "]";
+                    for (int j = pending.size() - 1; j >= 0; j--) {
+                        ExtendedTransition t = pending.get(j);
+                        if (acceptAct.equals(t.action()) && !t.to().contains("ERROR")) {
+                            return j;
+                        }
                     }
                 }
                 break;
@@ -380,17 +431,8 @@ public class HandHeuristic implements Heuristic {
     }
 
     private int cmPick(List<ExtendedTransition> pending) {
-        int i = 0;
-        String baseState = state;
-        if (state.contains(".")) {
-            String lastPart = state.substring(state.lastIndexOf(".") + 1);
-            try {
-                i = Integer.parseInt(lastPart);
-                baseState = state.substring(0, state.lastIndexOf("."));
-            } catch (NumberFormatException e) {
-                // keep full state as base (e.g. "cat.turn")
-            }
-        }
+        int i = extractIndex();
+        String baseState = i != -1 ? state.substring(0, state.lastIndexOf(".")) : state;
 
         switch (baseState) {
             case "noncontrolable":
@@ -439,6 +481,29 @@ public class HandHeuristic implements Heuristic {
         return count;
     }
 
+    private long countEnd(String compositeState) {
+        long count = 0;
+        for (String part : compositeState.split("\\|")) {
+            if (part.equals("End")) count++;
+        }
+        return count;
+    }
+
+    private boolean hasOff(String compositeState) {
+        String[] parts = compositeState.split("\\|");
+        return parts.length > 0 && parts[parts.length - 1].contains("off");
+    }
+
+    private int extractIndex() {
+        if (!state.contains(".")) return -1;
+        String rest = state.substring(state.lastIndexOf(".") + 1);
+        try {
+            return Integer.parseInt(rest);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
     private int firstIndexOfReject(String action) {
         int firstBracket = action.indexOf("[");
         int secondBracket = action.indexOf("]");
@@ -452,23 +517,6 @@ public class HandHeuristic implements Heuristic {
         return Integer.parseInt(action.substring(thirdBracket + 1, fourthBracket));
     }
 
-    private int findMaxDescend(List<ExtendedTransition> pending) {
-        int maxY = -1;
-        int pickIdx = -1;
-        for (int j = 0; j < pending.size(); j++) {
-            ExtendedTransition t = pending.get(j);
-            String a = t.action();
-            if (a.startsWith("descend[") && a.contains("][") && t.step() == currentStep - 1) {
-                int y = descendY(a);
-                if (y > maxY) {
-                    maxY = y;
-                    pickIdx = j;
-                }
-            }
-        }
-        return pickIdx;
-    }
-
     private int descendX(String action) {
         int bracket1 = action.indexOf("[");
         int bracket2 = action.indexOf("]");
@@ -480,6 +528,103 @@ public class HandHeuristic implements Heuristic {
         int bracket3 = action.indexOf("[", bracket2);
         int bracket4 = action.indexOf("]", bracket3);
         return Integer.parseInt(action.substring(bracket3 + 1, bracket4));
+    }
+
+    private int planeAtHeight0(List<ExtendedTransition> pending) {
+        for (ExtendedTransition t : pending) {
+            if (t.step() != currentStep - 1) continue;
+            String[] parts = t.from().split("\\|");
+            if (parts.length > 2) {
+                String monitor0 = parts[2];
+                if (monitor0.startsWith("Occupied[")) {
+                    return Integer.parseInt(monitor0.substring(monitor0.indexOf('[') + 1, monitor0.indexOf(']')));
+                }
+            }
+        }
+        return -1;
+    }
+
+    private int findLowestDescend(List<ExtendedTransition> pending, int plane) {
+        int bestP = Integer.MAX_VALUE;
+        int bestIdx = -1;
+        for (int j = 0; j < pending.size(); j++) {
+            ExtendedTransition t = pending.get(j);
+            String a = t.action();
+            if (a.startsWith("descend[" + plane + "][") && t.step() == currentStep - 1) {
+                int p = descendY(a);
+                String[] parts = t.from().split("\\|");
+                if (parts.length > 2 + p && "Empty".equals(parts[2 + p]) && p < bestP) {
+                    bestP = p;
+                    bestIdx = j;
+                }
+            }
+        }
+        return bestIdx;
+    }
+
+    private boolean allPlanesHaveHeight(String compositeState) {
+        String[] parts = compositeState.split("\\|");
+        // last part is fluent; n parts immediately before it are plane substates
+        int fluent = parts.length - 1;
+        for (int p = 1; p <= n; p++) {
+            int idx = fluent - p;
+            if (idx < 0 || !parts[idx].startsWith("Holding[")) return false;
+        }
+        return true;
+    }
+
+    private int planeAtHeight0(String compositeState) {
+        String[] parts = compositeState.split("\\|");
+        if (parts.length > 2) {
+            String monitor0 = parts[2];
+            if (monitor0.startsWith("Occupied[")) {
+                return Integer.parseInt(monitor0.substring(monitor0.indexOf('[') + 1, monitor0.indexOf(']')));
+            }
+        }
+        return -1;
+    }
+
+    private int findDescendWithEmptyBelow(List<ExtendedTransition> pending) {
+        // Los HeightMonitor comienzan en posicion 2 (tras ResponseMonitor y RampMonitor)
+        // y estan ordenados de menor a mayor altura. Se busca Empty (inferior desocupada)
+        // seguido de Occupied[p] (superior ocupada por el avion p).
+        for (int j = 0; j < pending.size(); j++) {
+            ExtendedTransition t = pending.get(j);
+            String a = t.action();
+            if (a.startsWith("descend[") && a.contains("][") && t.step() == currentStep - 1) {
+                int plane = descendX(a);
+                String[] parts = t.from().split("\\|");
+                for (int p = 2; p < parts.length - 1; p++) {
+                    if ("Empty".equals(parts[p]) && ("Occupied[" + plane + "]").equals(parts[p + 1])) {
+                        return j;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
+    private int findMinRequestLand(List<ExtendedTransition> pending) {
+        int bestI = Integer.MAX_VALUE;
+        int bestIdx = -1;
+        for (int j = 0; j < pending.size(); j++) {
+            ExtendedTransition t = pending.get(j);
+            String a = t.action();
+            if (a.startsWith("requestLand[") && t.step() == currentStep - 1) {
+                int plane = extractRLIndex(a);
+                if (plane < bestI) {
+                    bestI = plane;
+                    bestIdx = j;
+                }
+            }
+        }
+        return bestIdx;
+    }
+
+    private int extractRLIndex(String action) {
+        int bracket1 = action.indexOf("[");
+        int bracket2 = action.indexOf("]");
+        return Integer.parseInt(action.substring(bracket1 + 1, bracket2));
     }
 
     private int findBestMouseMove(List<ExtendedTransition> pending, int mouseIdx) {

@@ -112,16 +112,16 @@ public class Main {
         if(args.length > 0){
             file = Path.of(args[0]);
         }else{
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-14-14.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-2.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-1-15.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-3-3.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-11-15.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-4-4.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-3-3.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-2-3.fsp");
+            file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-3-3.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\test21.lts");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
-            file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-3-3.fsp");
             //file = Path.of("C:\\Users\\diort\\Downloads\\data\\krka_et_al_FSE14\\reference_models\\ElemNumber$NumberFormatStringTokenizer.lts");
 
         }

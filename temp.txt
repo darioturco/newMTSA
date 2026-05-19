@@ -1,326 +1,109 @@
-package newmtsa.synthesis;
+ Confirmed: CM-1-2 = 42 transitions (not 41 — user likely read Trace Len=41, but director has 42). CM-1-3 = 69 ✓.
 
-import newmtsa.parser.FSPParser;
-import newmtsa.parser.ast.ControllerSpecDef;
-import newmtsa.parser.ast.FSPModel;
-import newmtsa.parser.ast.LTS;
-import newmtsa.parser.ast.LtlPropertyDef;
-import newmtsa.synthesis.features.FeatureCompute;
-import newmtsa.synthesis.features.FeaturesContext;
-import newmtsa.synthesis.features.FeatureType;
-import newmtsa.synthesis.gr1.OTFDirectedControledSyntesisGR1;
-import newmtsa.synthesis.heuristics.Heuristic;
-import newmtsa.synthesis.heuristics.HeuristicType;
-import newmtsa.synthesis.nonblocking.OTFDirectedControledSyntesisNonBlocking;
+  ---
+  Formula: T(k) = 3k² + 12k + 6
 
-import java.io.IOException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.*;
+  Two structural phases:
 
-/**
- * Step-by-step interface to the DCS algorithm for use from Python (e.g. via JPype).
- * Supports both non-blocking and GR(1) synthesis modes.
- *
- * <p>The Python side drives exploration by repeatedly calling {@link #expand(int)} with
- * the chosen frontier index, making this class suitable as a Reinforcement Learning
- * environment.
- *
- * <p>Use {@link #getSynthesisType()} to determine which mode the instance is running.
- * GR(1) instances delegate internally to {@link OTFDirectedControledSyntesisGR1};
- * non-blocking instances delegate to {@link OTFDirectedControledSyntesisNonBlocking}.
- */
-public class DCSForPython {
+  ---
+  Phase 1 — Approach: 3k² − 2k + 1
 
-    /** Whether this instance is running a non-blocking or a GR(1) synthesis. */
-    public enum SynthesisType { NON_BLOCKING, GR1 }
+  Mouse takes k steps from position 2k to center k. Cat starts at 0.
 
-    // ── instance identity ─────────────────────────────────────────────────────
+  Step 1 (mouse 2k→2k−1, cat only at 0):
+  - 1 initial mouse.turn
+  - 1 mouse.move
+  - 1 cat.turn
+  - 2 cat moves (from 0: stay or go to 1)
+  - 2 mouse.turn for new cat positions {0,1}
+  = 7 transitions
 
-    public final String        instanceName;
-    public final SynthesisType synthesisType;
+  Step i (2 ≤ i ≤ k−1, cat can be at positions 0..i−1):
+  - i mouse.move (one per cat position)
+  - i cat.turn
+  - 2 + 3(i−1) = 3i−1 cat moves (pos 0 has 2, rest have 3)
+  - (i+1) mouse.turn for new positions
+  = 6i transitions
 
-    // ── engines ───────────────────────────────────────────────────────────────
+  Step k (final step to center, no cat.turn needed):
+  - k mouse.move
+  = k transitions
 
-    /** GR(1) engine; {@code null} when {@link SynthesisType#NON_BLOCKING}. */
-    public final OTFDirectedControledSyntesisGR1 gr1Engine;
+  Total approach = 7 + 6(2+…+(k−1)) + k = 7 + 6·(k(k−1)/2 − 1) + k = 3k² − 2k + 1
 
-    /** Non-blocking engine; {@code null} when {@link SynthesisType#GR1}. */
-    public final OTFDirectedControledSyntesisNonBlocking nbEngine;
+  ---
+  Phase 2 — Steady state: 14k + 5
 
-    // ── inputs (mirrored from engine for direct Python access) ────────────────
+  Mouse stays at center forever. Cat reachable at all 2k+1 positions.
 
-    public final List<LTS>   components;
-    public final Set<String> controllable;
-    public final Heuristic   heuristic;
+  For each cat position c ∈ {0..2k}, one loop:
+  - mouse.turn, mouse.move, safe, cat.turn = 4 fixed
+  - moves(c) cat moves: 2 for endpoints, 3 for interior
 
-    // ── feature computation (GR(1) mode only) ────────────────────────────────
+  Total fixed = (2k+1)·4 = 8k+4
+  Total cat moves = 2 + 3·(2k−1) + 2 = 6k+1
 
-    private final FeatureCompute  featureCompute;
-    private final FeaturesContext featuresCtx;
+  Steady = 8k+4 + 6k+1 = 14k + 5
 
-    // ── constructors ──────────────────────────────────────────────────────────
+  ---
+  Total
 
-    /**
-     * Non-blocking convenience constructor — no feature computation.
-     */
-    public DCSForPython(String               instanceName,
-                        List<LTS>            components,
-                        List<LtlPropertyDef> safetyProperties,
-                        Set<String>          markingActions,
-                        Set<String>          controllable,
-                        Heuristic            heuristic) {
-        this(instanceName, components, safetyProperties, markingActions, controllable, heuristic, null);
-    }
+  T(k) = (3k²−2k+1) + (14k+5) = 3k² + 12k + 6
 
-    /**
-     * Non-blocking full constructor — optionally enables per-transition feature computation.
-     */
-    public DCSForPython(String               instanceName,
-                        List<LTS>            components,
-                        List<LtlPropertyDef> safetyProperties,
-                        Set<String>          markingActions,
-                        Set<String>          controllable,
-                        Heuristic            heuristic,
-                        FeatureCompute       featureCompute) {
-        this.instanceName  = instanceName;
-        this.synthesisType = SynthesisType.NON_BLOCKING;
-        this.gr1Engine     = null;
-        this.featureCompute = null;
-        this.featuresCtx    = null;
 
-        this.nbEngine = new OTFDirectedControledSyntesisNonBlocking(
-                components, safetyProperties, markingActions, controllable,
-                heuristic, false, Integer.MAX_VALUE, false, featureCompute);
 
-        this.components   = nbEngine.getComponents();
-        this.controllable = nbEngine.getControllable();
-        this.heuristic    = nbEngine.heuristic;
-    }
 
-    /**
-     * GR(1) constructor — wraps {@link OTFDirectedControledSyntesisGR1}.
-     * No feature computation.
-     */
-    public DCSForPython(String               instanceName,
-                        List<LTS>            components,
-                        List<LtlPropertyDef> assumptions,
-                        List<LtlPropertyDef> guarantees,
-                        Set<String>          controllable,
-                        Heuristic            heuristic) {
-        this(instanceName, components, assumptions, guarantees, controllable, heuristic, null);
-    }
 
-    /**
-     * GR(1) constructor with optional feature computation.
-     */
-    public DCSForPython(String               instanceName,
-                        List<LTS>            components,
-                        List<LtlPropertyDef> assumptions,
-                        List<LtlPropertyDef> guarantees,
-                        Set<String>          controllable,
-                        Heuristic            heuristic,
-                        FeatureCompute       featureCompute) {
-        if (controllable.isEmpty())
-            throw new IllegalArgumentException("DCS requires at least one controllable action");
 
-        this.instanceName  = instanceName;
-        this.synthesisType = SynthesisType.GR1;
-        this.heuristic     = heuristic;
-        this.nbEngine      = null;
-        this.gr1Engine     = new OTFDirectedControledSyntesisGR1(
-                components, assumptions, guarantees, controllable, heuristic, false);
 
-        this.components   = gr1Engine.getComponents();
-        this.controllable = gr1Engine.getControllable();
 
-        this.featureCompute = featureCompute;
-        if (featureCompute != null) {
-            this.featuresCtx = new FeaturesContext(
-                gr1Engine.getGoals(), gr1Engine.getErrors(), gr1Engine.getNone(),
-                gr1Engine.getSuccMap(), gr1Engine.getParents(),
-                this.controllable, gr1Engine.getAlphabet(),
-                this.components, gr1Engine.getCompMarked(), true);
-            featureCompute.init(this.featuresCtx);
-        } else {
-            this.featuresCtx = null;
-        }
-    }
 
-    // ── public API ────────────────────────────────────────────────────────────
 
-    /** Returns whether this instance is running a non-blocking or a GR(1) synthesis. */
-    public SynthesisType getSynthesisType() {
-        return synthesisType;
-    }
 
-    /** Returns the name of this synthesis instance. */
-    public String getInstanceName() {
-        return instanceName;
-    }
 
-    /** Returns the full action alphabet of the parallel composition. */
-    public Set<String> getAlphabet() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.getAlphabet() : nbEngine.getAlphabet();
-    }
 
-    /** Returns the component list used in the parallel composition. */
-    public List<LTS> getComponents() {
-        return components;
-    }
 
-    /**
-     * Returns the current frontier: the list of pending transitions (from a None state)
-     * that have not yet been expanded.
-     */
-    public List<ExtendedTransition> getFrontier() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.getFrontier() : nbEngine.getFrontier();
-    }
 
-    /**
-     * Returns {@code true} when no further expansion is possible.
-     */
-    public boolean isExplorationEnded() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.isExplorationEnded() : nbEngine.isExplorationEnded();
-    }
 
-    /**
-     * Performs one step of the DCS main loop by expanding the transition at position
-     * {@code index} in the current frontier.
-     */
-    public void expand(int index) {
-        if (synthesisType == SynthesisType.GR1) {
-            if (featuresCtx != null) {
-                ExtendedTransition t = gr1Engine.getFrontier().get(index);
-                int prevGoalCount = gr1Engine.getGoals().size();
-                gr1Engine.expand(index);
-                featuresCtx.lastExpandedFrom = t.from();
-                featuresCtx.lastExpandedTo   = t.to();
-                if (!featuresCtx.markedStateFound && gr1Engine.isMarked(t.to()))
-                    featuresCtx.markedStateFound = true;
-                if (gr1Engine.getGoals().size() > prevGoalCount)
-                    featuresCtx.closedWinningLoopsCount++;
-            } else {
-                gr1Engine.expand(index);
-            }
-        } else {
-            nbEngine.expand(index);
-        }
-    }
+● CM-3-1=922, CM-3-2=4741.
 
-    /**
-     * Returns one binary feature vector per frontier transition.
-     */
-    public List<int[]> getFrontierWithFeatures() {
-        if (synthesisType == SynthesisType.GR1) {
-            if (featureCompute == null)
-                throw new IllegalStateException(
-                        "No FeatureCompute registered — use the constructor overload that accepts FeatureCompute");
-            List<ExtendedTransition> frontier = gr1Engine.getFrontier();
-            List<int[]> result = new ArrayList<>(frontier.size());
-            for (ExtendedTransition t : frontier) result.add(featureCompute.compute(t));
-            return result;
-        }
-        return nbEngine.getFrontierWithFeatures();
-    }
+  Verify steady state:
+  - S(3,1) = 3²·[6·3 + 3·4·7] = 9·102 = 918 → A(3,1) = 922-918 = 4
+  - S(3,2) = 5²·[6·5 + 3·4·13] = 25·186 = 4650 → A(3,2) = 4741-4650 = 91
 
-    /**
-     * Returns the synthesis result.
-     */
-    public SynthesisResult getSynthesisResult() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.getSynthesisResult() : nbEngine.getSynthesisResult();
-    }
+  ---
+  General approach formula
 
-    // ── factory ───────────────────────────────────────────────────────────────
+  Per-step function:
 
-    /**
-     * Parse an FSP file and construct a ready-to-use {@link DCSForPython}.
-     * Automatically selects the non-blocking or GR(1) solver based on the
-     * controller spec found in the file.
-     */
-    public static DCSForPython fromPath(String fspPath,
-                                        String heuristicType,
-                                        String featureType) throws IOException {
-        Path      path  = Paths.get(fspPath);
-        FSPModel  model = FSPParser.parse(path);
-        String    name  = path.getFileName().toString().replace(".fsp", "");
-        Heuristic heuristic = HeuristicType.valueOf(heuristicType.toUpperCase()).create();
+  f(n,i) = (n+1)·iⁿ + n·(3i−1)·(2i+1)^(n−1) + (i+1)ⁿ
 
-        Optional<ControllerSpecDef> nbSpec = model.controllerSpecs().stream()
-            .filter(ControllerSpecDef::nonblocking)
-            .findFirst();
+  - (n+1)·iⁿ — (n mouse moves + 1 cat.turn) × iⁿ cat tuples
+  - n·(3i−1)·(2i+1)^(n−1) — cat moves (combinatorial sum over all orderings)
+  - (i+1)ⁿ — mouse.turns for new cat tuples
 
-        if (nbSpec.isPresent()) {
-            ControllerSpecDef spec = nbSpec.get();
-            List<LtlPropertyDef> safetyProps = spec.safety().stream()
-                .flatMap(sn -> model.ltlProperties().stream().filter(p -> p.name().equals(sn)))
-                .toList();
-            FeatureCompute fc = (featureType != null && !featureType.isEmpty())
-                ? FeatureType.valueOf(featureType.toUpperCase()).create()
-                : null;
-            return new DCSForPython(name,
-                new ArrayList<>(model.processes()),
-                safetyProps,
-                new HashSet<>(spec.marking()),
-                new HashSet<>(spec.controllable()),
-                heuristic, fc);
-        }
+  A(n,k) = 1 + Σᵢ₌₁^(k−1) f(n,i) + n·kⁿ
 
-        // GR(1) / blocking path
-        ControllerSpecDef spec = model.controllerSpecs().stream()
-            .findFirst()
-            .orElseThrow(() -> new IllegalArgumentException(
-                "No controller spec found in: " + fspPath));
+  Verify: A(1,2)=1+6+2=9 ✓, A(2,2)=1+19+8=28 ✓, A(3,2)=1+66+24=91 ✓
 
-        List<LtlPropertyDef> guarantees = new ArrayList<>();
-        for (String n : spec.liveness()) {
-            model.asserts().stream().filter(p -> p.name().equals(n)).findFirst()
-                .or(() -> model.fluents().stream().filter(fl -> fl.name().equals(n))
-                    .map(fl -> new LtlPropertyDef(fl.name(), List.of(), fl)).findFirst())
-                .ifPresent(guarantees::add);
-        }
+  ---
+  Python
 
-        List<LtlPropertyDef> assumptions = new ArrayList<>();
-        for (String n : spec.assumption()) {
-            model.asserts().stream().filter(p -> p.name().equals(n)).findFirst()
-                .or(() -> model.fluents().stream().filter(fl -> fl.name().equals(n))
-                    .map(fl -> new LtlPropertyDef(fl.name(), List.of(), fl)).findFirst())
-                .ifPresent(assumptions::add);
-        }
+  S  = lambda n, k: (2*k+1)**(n-1) * ((n+3)*(2*k+1) + n*2**(n-1)*(6*k+1))
 
-        List<LTS> components = new ArrayList<>(model.processes());
-        for (LtlPropertyDef g : guarantees) components.add(g.lts());
-        for (LtlPropertyDef a : assumptions) {
-            if (components.stream().noneMatch(c -> c.name().equals(a.name())))
-                components.add(a.lts());
-        }
+  def A(n, k):
+      f = lambda i: (n+1)*i**n + n*(3*i-1)*(2*i+1)**(n-1) + (i+1)**n
+      return 1 + sum(f(i) for i in range(1, k)) + n*k**n
 
-        FeatureCompute fc = (featureType != null && !featureType.isEmpty())
-            ? FeatureType.valueOf(featureType.toUpperCase()).create()
-            : null;
-        return new DCSForPython(name, components, assumptions, guarantees,
-            new HashSet<>(spec.controllable()), heuristic, fc);
-    }
+  CM = lambda n, k: S(n, k) + A(n, k)
 
-    // ── additional observable state ───────────────────────────────────────────
+  ┌─────────┬─────┬──────┬─────┐
+  │ CM(n,k) │ k=1 │ k=2  │ k=3 │
+  ├─────────┼─────┼──────┼─────┤
+  │ n=1     │ 21  │ 42   │ 69  │
+  ├─────────┼─────┼──────┼─────┤
+  │ n=2     │ 132 │ 413  │ 886 │
+  ├─────────┼─────┼──────┼─────┤
+  │ n=3     │ 922 │ 4741 │ ?   │
+  └─────────┴─────┴──────┴─────┘
 
-    /** Returns {@code true} when this instance runs non-blocking (not GR(1)) synthesis. */
-    public boolean isNonBlocking() {
-        return synthesisType == SynthesisType.NON_BLOCKING;
-    }
-
-    /** Returns {@code true} iff the initial state has been classified as realizable. */
-    public boolean isRealizable() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.isRealizable() : nbEngine.isRealizable();
-    }
-
-    /** Number of transitions expanded so far. */
-    public int getTransitionsExplored() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.getTransitionsExplored() : nbEngine.getTransitionsExplored();
-    }
-
-    /** Number of composite states discovered so far. */
-    public int getStatesExplored() {
-        return synthesisType == SynthesisType.GR1 ? gr1Engine.getStatesExplored() : nbEngine.getStatesExplored();
-    }
-}

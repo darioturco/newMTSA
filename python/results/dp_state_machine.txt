@@ -1,0 +1,73 @@
+DP HandHeuristic - State Machine
+=================================
+
+DIAGRAM
+-------
+
+              ┌──────────────────────────────────────┐
+              │ uncontrollable action found (stay)    │
+              ▼                                       │
+         noncontrolable ────────────────────────────── ┘
+              │
+              │ take[0][0], countHungry==n
+              ▼
+┌───────────► step.i ◄──────────────────────────────┐
+│              │  │                                   │
+│      step[i] │  │ take[i][(i+1)%n]                 │
+│      (stay) ─┘  ▼                                   │
+│              eat.i                                  │
+│         ┌────┤ │ │                                  │
+│    eat[i]*   │ │ │ release[i]*                      │
+│    (stay) ───┘ │ └──────────────── (stay)           │
+│                │ think[i]                           │
+│                │                                    │
+│    i < n-1     │      i == n-1                      │
+│   ┌────────────┤                                    │
+│   ▼            ▼                                    │
+│ feeding.(i+1)  eat.all.first                        │
+│   │              │ eat.all (backwards)              │
+└───┘              ▼                                  │
+  take[i+1][i+1] eat.all.comeback                    │
+  (fresh step)    │ take[0][0] (backwards)            │
+                  ▼                                   │
+             eat.all.second                           │
+                  │ eat.all (backwards)               │
+                  ▼                                   │
+             eat.all.think                            │
+                  │ think* (backwards)                │
+                  ▼                                   │
+             eat.all.third ──── release* (stay) ──────┘
+                  │
+                  └──────── eat.all (stay)
+
+
+STATE TABLE
+-----------
+
+State             | Priority | Action searched        | Condition                  | On found -> next state
+------------------|----------|------------------------|----------------------------|-----------------------------------------
+noncontrolable    | 1        | any uncontrollable     | !controllable              | stay
+noncontrolable    | 2        | take[0][0]             | countHungry(from) == n     | step.0
+feeding.i         | 1        | take[i][i]             | t.step == currentStep-1    | step.i
+step.i            | 1        | step[i]                | exists                     | stay
+step.i            | 2        | take[i][(i+1)%n]       | exists                     | eat.i
+eat.i             | 1        | eat[i]*                | prefix match               | stay
+eat.i             | 2        | release[i]*            | prefix match               | stay
+eat.i             | 3        | think[i]               | exists, i < n-1            | feeding.(i+1)
+eat.i             | 3        | think[i]               | exists, i == n-1           | eat.all.first
+eat.all.first     | 1        | eat.all                | exists (search backwards)  | eat.all.comeback
+eat.all.comeback  | 1        | take[0][0]             | exists (search backwards)  | eat.all.second
+eat.all.second    | 1        | eat.all                | exists (search backwards)  | eat.all.think
+eat.all.think     | 1        | think*                 | prefix match (backwards)   | eat.all.third
+eat.all.third     | 1        | release*               | prefix match (forward)     | stay
+eat.all.third     | 2        | eat.all                | exists (forward)           | stay
+
+
+NOTES
+-----
+- State name "state.i" means state with philosopher index i (integer suffix).
+- "backwards" = search from pending.size()-1 down to 0.
+- "forward"   = search from 0 up to pending.size()-1.
+- Main loop: step.i -> eat.i -> feeding.(i+1) -> step.(i+1), repeats for i = 0..n-2.
+- After eat.(n-1) -> eat.all.* chain handles global coordination.
+- Initial state: "noncontrolable".
