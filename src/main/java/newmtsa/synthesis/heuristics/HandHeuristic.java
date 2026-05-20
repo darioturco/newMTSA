@@ -171,7 +171,7 @@ public class HandHeuristic implements Heuristic {
         int i = extractIndex();
         boolean newFrontier = pending.get(pending.size() - 1).step() == currentStep - 1;
         String baseState = i != -1 ? state.substring(0, state.lastIndexOf(".")) : state;
-        if (("descend".equals(baseState) || "descend_alt".equals(baseState)) && !newFrontier) {
+        if ("descend".equals(baseState) && !newFrontier) {
             setState("control.all");
             baseState = "control.all";
         }
@@ -185,7 +185,8 @@ public class HandHeuristic implements Heuristic {
                 if (bestIdx != -1) {
                     ExtendedTransition t = pending.get(bestIdx);
                     if (!allPlanesHaveHeight(t.to())) {
-                        setState("descend." + ((i + 1) % n));
+                        int nextFree = findNextFreePlane(t.to(), i);
+                        setState(nextFree != -1 ? "descend." + nextFree : "control.all");
                     } else {
                         int p0 = planeAtHeight0(t.to());
                         if (p0 != -1) setState("approach." + p0);
@@ -195,27 +196,6 @@ public class HandHeuristic implements Heuristic {
                 String requestTarget = "requestLand[" + i + "]";
                 for (int j = 0; j < pending.size(); j++) {
                     if (requestTarget.equals(pending.get(j).action()) && pending.get(j).step() == currentStep - 1) {
-                        return j;
-                    }
-                }
-                break;
-            case "descend_alt":
-                int bestIdxAlt = findLowestDescend(pending, i);
-                if (bestIdxAlt != -1) {
-                    ExtendedTransition tAlt = pending.get(bestIdxAlt);
-                    if (!allPlanesHaveHeight(tAlt.to())) {
-                        // Order: 1 → 0 → 2 → 3 → ... → n-1
-                        int nextI = (i == 1) ? 0 : (i == 0) ? 2 : i + 1;
-                        setState("descend_alt." + nextI);
-                    } else {
-                        int p0alt = planeAtHeight0(tAlt.to());
-                        if (p0alt != -1) setState("approach." + p0alt);
-                    }
-                    return bestIdxAlt;
-                }
-                String requestTargetAlt = "requestLand[" + i + "]";
-                for (int j = 0; j < pending.size(); j++) {
-                    if (requestTargetAlt.equals(pending.get(j).action()) && pending.get(j).step() == currentStep - 1) {
                         return j;
                     }
                 }
@@ -249,7 +229,7 @@ public class HandHeuristic implements Heuristic {
             case "control.all":
                 for (int j = 0; j < pending.size(); j++) {
                     if ("control.all".equals(pending.get(j).action())) {
-                        setState("descend_alt.1");
+                        setState("descend.1");
                         return j;
                     }
                 }
@@ -540,6 +520,14 @@ public class HandHeuristic implements Heuristic {
                     return Integer.parseInt(monitor0.substring(monitor0.indexOf('[') + 1, monitor0.indexOf(']')));
                 }
             }
+        }
+        return -1;
+    }
+
+    private int findNextFreePlane(String toState, int currentPlane) {
+        for (int offset = 1; offset <= n; offset++) {
+            int j = (currentPlane + offset) % n;
+            if (toState.contains("Airplane(" + j + ")")) return j;
         }
         return -1;
     }
