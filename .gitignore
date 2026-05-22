@@ -27,6 +27,7 @@ Thumbs.db
 .claude/
 
 # Others
+slides/
 plan.txt
 run_test.txt
 *.png
@@ -38,3 +39,4 @@ __pycache__/
 *.csv
 *.onnx
 *.onnx.data
+python/results/

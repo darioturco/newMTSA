@@ -81,13 +81,25 @@ public class DCSForPython {
                         Set<String>          controllable,
                         Heuristic            heuristic,
                         FeatureCompute       featureCompute) {
+        this(instanceName, components, safetyProperties, markingActions, controllable,
+             heuristic, featureCompute, false);
+    }
+
+    public DCSForPython(String               instanceName,
+                        List<LTS>            components,
+                        List<LtlPropertyDef> safetyProperties,
+                        Set<String>          markingActions,
+                        Set<String>          controllable,
+                        Heuristic            heuristic,
+                        FeatureCompute       featureCompute,
+                        boolean              frontierRestriction) {
         this.instanceName  = instanceName;
         this.synthesisType = SynthesisType.NON_BLOCKING;
         this.gr1Engine     = null;
 
         this.nbEngine = new OTFDirectedControledSyntesisNonBlocking(
                 components, safetyProperties, markingActions, controllable,
-                heuristic, false, Integer.MAX_VALUE, false, featureCompute);
+                heuristic, false, Integer.MAX_VALUE, false, featureCompute, frontierRestriction);
 
         this.engine       = this.nbEngine;
         this.components   = nbEngine.getComponents();
@@ -118,6 +130,18 @@ public class DCSForPython {
                         Set<String>          controllable,
                         Heuristic            heuristic,
                         FeatureCompute       featureCompute) {
+        this(instanceName, components, assumptions, guarantees, controllable,
+             heuristic, featureCompute, false);
+    }
+
+    public DCSForPython(String               instanceName,
+                        List<LTS>            components,
+                        List<LtlPropertyDef> assumptions,
+                        List<LtlPropertyDef> guarantees,
+                        Set<String>          controllable,
+                        Heuristic            heuristic,
+                        FeatureCompute       featureCompute,
+                        boolean              frontierRestriction) {
         if (controllable.isEmpty())
             throw new IllegalArgumentException("DCS requires at least one controllable action");
 
@@ -126,7 +150,8 @@ public class DCSForPython {
         this.heuristic     = heuristic;
         this.nbEngine      = null;
         this.gr1Engine     = new OTFDirectedControledSyntesisGR1(
-                components, assumptions, guarantees, controllable, heuristic, false, false, featureCompute);
+                components, assumptions, guarantees, controllable, heuristic, false, false,
+                featureCompute, frontierRestriction);
 
         this.engine       = this.gr1Engine;
         this.components   = gr1Engine.getComponents();
@@ -188,6 +213,13 @@ public class DCSForPython {
     public static DCSForPython fromPath(String fspPath,
                                         String heuristicType,
                                         String featureType) throws IOException {
+        return fromPath(fspPath, heuristicType, featureType, false);
+    }
+
+    public static DCSForPython fromPath(String fspPath,
+                                        String heuristicType,
+                                        String featureType,
+                                        boolean frontierRestriction) throws IOException {
         Path      path  = Paths.get(fspPath);
         FSPModel  model = FSPParser.parse(path);
         String    name  = path.getFileName().toString().replace(".fsp", "");
@@ -210,7 +242,7 @@ public class DCSForPython {
                 safetyProps,
                 new HashSet<>(spec.marking()),
                 new HashSet<>(spec.controllable()),
-                heuristic, fc);
+                heuristic, fc, frontierRestriction);
         }
 
         // GR(1) / blocking path
@@ -246,7 +278,7 @@ public class DCSForPython {
             ? FeatureType.valueOf(featureType.toUpperCase()).create()
             : null;
         return new DCSForPython(name, components, assumptions, guarantees,
-            new HashSet<>(spec.controllable()), heuristic, fc);
+            new HashSet<>(spec.controllable()), heuristic, fc, frontierRestriction);
     }
 
     // ── additional observable state ───────────────────────────────────────────

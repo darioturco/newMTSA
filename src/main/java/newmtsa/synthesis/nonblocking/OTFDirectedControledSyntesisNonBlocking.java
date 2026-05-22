@@ -46,6 +46,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
     private final boolean verbose;
     private final int     expansionLimit;
     private final boolean useNumericIds;
+    private final boolean frontierRestriction;
 
     // ── per-component data ────────────────────────────────────────────────────
 
@@ -125,16 +126,31 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
                                                    int                  expansionLimit,
                                                    boolean              useNumericIds,
                                                    FeatureCompute       featureCompute) {
+        this(components, safetyProperties, markingActions, controllable,
+             heuristic, verbose, expansionLimit, useNumericIds, featureCompute, false);
+    }
+
+    public OTFDirectedControledSyntesisNonBlocking(List<LTS>            components,
+                                                   List<LtlPropertyDef> safetyProperties,
+                                                   Set<String>          markingActions,
+                                                   Set<String>          controllable,
+                                                   Heuristic            heuristic,
+                                                   boolean              verbose,
+                                                   int                  expansionLimit,
+                                                   boolean              useNumericIds,
+                                                   FeatureCompute       featureCompute,
+                                                   boolean              frontierRestriction) {
         if (controllable.isEmpty())
             throw new IllegalArgumentException("DCS requires at least one controllable action");
         if (markingActions.isEmpty())
             throw new IllegalArgumentException("DCS requires at least one marking action");
 
-        this.verbose        = verbose;
-        this.expansionLimit = expansionLimit;
-        this.useNumericIds  = useNumericIds;
-        this.controllable   = Set.copyOf(controllable);
-        this.heuristic      = heuristic;
+        this.verbose             = verbose;
+        this.expansionLimit      = expansionLimit;
+        this.useNumericIds       = useNumericIds;
+        this.frontierRestriction = frontierRestriction;
+        this.controllable        = Set.copyOf(controllable);
+        this.heuristic           = heuristic;
 
         compTrans      = new ArrayList<>();
         compAlpha      = new ArrayList<>();

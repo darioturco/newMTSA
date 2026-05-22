@@ -187,10 +187,11 @@ public class DCSBenchmark {
         };
     }
 
-    private static DCSForPython loadInstance(Path fspPath, String featureType) throws IOException {
+    private static DCSForPython loadInstance(Path fspPath, String featureType,
+                                              boolean frontierRestriction) throws IOException {
         // Heuristic is required by the constructor but never called in RL mode —
         // the ONNX policy overrides all action selection. FIRST is the cheapest placeholder.
-        return DCSForPython.fromPath(fspPath.toString(), "FIRST", featureType);
+        return DCSForPython.fromPath(fspPath.toString(), "FIRST", featureType, frontierRestriction);
     }
 
     private static String extractAgentFromPath(String onnxPath) {
@@ -280,7 +281,8 @@ public class DCSBenchmark {
 
     private static void runHeuristicBenchmark(Path fspDir, String heuristicType,
                                                int budget, String csvPath,
-                                               boolean saveCsv) throws Exception {
+                                               boolean saveCsv,
+                                               boolean frontierRestriction) throws Exception {
         System.out.printf("Heuristic : %s%nBudget    : %d transitions%n%n", heuristicType, budget);
 
         Pattern pat = Pattern.compile(".+-(\\d+)-(\\d+)\\.fsp");
@@ -335,7 +337,7 @@ public class DCSBenchmark {
 
                     DCSForPython dcs;
                     try {
-                        dcs = DCSForPython.fromPath(fsp.toString(), heuristicType, "");
+                        dcs = DCSForPython.fromPath(fsp.toString(), heuristicType, "", frontierRestriction);
                     } catch (Exception e) {
                         System.err.printf("  N=%-3d K=%-3d  ERROR loading: %s%n",
                             n, k, e.getMessage());
@@ -369,14 +371,98 @@ public class DCSBenchmark {
         else         System.out.println("\nDone. (CSV save disabled)");
     }
 
+    // ── feature-vector collection mode ──────────────────────────────────────
+
+    private static void runFeatureVectorBenchmark(Path fspDir, String heuristicType,
+                                                   String featureType, int randomRuns,
+                                                   boolean frontierRestriction) throws Exception {
+        boolean isRandom = "RANDOM".equalsIgnoreCase(heuristicType);
+        int runs = isRandom ? randomRuns : 1;
+        String family         = fspDir.toAbsolutePath().normalize().getFileName().toString();
+        String instanceTarget = DEFAULT_INSTANCE_FILTER.isEmpty()
+                                ? "" : family + "-" + DEFAULT_INSTANCE_FILTER;
+
+        System.out.printf("Feature Vector Collection%nHeuristic : %s%nFeature   : %s%nRuns/inst : %d%nFilter    : %s%n%n",
+            heuristicType, featureType, runs,
+            instanceTarget.isEmpty() ? "(all)" : instanceTarget);
+
+        Pattern pat = Pattern.compile(".+-(\\d+)-(\\d+)\\.fsp");
+        List<Path> fspFiles = new ArrayList<>();
+        try (var stream = Files.walk(fspDir)) {
+            stream.filter(p -> p.toString().endsWith(".fsp"))
+                  .filter(p -> pat.matcher(p.getFileName().toString()).matches())
+                  .filter(p -> instanceTarget.isEmpty()
+                               || p.getFileName().toString().contains(instanceTarget))
+                  .sorted()
+                  .forEach(fspFiles::add);
+        }
+
+        for (Path fsp : fspFiles) {
+            System.out.printf("Processing %s ...%n", fsp.getFileName());
+
+            Map<String, int[]>   vectorByKey = new LinkedHashMap<>();
+            Map<String, Integer> countByKey  = new LinkedHashMap<>();
+
+            for (int run = 0; run < runs; run++) {
+                DCSForPython dcs;
+                try {
+                    dcs = DCSForPython.fromPath(fsp.toString(), heuristicType,
+                                                featureType, frontierRestriction);
+                } catch (Exception e) {
+                    System.err.printf("  ERROR loading (run %d): %s%n", run + 1, e.getMessage());
+                    break;
+                }
+
+                while (!dcs.isExplorationEnded()) {
+                    List<int[]> features = dcs.getFrontierWithFeatures();
+                    for (int[] fv : features) {
+                        String key = Arrays.toString(fv);
+                        countByKey.merge(key, 1, Integer::sum);
+                        vectorByKey.putIfAbsent(key, fv);
+                    }
+                    List<ExtendedTransition> frontier = dcs.getFrontier();
+                    if (frontier.isEmpty()) break;
+                    int idx = dcs.heuristic.pick(frontier);
+                    if (idx < 0 || idx >= frontier.size()) idx = 0;
+                    dcs.expand(idx);
+                }
+            }
+
+            List<Map.Entry<String, Integer>> sorted = new ArrayList<>(countByKey.entrySet());
+            sorted.sort((a, b) -> b.getValue() - a.getValue());
+
+            String instanceName = fsp.getFileName().toString().replaceAll("\\.[^.]+$", "");
+            Path   root         = findProjectRoot(fspDir);
+            Path   outDir       = root.resolve("python").resolve("results")
+                                      .resolve("traces").resolve(family).resolve(heuristicType);
+            Files.createDirectories(outDir);
+            Path   outPath      = outDir.resolve(instanceName + "_"
+                                      + featureType.toLowerCase() + "_feature_vectors.txt");
+
+            try (PrintWriter pw = new PrintWriter(new FileWriter(outPath.toFile()))) {
+                pw.printf("instance=%s  heuristic=%s  feature=%s  runs=%d  unique_vectors=%d%n",
+                    fsp.getFileName(), heuristicType, featureType, runs, sorted.size());
+                pw.println("---");
+                for (var entry : sorted) {
+                    int[] fv = vectorByKey.get(entry.getKey());
+                    java.math.BigInteger dec = java.math.BigInteger.ZERO;
+                    for (int bit : fv) dec = dec.shiftLeft(1).add(java.math.BigInteger.valueOf(bit));
+                    pw.printf("count=%-6d  decimal=%-20s  %s%n", entry.getValue(), dec, entry.getKey());
+                }
+            }
+            System.out.printf("  %d unique vectors → %s%n", sorted.size(), outPath);
+        }
+        System.out.println("\nDone.");
+    }
+
     // ── hardcoded defaults (used when no CLI args are provided) ──────────────
     // Heuristic mode default. "RL" = RL model mode (uses DEFAULT_ONNX_PATH).
     // Options: RL, MCTS_RL, FIRST, RANDOM, BFS, RA, RA_R, RA_E, RA_ER, RA_ERG,
     //          RA_OPEN, RA_R_OPEN, RA_E_OPEN, RA_ER_OPEN, RA_ERG_OPEN
     //private static final String  DEFAULT_HEURISTIC_TYPE = "RL";
-    private static final String  DEFAULT_HEURISTIC_TYPE = "MCTS_RL";
+    private static final String  DEFAULT_HEURISTIC_TYPE = "RA_ERG_OPEN";
     // Feature set used when loading RL instances. Options: BASIC, ROL
-    private static final String  DEFAULT_FEATURE_TYPE   = "ROL";
+    private static final String  DEFAULT_FEATURE_TYPE   = "BASIC";
     //private static final String  DEFAULT_ONNX_PATH     = ".\\python\\results\\blocking\\AT\\rol\\ppo_flat\\ppo_ep0330.onnx";
     private static final String  DEFAULT_ONNX_PATH     = ".\\python\\results\\blocking\\TA\\rol\\ppo_flat\\ppo_ep0750.onnx";
     //private static final String  DEFAULT_ONNX_PATH     = ".\\python\\results\\blocking\\BW\\rol\\ppo_flat\\ppo_ep1115.onnx";
@@ -388,6 +474,14 @@ public class DCSBenchmark {
     private static final String  DEFAULT_FSP_DIR        = ".\\fsp\\Blocking\\Benchmark\\TL\\";
     private static final int     DEFAULT_BUDGET          = 2500;
     private static final boolean DEFAULT_SAVE_CSV        = true;
+    private static final boolean DEFAULT_FRONTIER_RESTRICTION = false;
+    // Execution mode. Options:
+    //   BENCHMARK       – run all instances in the family dir, save results to CSV
+    //   FEATURE_VECTORS – collect all frontier feature vectors per instance, save to .txt
+    //private static final String  DEFAULT_MODE = "BENCHMARK";
+    private static final String  DEFAULT_MODE = "FEATURE_VECTORS";
+    private static final int     DEFAULT_RANDOM_RUNS = 10; // runs per instance when HEURISTIC=RANDOM in FEATURE_VECTORS mode
+    private static final String  DEFAULT_INSTANCE_FILTER = "2-2"; // "" = run all; "2-2" = only <family>-2-2 (family taken from DEFAULT_FSP_DIR)
 
     /**
      * Usage:
@@ -435,11 +529,20 @@ public class DCSBenchmark {
         }
 
         if (!"RL".equals(heuristicType)) {
-            Path   root     = findProjectRoot(fspDir);
-            String csvPath  = root.resolve("python").resolve("results")
-                                  .resolve(heuristicType.toLowerCase() + "_benchmark.csv")
-                                  .toString();
-            runHeuristicBenchmark(fspDir, heuristicType, budget, csvPath, DEFAULT_SAVE_CSV);
+            switch (DEFAULT_MODE) {
+                case "BENCHMARK" -> {
+                    Path   root    = findProjectRoot(fspDir);
+                    String csvPath = root.resolve("python").resolve("results")
+                                        .resolve(heuristicType.toLowerCase() + "_benchmark.csv")
+                                        .toString();
+                    runHeuristicBenchmark(fspDir, heuristicType, budget, csvPath,
+                                          DEFAULT_SAVE_CSV, DEFAULT_FRONTIER_RESTRICTION);
+                }
+                case "FEATURE_VECTORS" ->
+                    runFeatureVectorBenchmark(fspDir, heuristicType, DEFAULT_FEATURE_TYPE,
+                                              DEFAULT_RANDOM_RUNS, DEFAULT_FRONTIER_RESTRICTION);
+                default -> System.err.println("[DCSBenchmark] Unknown DEFAULT_MODE: " + DEFAULT_MODE);
+            }
             return;
         }
 
@@ -505,7 +608,7 @@ public class DCSBenchmark {
 
                         DCSForPython dcs;
                         try {
-                            dcs = loadInstance(fsp, featureType.toUpperCase());
+                            dcs = loadInstance(fsp, featureType.toUpperCase(), DEFAULT_FRONTIER_RESTRICTION);
                         } catch (Exception e) {
                             System.err.printf("  N=%-3d K=%-3d  ERROR loading: %s%n",
                                 n, k, e.getMessage());

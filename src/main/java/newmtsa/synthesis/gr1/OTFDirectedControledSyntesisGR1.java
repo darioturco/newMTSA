@@ -43,6 +43,7 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
     public  final Heuristic   heuristic;
     private final boolean     verbose;
     private final boolean     useNumericIds;
+    private final boolean     frontierRestriction;
 
     // ── GR(1) liveness data ───────────────────────────────────────────────────
     //
@@ -141,13 +142,26 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
                                             boolean              verbose,
                                             boolean              useNumericIds,
                                             FeatureCompute       featureCompute) {
+        this(components, assumptions, guarantees, controllable, heuristic, verbose, useNumericIds, featureCompute, false);
+    }
+
+    public OTFDirectedControledSyntesisGR1(List<LTS>            components,
+                                            List<LtlPropertyDef> assumptions,
+                                            List<LtlPropertyDef> guarantees,
+                                            Set<String>          controllable,
+                                            Heuristic            heuristic,
+                                            boolean              verbose,
+                                            boolean              useNumericIds,
+                                            FeatureCompute       featureCompute,
+                                            boolean              frontierRestriction) {
         if (controllable.isEmpty())
             throw new IllegalArgumentException("DCS requires at least one controllable action");
 
-        this.controllable   = Set.copyOf(controllable);
-        this.heuristic      = heuristic;
-        this.verbose        = verbose;
-        this.useNumericIds  = useNumericIds;
+        this.controllable        = Set.copyOf(controllable);
+        this.heuristic           = heuristic;
+        this.verbose             = verbose;
+        this.useNumericIds       = useNumericIds;
+        this.frontierRestriction = frontierRestriction;
         this.numGuarantees  = guarantees.size();
         this.numAssumptions = assumptions.size();
         this.numPhases      = numAssumptions + numGuarantees;
@@ -256,8 +270,19 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
         } else {
             none.add(s0);
             if (featuresCtx != null && isMarked(s0)) featuresCtx.markedStateFound = true;
-            pending          = new ArrayList<>(succMap.getOrDefault(s0, List.of()));
-            for (ExtendedTransition t : pending) t.setStep(0);
+            List<ExtendedTransition> s0Trans = succMap.getOrDefault(s0, List.of());
+            for (ExtendedTransition nt : s0Trans) nt.setStep(0);
+            pending = new ArrayList<>();
+            if (frontierRestriction) {
+                Deque<ExtendedTransition> forcedQueue = new ArrayDeque<>();
+                distributeTransitions(s0Trans, forcedQueue);
+                while (!forcedQueue.isEmpty()) {
+                    transitionsExplored++;
+                    expandOne(forcedQueue.poll(), forcedQueue);
+                }
+            } else {
+                pending.addAll(s0Trans);
+            }
             explorationEnded = false;
         }
     }
@@ -350,8 +375,23 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
         // the new ordering, or change the test to use Set comparison instead of List.
         ExtendedTransition t = pending.remove(index);
         transitionsExplored++;
-        int frontierStep = transitionsExplored;
 
+        if (frontierRestriction) {
+            Deque<ExtendedTransition> forcedQueue = new ArrayDeque<>();
+            expandOne(t, forcedQueue);
+            while (!forcedQueue.isEmpty()) {
+                transitionsExplored++;
+                expandOne(forcedQueue.poll(), forcedQueue);
+            }
+        } else {
+            expandOne(t, null);
+        }
+
+        if (goals.contains(s0) || errors.contains(s0)) explorationEnded = true;
+    }
+
+    private void expandOne(ExtendedTransition t, Deque<ExtendedTransition> forcedQueue) {
+        int frontierStep = transitionsExplored;
         String e  = t.from();
         String eʹ = t.to();
 
@@ -392,11 +432,27 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
                 if (featuresCtx != null && isMarked(eʹ)) featuresCtx.markedStateFound = true;
                 List<ExtendedTransition> newTransitions = succMap.getOrDefault(eʹ, List.of());
                 for (ExtendedTransition nt : newTransitions) nt.setStep(frontierStep);
-                pending.addAll(newTransitions);
+                if (frontierRestriction) {
+                    distributeTransitions(newTransitions, forcedQueue);
+                } else {
+                    pending.addAll(newTransitions);
+                }
             }
         }
+    }
 
-        if (goals.contains(s0) || errors.contains(s0)) explorationEnded = true;
+    private void distributeTransitions(List<ExtendedTransition> transitions,
+                                       Deque<ExtendedTransition> forcedQueue) {
+        List<ExtendedTransition> ctrlTs = new ArrayList<>();
+        for (ExtendedTransition nt : transitions) {
+            if (controllable.contains(nt.action())) ctrlTs.add(nt);
+            else forcedQueue.add(nt);
+        }
+        if (ctrlTs.size() > 1) {
+            pending.addAll(ctrlTs);
+        } else if (ctrlTs.size() == 1) {
+            forcedQueue.add(ctrlTs.get(0));
+        }
     }
 
     public List<int[]> getFrontierWithFeatures() {

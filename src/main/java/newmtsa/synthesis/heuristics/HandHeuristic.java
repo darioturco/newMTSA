@@ -1,9 +1,109 @@
 package newmtsa.synthesis.heuristics;
 
 import newmtsa.synthesis.ExtendedTransition;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+/**
+ * Hand-crafted heuristics for directed controller synthesis.
+ *
+ * <p>Each family uses an internal finite state machine (variable {@code state}) to guide
+ * which transition is expanded next. The states and transitions for each family:
+ *
+ * <pre>
+ * ─────────────────────────────────────────────────────────────────────
+ *  TL – Transfer Line
+ * ─────────────────────────────────────────────────────────────────────
+ *  States:
+ *    noncontrolable, put.1, get.1, put.2, get.2, ..., put.n, get.n,
+ *    returning, reject, return.get, accept, accept.get
+ *
+ *  Transitions:
+ *    noncontrolable   --(get[0])-----------> put.1
+ *    put.i            --(put[i])-----------> get.i        i = 1..n
+ *    get.i            --(get[i])-----------> put.(i+1)    i = 1..n-1
+ *    get.n            --(get[n])-----------> returning
+ *    returning        --(return*)----------> reject
+ *    reject           --(reject)-----------> return.get
+ *    return.get       --(get[1])-----------> accept
+ *    accept           --(accept)-----------> accept.get
+ *    accept.get       --(get[0])-----------> (terminal)
+ *
+ * ─────────────────────────────────────────────────────────────────────
+ *  DP – Dining Philosophers
+ * ─────────────────────────────────────────────────────────────────────
+ *  States:
+ *    noncontrolable,
+ *    step.0, eat.0, feeding.1, step.1, eat.1, ...,
+ *    feeding.(n-1), step.(n-1), eat.(n-1),
+ *    eat.all.first, eat.all.comeback, eat.all.second,
+ *    eat.all.think, eat.all.third
+ *
+ *  Transitions:
+ *    noncontrolable    --(uncontrollable*)---------> noncontrolable    (self-loop)
+ *    noncontrolable    --(take[0][0], all Hungry)--> step.0
+ *    step.i            --(step[i])----------------> step.i            (self-loop)
+ *    step.i            --(take[i][(i+1)%n])-------> eat.i
+ *    eat.i             --(eat[i]*, release[i]*)---> eat.i             (self-loop)
+ *    eat.i             --(think[i])---------------> feeding.(i+1)     i < n-1
+ *    eat.(n-1)         --(think[n-1])-------------> eat.all.first
+ *    feeding.i         --(take[i][i], fresh)------> step.i
+ *    eat.all.first     --(eat.all)----------------> eat.all.comeback
+ *    eat.all.comeback  --(take[0][0])-------------> eat.all.second
+ *    eat.all.second    --(eat.all)----------------> eat.all.think
+ *    eat.all.think     --(think*)-----------------> eat.all.third
+ *    eat.all.third     --(release*, eat.all)------> eat.all.third     (self-loop / terminal)
+ *
+ * ─────────────────────────────────────────────────────────────────────
+ *  CM – Cat and Mouse
+ * ─────────────────────────────────────────────────────────────────────
+ *  States:
+ *    noncontrolable,
+ *    mouse.turn.0, mouse.turn.1, ..., mouse.turn.(n-1),
+ *    cat.turn
+ *
+ *  Transitions:
+ *    noncontrolable     --(uncontrollable)-----------> noncontrolable       (self-loop)
+ *    noncontrolable     --(no uncontrollable left)---> mouse.turn.0
+ *    mouse.turn.i       --(mouse[i].move[p])---------> mouse.turn.(i+1)    i < n-1
+ *                          p = argmin|p - safePlace|, safePlace = k, fresh preferred
+ *    mouse.turn.(n-1)   --(mouse[n-1].move[p])-------> cat.turn
+ *    cat.turn           --(uncontrollable*)-----------> cat.turn            (self-loop)
+ *    cat.turn           --(mouse.turn)---------------> mouse.turn.0
+ *
+ * ─────────────────────────────────────────────────────────────────────
+ *  AT – Air Traffic  (studied for n = k)
+ * ─────────────────────────────────────────────────────────────────────
+ *  States:
+ *    noncontrolable,
+ *    descend.p  (p = 0..n-1, specific plane),
+ *    descend.all,
+ *    approach.i (i = plane currently at height 0),
+ *    control.all
+ *
+ *  Transitions:
+ *    noncontrolable  --(init, p=0)--------------------> descend.p
+ *    descend.p       --(descend[p][h], !allHeight)-----> descend.nextFree   nextFree != -1
+ *    descend.p       --(descend[p][h], !allHeight)-----> control.all        nextFree == -1
+ *    descend.p       --(descend[p][h],  allHeight)-----> approach.X         !expanded
+ *    descend.p       --(descend[p][h],  allHeight)-----> control.all        expanded
+ *    descend.p       --(requestLand[p], fresh)---------> descend.p          no state change
+ *    descend.p       --(stale frontier)----------------> control.all
+ *    descend.all     --(descend[*][h], !expanded)------> descend.all        (self-loop)
+ *    descend.all     --(descend[*][h],  expanded)------> control.all
+ *    descend.all     --(no descend, planeAt0=i)--------> approach.i
+ *    approach.i      --(approach[i], fresh)------------> approach.i         no state change
+ *    approach.i      --(land[i], allLanded|expanded)---> control.all
+ *    approach.i      --(land[i], !allLanded,!expanded)--> descend.all
+ *    control.all     --(control.all action)------------> descend.1
+ *    control.all     --(requestLand[i], fresh)---------> descend.i
+ *    control.all     --(extendFlight[i], off,freePlane)> descend.freePlane
+ *    control.all     --(extendFlight[i], off,expanded)-> control.all        (self-loop)
+ *    control.all     --(extendFlight[i], off,planeAt0)-> approach.planeAt0
+ *    control.all     --(requestLand[i], off,!expanded)-> descend.i
+ * </pre>
+ */
 public class HandHeuristic implements Heuristic {
 
     private final String family;
@@ -15,6 +115,7 @@ public class HandHeuristic implements Heuristic {
     private Set<String> controllable;
     private int currentStep;
     private final int safePlace; // Only for CM
+    private final Set<String> expandedStates = new HashSet<>();
 
     public HandHeuristic(String family, int n, int k) {
         this.family = family;
@@ -38,7 +139,7 @@ public class HandHeuristic implements Heuristic {
     @Override
     public int pick(List<ExtendedTransition> pending) {
         currentStep++;
-        return switch (family) {
+        int idx = switch (family) {
             case "DP" -> dpPick(pending);
             case "TA" -> taPick(pending);
             case "AT" -> atPick(pending);
@@ -47,6 +148,12 @@ public class HandHeuristic implements Heuristic {
             case "CM" -> cmPick(pending);
             default  -> pending.size() - 1;
         };
+        expandedStates.add(pending.get(idx).to());
+        return idx;
+    }
+
+    private boolean isExpanded(String state) {
+        return expandedStates.contains(state);
     }
 
     private int dpPick(List<ExtendedTransition> pending) {
@@ -175,6 +282,9 @@ public class HandHeuristic implements Heuristic {
             setState("control.all");
             baseState = "control.all";
         }
+        if (currentStep == 81){
+            System.out.println("------------------------- Step Break -------------------------------");
+        }
         switch (baseState) {
             case "noncontrolable":
                 setState("descend.0");
@@ -184,12 +294,19 @@ public class HandHeuristic implements Heuristic {
                 int bestIdx = findLowestDescend(pending, i);
                 if (bestIdx != -1) {
                     ExtendedTransition t = pending.get(bestIdx);
-                    if (!allPlanesHaveHeight(t.to())) {
-                        int nextFree = findNextFreePlane(t.to(), i);
-                        setState(nextFree != -1 ? "descend." + nextFree : "control.all");
+                    if (allPlanesHaveHeight(t.to())) {
+                        if (isExpanded(t.to())) {
+                            setState("control.all");
+                        } else {
+                            setState("approach." + planeAtHeight0(t.to()));
+                        }
                     } else {
-                        int p0 = planeAtHeight0(t.to());
-                        if (p0 != -1) setState("approach." + p0);
+                        int nextFree = findNextFreePlane(t.to());
+                        if(nextFree == -1){
+                            setState("control.all");
+                        }else {
+                            setState("descend." + nextFree);
+                        }
                     }
                     return bestIdx;
                 }
@@ -204,18 +321,30 @@ public class HandHeuristic implements Heuristic {
                 // Busca acciones 'descend[i][a]' donde el from tenga Occupied[i]|Empty
                 int pickIdx = findDescendWithEmptyBelow(pending);
                 if (pickIdx != -1) {
+                    if (isExpanded(pending.get(pickIdx).to())) {
+                        setState("control.all");
+                    }
                     return pickIdx;
                 }
                 // No hay descensos disponibles → pasamos a approach con el avion en altura 0
                 int planeAt0 = planeAtHeight0(pending);
-                if (planeAt0 != -1) { i = planeAt0; setState("approach." + i); }
+                if (planeAt0 != -1) {
+                    i = planeAt0;
+                    setState("approach." + i);
+                }
                 // fall through
             case "approach":
                 String landTarget = "land[" + i + "]";
                 for (int j = 0; j < pending.size(); j++) {
                     ExtendedTransition t = pending.get(j);
                     if (landTarget.equals(t.action()) && t.step() == currentStep - 1) {
-                        setState(countEnd(t.to()) == n ? "control.all" : "descend.all");
+                        if(countEnd(t.to()) == n){
+                            setState("control.all");
+                        }else if(isExpanded(t.to())){
+                            setState("control.all");
+                        }else{
+                            setState("descend.all");
+                        }
                         return j;
                     }
                 }
@@ -234,19 +363,41 @@ public class HandHeuristic implements Heuristic {
                     }
                 }
                 if (newFrontier) {
+                    // Busca el requestLand que se agrego en la ultima expansion
                     int rlIdx = findMinRequestLand(pending);
                     if (rlIdx != -1) {
-                        int plane = extractRLIndex(pending.get(rlIdx).action());
-                        setState("descend." + plane);
+                        setState("descend." + extractIndex(pending.get(rlIdx).action()));
                         return rlIdx;
                     }
-                }
-                for (int j = pending.size() - 1; j >= 0; j--) {
-                    ExtendedTransition t = pending.get(j);
-                    if (!controllable.contains(t.action()) && t.action().startsWith("extendFlight") && hasOff(t.from())) {
-                        return j;
+                }else{
+                    // Busca el proximo extendFlight a expandir, el cual es el que menos tiempo estubo en la frontera y no tenga el fluen on
+                    for (int j = pending.size() - 1; j >= 0; j--) {
+                        ExtendedTransition t = pending.get(j);
+                        if (t.action().startsWith("extendFlight") && hasOff(t.from())) {
+                            int freePlane = findNextFreePlane(t.to());
+                            if (freePlane != -1 && !isExpanded(t.to())) {
+                                setState("descend." + freePlane);
+                            } else if (isExpanded(t.to())) {
+                                setState("control.all");
+                            } else {
+                                setState("approach." + planeAtHeight0(t.to()));
+                            }
+                            return j;
+                        }
+                    }
+                    for (int j = pending.size() - 1; j >= 0; j--) {
+                        ExtendedTransition t = pending.get(j);
+                        if (t.action().startsWith("requestLand") && hasOff(t.from())) {
+                            int plane = extractIndex(t.action());
+                            if (!isExpanded(t.to())) {
+                                setState("descend." + plane);
+                            }
+                            return j;
+                        }
                     }
                 }
+
+
                 break;
         }
         return pending.size() - 1;
@@ -524,10 +675,15 @@ public class HandHeuristic implements Heuristic {
         return -1;
     }
 
-    private int findNextFreePlane(String toState, int currentPlane) {
-        for (int offset = 1; offset <= n; offset++) {
-            int j = (currentPlane + offset) % n;
-            if (toState.contains("Airplane(" + j + ")")) return j;
+    private int findNextFreePlane(String toState) {
+        String[] parts = toState.split("\\|");
+        for (int i = 2 + k; i < 2 + k + n && i < parts.length; i++) {
+            String part = parts[i];
+            int hash = part.indexOf('#');
+            if (hash != -1) part = part.substring(0, hash);
+            if (part.startsWith("Airplane(") && part.endsWith(")")) {
+                return Integer.parseInt(part.substring("Airplane(".length(), part.length() - 1));
+            }
         }
         return -1;
     }
@@ -556,7 +712,11 @@ public class HandHeuristic implements Heuristic {
         int fluent = parts.length - 1;
         for (int p = 1; p <= n; p++) {
             int idx = fluent - p;
-            if (idx < 0 || !parts[idx].startsWith("Holding[")) return false;
+            if (idx < 0) return false;
+            String sub = parts[idx];
+            int hash = sub.indexOf('#');
+            if (hash != -1) sub = sub.substring(0, hash);
+            if (!sub.startsWith("Holding[") && !sub.equals("End")) return false;
         }
         return true;
     }
@@ -579,11 +739,11 @@ public class HandHeuristic implements Heuristic {
         for (int j = 0; j < pending.size(); j++) {
             ExtendedTransition t = pending.get(j);
             String a = t.action();
-            if (a.startsWith("descend[") && a.contains("][") && t.step() == currentStep - 1) {
+            if (a.startsWith("descend[") && t.step() == currentStep - 1) {
                 int plane = descendX(a);
                 String[] parts = t.from().split("\\|");
-                for (int p = 2; p < parts.length - 1; p++) {
-                    if ("Empty".equals(parts[p]) && ("Occupied[" + plane + "]").equals(parts[p + 1])) {
+                for (int p = 3; p < parts.length - 1; p++) {
+                    if (parts[p].contains("Occupied[" + plane + "]") && "Empty".equals(parts[p - 1])) {
                         return j;
                     }
                 }
@@ -599,7 +759,7 @@ public class HandHeuristic implements Heuristic {
             ExtendedTransition t = pending.get(j);
             String a = t.action();
             if (a.startsWith("requestLand[") && t.step() == currentStep - 1) {
-                int plane = extractRLIndex(a);
+                int plane = extractIndex(a);
                 if (plane < bestI) {
                     bestI = plane;
                     bestIdx = j;
@@ -609,7 +769,7 @@ public class HandHeuristic implements Heuristic {
         return bestIdx;
     }
 
-    private int extractRLIndex(String action) {
+    private int extractIndex(String action) {
         int bracket1 = action.indexOf("[");
         int bracket2 = action.indexOf("]");
         return Integer.parseInt(action.substring(bracket1 + 1, bracket2));
