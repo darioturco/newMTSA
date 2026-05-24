@@ -503,7 +503,7 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
 
     public Director getSynthesisResult() {
         if (goals.contains(s0))
-            return Director.realizable(buildDirector(), succMap.size(), transitionsExplored);
+            return Director.realizable(buildDirector(), goals, succMap.size(), transitionsExplored);
         Director.TerminationReason reason;
         if (errors.contains(s0))    reason = Director.TerminationReason.ERROR;
         else if (pending.isEmpty()) reason = Director.TerminationReason.FRONTIER_EMPTY;

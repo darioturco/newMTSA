@@ -164,12 +164,18 @@ public class HandHeuristic implements Heuristic {
         switch (baseState) {
             case "noncontrolable":
                 for (int j = 0; j < pending.size(); j++) {
-                    if (!pending.get(j).isControllable(controllable)) {
+                    if (!controllable.contains(pending.get(j).action())) {
                         return j;
                     }
                 }
-                setState("feeding.0");
-                i = 0;
+                for (int j = 0; j < pending.size(); j++) {
+                    ExtendedTransition t = pending.get(j);
+                    if ("take[0][0]".equals(t.action()) && countHungry(t.from()) == n) {
+                        setState("step.0");
+                        return j;
+                    }
+                }
+                break;
             case "feeding":
                 String targetAction = "take[" + i + "][" + i + "]";
                 for (int j = 0; j < pending.size(); j++) {

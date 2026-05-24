@@ -50,10 +50,13 @@ public class SuperDFSHeuristic implements Heuristic {
         this("unknown", 0, 0);
     }
 
+    private final int safePlace;
+
     public SuperDFSHeuristic(String family, int n, int k) {
-        this.family = family;
-        this.n      = n;
-        this.k      = k;
+        this.family    = family;
+        this.n         = n;
+        this.k         = k;
+        this.safePlace = (2 * k + 1) / 2;
     }
 
     @Override
@@ -169,15 +172,80 @@ public class SuperDFSHeuristic implements Heuristic {
     }
 
     private ExtendedTransition tlPickControllable(List<ExtendedTransition> ctrl) {
-        return ctrl.get(0);
+        Set<String> explored = (ctx != null) ? ctx.exploredStates() : Set.of();
+
+        for (ExtendedTransition t : ctrl) {
+            if (t.action().startsWith("get[") && explored.contains(t.to())) return t;
+        }
+
+        int                bestI = -1;
+        ExtendedTransition best  = null;
+        for (ExtendedTransition t : ctrl) {
+            if (!t.action().startsWith("get[")) continue;
+            int i = extractFirstIndex(t.action());
+            if (!goesToError(t) && i > bestI) {
+                bestI = i;
+                best  = t;
+            }
+        }
+        return best != null ? best : ctrl.get(0);
     }
 
     private ExtendedTransition bwPickControllable(List<ExtendedTransition> ctrl) {
-        return ctrl.get(0);
+        // Rule 1: approve not leading to error
+        for (ExtendedTransition t : ctrl) {
+            if ("approve".equals(t.action()) && !goesToError(t)) return t;
+        }
+
+        // Rule 2: refuse where to-state first substate = 'Rejected'
+        for (ExtendedTransition t : ctrl) {
+            if ("refuse".equals(t.action())) {
+                String[] toParts = t.to().split("\\|");
+                if (toParts.length > 0 && "Rejected".equals(toParts[0])) return t;
+            }
+        }
+
+        // Rule 3: assign[i] with min i where crew i is 'Pending' and no error
+        int                bestI = Integer.MAX_VALUE;
+        ExtendedTransition best  = null;
+        for (ExtendedTransition t : ctrl) {
+            if (!t.action().startsWith("assign[")) continue;
+            if (goesToError(t)) continue;
+            int i = extractFirstIndex(t.action());
+            String[] fromParts = t.from().split("\\|");
+            if (i + 1 < fromParts.length && "Pending".equals(fromParts[i + 1]) && i < bestI) {
+                bestI = i;
+                best  = t;
+            }
+        }
+        return best != null ? best : ctrl.get(0);
     }
 
     private ExtendedTransition cmPickControllable(List<ExtendedTransition> ctrl) {
-        return ctrl.get(0);
+        int                bestDist = Integer.MAX_VALUE;
+        int                bestI    = Integer.MAX_VALUE;
+        ExtendedTransition best     = null;
+
+        for (ExtendedTransition t : ctrl) {
+            String a = t.action();
+            if (!a.startsWith("mouse[")) continue;
+            int mouseI = extractFirstIndex(a);
+            int moveJ  = extractMovePosition(a);
+            int dist   = Math.abs(moveJ - safePlace);
+
+            if (dist < bestDist || (dist == bestDist && mouseI < bestI)) {
+                bestDist = dist;
+                bestI    = mouseI;
+                best     = t;
+            }
+        }
+        return best != null ? best : ctrl.get(0);
+    }
+
+    private int extractMovePosition(String action) {
+        int lastBracket  = action.lastIndexOf('[');
+        int closeBracket = action.lastIndexOf(']');
+        return Integer.parseInt(action.substring(lastBracket + 1, closeBracket));
     }
 
     private ExtendedTransition taPickControllable(List<ExtendedTransition> ctrl) {
@@ -282,7 +350,7 @@ public class SuperDFSHeuristic implements Heuristic {
     // ── helpers ───────────────────────────────────────────────────────────────
 
     private boolean inDirector(Director d, ExtendedTransition t) {
-        return d.enabled().containsKey(t.to());
+        return d.goals().contains(t.to());
     }
 
     private boolean goesToError(ExtendedTransition t) {

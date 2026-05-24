@@ -63,8 +63,8 @@ public class Main {
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ER;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG_OPEN;
-    static final HeuristicType HEURISTIC = HeuristicType.HAND;
-    //static final HeuristicType HEURISTIC = HeuristicType.SUPER_DFS;
+    //static final HeuristicType HEURISTIC = HeuristicType.HAND;
+    static final HeuristicType HEURISTIC = HeuristicType.SUPER_DFS;
     //static final HeuristicType HEURISTIC = HeuristicType.RL;
     //static final HeuristicType HEURISTIC = HeuristicType.MCTS_RL;
 
@@ -126,13 +126,13 @@ public class Main {
             file = Path.of(args[0]);
         }else{
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-15-15.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-3-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-11-15.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp");
-            file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-10-10.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-6-6.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-4-4.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-4-4.fsp");
+            file = Path.of(".\\fsp\\Blocking\\Benchmark\\BW\\BW-4-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\test21.lts");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
             //file = Path.of("C:\\Users\\diort\\Downloads\\data\\krka_et_al_FSE14\\reference_models\\ElemNumber$NumberFormatStringTokenizer.lts");
@@ -197,6 +197,7 @@ public class Main {
 
         Director result;
         String mode;
+        long startTime = System.nanoTime();
         if (spec.nonblocking()) {
             mode = "NonBlocking";
             System.out.println("\n--- Non-Blocking DCS: " + spec.name() + " ---");
@@ -206,6 +207,7 @@ public class Main {
             System.out.println("\n--- GR(1) Synthesis: " + spec.name() + " ---");
             result = runGR1(model, spec, verbose, VERBOSE, recorder);
         }
+        long elapsedMs = (System.nanoTime() - startTime) / 1_000_000;
 
         boolean realizable = result.isRealizable();
         System.out.println("  Result: " + (realizable ? "REALIZABLE" : "UNREALIZABLE"));
@@ -213,6 +215,7 @@ public class Main {
         System.out.println("  Expansions: " + recorder.getTrace().size());
         int directorTransitionCount = result.enabled().values().stream().mapToInt(List::size).sum();
         System.out.println("  Director transitions: " + directorTransitionCount);
+        System.out.println("  Time: " + elapsedMs + " ms");
 
         try {
             if(SAVE_SOL) SolutionSaver.saveSol(file, result, mode, recorder.getTrace(), HEURISTIC, FEATURE_TYPE);
