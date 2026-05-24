@@ -30,6 +30,13 @@ public interface OTFDirectedControlledSynthesis {
     int                      getTransitionsExplored();
     int                      getStatesExplored();
 
+    /**
+     * Returns the transitions that would be added to the frontier if {@code t} is expanded next.
+     * Empty if {@code t.to()} is already visited or would be classified as losing.
+     * Side-effect: may pre-explore {@code t.to()} (idempotent).
+     */
+    default List<ExtendedTransition> getFutureAddToFrontier(ExtendedTransition t) { return Collections.emptyList(); }
+
     /** Returns ordered feature names matching positions in {@link #getFrontierWithFeatures()} vectors. Empty list when no feature compute is set. */
     default List<String> getFeatureNames() { return Collections.emptyList(); }
 

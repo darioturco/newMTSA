@@ -62,8 +62,9 @@ public class Main {
     //static final HeuristicType HEURISTIC = HeuristicType.RA_E;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ER;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
-    static final HeuristicType HEURISTIC = HeuristicType.RA_ERG_OPEN;
-    //static final HeuristicType HEURISTIC = HeuristicType.HAND;
+    //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG_OPEN;
+    static final HeuristicType HEURISTIC = HeuristicType.HAND;
+    //static final HeuristicType HEURISTIC = HeuristicType.SUPER_DFS;
     //static final HeuristicType HEURISTIC = HeuristicType.RL;
     //static final HeuristicType HEURISTIC = HeuristicType.MCTS_RL;
 
@@ -71,7 +72,7 @@ public class Main {
     static final boolean USE_NUMERIC_STATE_IDS = false;
 
     static final boolean VERBOSE = true; // Print heuristic frontier and transition scores before each expansion (RA shows distances).
-    static final boolean SAVE_SOL = false; // Flag to save the trace in a .sol file
+    static final boolean SAVE_SOL = true; // Flag to save the trace in a .sol file
     static final boolean FRONTIER_RESTRICTION = false; // When true: uncontrollable + single-controllable transitions are expanded immediately on state discovery; multiple-controllable transitions go to the frontier for heuristic selection.
     static final boolean SAVE_FEATURE_VECTORS = false; // When true: collect all feature vectors seen across runs and write them to a .txt file alongside the FSP.
     static final int     RANDOM_RUNS          = 10;    // Number of runs when HEURISTIC=RANDOM and SAVE_FEATURE_VECTORS=true; other heuristics always do 1 run.
@@ -112,6 +113,7 @@ public class Main {
         @Override public void printFrontier(List<ExtendedTransition> pending, int pickedIndex) {
             delegate.printFrontier(pending, pickedIndex);
         }
+        @Override public void notifyExplorationEnd(newmtsa.synthesis.Director result) { delegate.notifyExplorationEnd(result); }
 
         List<TraceStep> getTrace() { return trace; }
     }
@@ -123,12 +125,12 @@ public class Main {
         if(args.length > 0){
             file = Path.of(args[0]);
         }else{
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-1-15.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-3-3.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-15-15.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-11-15.fsp");
-            file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-2-3.fsp");
+            file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-10-10.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-6-6.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\test21.lts");
@@ -174,7 +176,7 @@ public class Main {
         Heuristic baseH;
         if (HEURISTIC == HeuristicType.RANDOM) {
             baseH = new RandomHeuristic(SCRIPT);
-        } else if (HEURISTIC == HeuristicType.HAND) {
+        } else if (HEURISTIC == HeuristicType.HAND || HEURISTIC == HeuristicType.SUPER_DFS) {
             String family = (file.getParent() != null) ? file.getParent().getFileName().toString() : "unknown";
             String fname = file.getFileName().toString();
             int n = 0, k = 0;
@@ -185,7 +187,9 @@ public class Main {
                     k = Integer.parseInt(parts[parts.length - 1]);
                 }
             }
-            baseH = new HandHeuristic(family, n, k);
+            baseH = HEURISTIC == HeuristicType.HAND
+                    ? new HandHeuristic(family, n, k)
+                    : new newmtsa.synthesis.heuristics.SuperDFSHeuristic(family, n, k);
         } else {
             baseH = HEURISTIC.create();
         }

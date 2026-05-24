@@ -13,16 +13,15 @@ import java.util.Set;
  *
  * <pre>
  * ─────────────────────────────────────────────────────────────────────
- *  TL – Transfer Line
+ *  TL – Transfer Line                              initial state: get.0
  * ─────────────────────────────────────────────────────────────────────
  *  States:
- *    noncontrolable, put.1, get.1, put.2, get.2, ..., put.n, get.n,
+ *    get.0 (initial), put.1, get.1, put.2, get.2, ..., put.n, get.n,
  *    returning, reject, return.get, accept, accept.get
  *
  *  Transitions:
- *    noncontrolable   --(get[0])-----------> put.1
+ *    get.0 / get.i    --(get[i])-----------> put.(i+1)    i = 0..n-1
  *    put.i            --(put[i])-----------> get.i        i = 1..n
- *    get.i            --(get[i])-----------> put.(i+1)    i = 1..n-1
  *    get.n            --(get[n])-----------> returning
  *    returning        --(return*)----------> reject
  *    reject           --(reject)-----------> return.get
@@ -56,21 +55,19 @@ import java.util.Set;
  *    eat.all.third     --(release*, eat.all)------> eat.all.third     (self-loop / terminal)
  *
  * ─────────────────────────────────────────────────────────────────────
- *  CM – Cat and Mouse
+ *  CM – Cat and Mouse                              initial state: mouse.turn.0
  * ─────────────────────────────────────────────────────────────────────
  *  States:
- *    noncontrolable,
- *    mouse.turn.0, mouse.turn.1, ..., mouse.turn.(n-1),
- *    cat.turn
+ *    mouse.turn.0 (initial), mouse.turn.1, ..., mouse.turn.(n-1),
+ *    cat.turn, mouse.sync
  *
  *  Transitions:
- *    noncontrolable     --(uncontrollable)-----------> noncontrolable       (self-loop)
- *    noncontrolable     --(no uncontrollable left)---> mouse.turn.0
- *    mouse.turn.i       --(mouse[i].move[p])---------> mouse.turn.(i+1)    i < n-1
- *                          p = argmin|p - safePlace|, safePlace = k, fresh preferred
- *    mouse.turn.(n-1)   --(mouse[n-1].move[p])-------> cat.turn
- *    cat.turn           --(uncontrollable*)-----------> cat.turn            (self-loop)
- *    cat.turn           --(mouse.turn)---------------> mouse.turn.0
+ *    mouse.turn.i     --(mouse[i].move[p])---------> mouse.turn.(i+1)    i < n-1
+ *                        p = argmin|p - safePlace|, safePlace = k, fresh preferred
+ *    mouse.turn.(n-1) --(mouse[n-1].move[p])-------> cat.turn
+ *    cat.turn         --(uncontrollable, !mouse.turn)-> cat.turn          (self-loop)
+ *    cat.turn         --(no cat moves left)----------> mouse.sync
+ *    mouse.sync       --(mouse.turn)----------------> mouse.turn.0
  *
  * ─────────────────────────────────────────────────────────────────────
  *  AT – Air Traffic  (studied for n = k)
@@ -111,7 +108,7 @@ public class HandHeuristic implements Heuristic {
     private final int k;
     private SynthesisContext ctx;
     private boolean verbose;
-    private String state = "noncontrolable";
+    private String state;
     private Set<String> controllable;
     private int currentStep;
     private final int safePlace; // Only for CM
@@ -122,6 +119,11 @@ public class HandHeuristic implements Heuristic {
         this.n = n;
         this.k = k;
         this.safePlace = (2 * k + 1) / 2;
+        this.state = switch (family) {
+            case "TL" -> "get.0";
+            case "CM" -> "mouse.turn.0";
+            default   -> "noncontrolable";
+        };
     }
 
     @Override
@@ -162,18 +164,12 @@ public class HandHeuristic implements Heuristic {
         switch (baseState) {
             case "noncontrolable":
                 for (int j = 0; j < pending.size(); j++) {
-                    if (!controllable.contains(pending.get(j).action())) {
+                    if (!pending.get(j).isControllable(controllable)) {
                         return j;
                     }
                 }
-                for (int j = 0; j < pending.size(); j++) {
-                    ExtendedTransition t = pending.get(j);
-                    if ("take[0][0]".equals(t.action()) && countHungry(t.from()) == n) {
-                        setState("step.0");
-                        return j;
-                    }
-                }
-                break;
+                setState("feeding.0");
+                i = 0;
             case "feeding":
                 String targetAction = "take[" + i + "][" + i + "]";
                 for (int j = 0; j < pending.size(); j++) {
@@ -281,9 +277,6 @@ public class HandHeuristic implements Heuristic {
         if ("descend".equals(baseState) && !newFrontier) {
             setState("control.all");
             baseState = "control.all";
-        }
-        if (currentStep == 81){
-            System.out.println("------------------------- Step Break -------------------------------");
         }
         switch (baseState) {
             case "noncontrolable":
@@ -396,8 +389,6 @@ public class HandHeuristic implements Heuristic {
                         }
                     }
                 }
-
-
                 break;
         }
         return pending.size() - 1;
@@ -407,13 +398,10 @@ public class HandHeuristic implements Heuristic {
         int i = extractIndex();
         String baseState = i != -1 ? state.substring(0, state.lastIndexOf(".")) : state;
         switch (baseState) {
-            case "noncontrolable":
-                setState("get.0");
-                // fall through
             case "get":
                 for (int j = pending.size() - 1; j >= 0; j--) {
                     ExtendedTransition t = pending.get(j);
-                    if (("get[" + i + "]").equals(t.action()) && (i == 0 || t.step() == currentStep - 1)) {
+                    if (("get[" + i + "]").equals(t.action())) {
                         setState(i == n ? "returning" : "put." + (i + 1));
                         return j;
                     }
@@ -566,16 +554,8 @@ public class HandHeuristic implements Heuristic {
         String baseState = i != -1 ? state.substring(0, state.lastIndexOf(".")) : state;
 
         switch (baseState) {
-            case "noncontrolable":
-                for (int j = 0; j < pending.size(); j++) {
-                    if (!controllable.contains(pending.get(j).action())) {
-                        return j;
-                    }
-                }
-                setState("mouse.turn.0");
-                i = 0;
-                // fall through
             case "mouse.turn":
+                // Solo expande mouse[i].move[j]
                 int bestIdx = findBestMouseMove(pending, i);
                 if (bestIdx != -1) {
                     if (i + 1 >= n) {
@@ -586,13 +566,21 @@ public class HandHeuristic implements Heuristic {
                     return bestIdx;
                 }
                 break;
+
+
             case "cat.turn":
+                // Expande cualquier transicion no controlable que no sea mouse.turn (safe, cat.turn, cat[i].move[j])
                 for (int j = 0; j < pending.size(); j++) {
-                    String action = pending.get(j).action();
-                    if (!controllable.contains(action) && !"mouse.turn".equals(action)) {
+                    ExtendedTransition t = pending.get(j);
+                    if (!t.isControllable(controllable) && !"mouse.turn".equals(t.action())) {
                         return j;
                     }
                 }
+                setState("mouse.sync");
+                // fall through
+
+            case "mouse.sync":
+                // Solo expande mouse.turn
                 for (int j = 0; j < pending.size(); j++) {
                     if ("mouse.turn".equals(pending.get(j).action())) {
                         setState("mouse.turn.0");

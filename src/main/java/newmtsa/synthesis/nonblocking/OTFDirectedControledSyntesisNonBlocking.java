@@ -234,6 +234,9 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
             @Override public boolean verbose() {
                 return OTFDirectedControledSyntesisNonBlocking.this.verbose;
             }
+            @Override public List<ExtendedTransition> getFutureAddToFrontier(ExtendedTransition t) {
+                return OTFDirectedControledSyntesisNonBlocking.this.getFutureAddToFrontier(t);
+            }
         };
         heuristic.init(hCtx);
 
@@ -374,6 +377,15 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
     public List<String> getFeatureNames()    { return featureCompute != null ? featureCompute.getFeatureNames()    : Collections.emptyList(); }
     public String       getFeatureGroupName(){ return featureCompute != null ? featureCompute.getFeatureGroupName() : null; }
 
+    @Override
+    public List<ExtendedTransition> getFutureAddToFrontier(ExtendedTransition t) {
+        String eʹ = t.to();
+        if (isVisited(eʹ)) return List.of();
+        exploreState(eʹ);
+        if (isLosing(eʹ)) return List.of();
+        return List.copyOf(succMap.getOrDefault(eʹ, List.of()));
+    }
+
     public boolean isMarked(String s) {
         String[] parts = splitState(s);
         for (int i = 0; i < components.size(); i++) {
@@ -390,7 +402,9 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
 
         if (isExplorationEnded()) {
             log("Initial state is losing (deadlock or illegal) — UNREALIZABLE");
-            return getSynthesisResult();
+            Director r = getSynthesisResult();
+            heuristic.notifyExplorationEnd(r);
+            return r;
         }
 
         while (!isExplorationEnded()) {
@@ -418,24 +432,32 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
                 log("s0 ∈ Goals — REALIZABLE"
                         + " | states=" + getStatesExplored()
                         + " transitions=" + getTransitionsExplored());
-                return getSynthesisResult();
+                Director r = getSynthesisResult();
+                heuristic.notifyExplorationEnd(r);
+                return r;
             }
             if (isExplorationEnded()) {
                 log("s0 ∈ Errors — UNREALIZABLE"
                         + " | states=" + getStatesExplored()
                         + " transitions=" + getTransitionsExplored());
-                return getSynthesisResult();
+                Director r = getSynthesisResult();
+                heuristic.notifyExplorationEnd(r);
+                return r;
             }
             if (getTransitionsExplored() >= expansionLimit) {
                 log("Budget exhausted (" + expansionLimit + ") — aborting");
-                return Director.unrealizable(getStatesExplored(), getTransitionsExplored(), Director.TerminationReason.BUDGET_EXHAUSTED);
+                Director r = Director.unrealizable(getStatesExplored(), getTransitionsExplored(), Director.TerminationReason.BUDGET_EXHAUSTED);
+                heuristic.notifyExplorationEnd(r);
+                return r;
             }
         }
 
         log("Exploration complete"
                 + " | states=" + getStatesExplored()
                 + " transitions=" + getTransitionsExplored());
-        return getSynthesisResult();
+        Director r = getSynthesisResult();
+        heuristic.notifyExplorationEnd(r);
+        return r;
     }
 
     // ── private helpers ───────────────────────────────────────────────────────

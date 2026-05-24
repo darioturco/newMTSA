@@ -1,5 +1,6 @@
 package newmtsa.synthesis.heuristics;
 
+import newmtsa.synthesis.Director;
 import newmtsa.synthesis.ExtendedTransition;
 import java.util.List;
 
@@ -33,4 +34,14 @@ public interface Heuristic {
      * @param pickedIndex index of the transition that was picked
      */
     default void printFrontier(List<ExtendedTransition> pending, int pickedIndex) {}
+
+    /**
+     * Called by the synthesis engine once, immediately before it returns the final result.
+     * Heuristics that accumulate statistics or decisions during exploration should override
+     * this to print or persist their summary.
+     *
+     * @param result the final {@link Director} (may be unrealizable, in which case
+     *               {@link Director#enabled()} is empty)
+     */
+    default void notifyExplorationEnd(Director result) {}
 }

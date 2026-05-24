@@ -65,7 +65,13 @@ public enum HeuristicType {
      * Simulation count / cPuct / depth: {@code mcts.simulations}, {@code mcts.cpuct}, {@code mcts.depth}.
      */
     MCTS_RL,
-    HAND;
+    HAND,
+    /**
+     * SuperDFS: depth-first search with a stack (pile) and an ignore list.
+     * Noncontrollable transitions are prioritised; multiple controllable choices defer
+     * all but the first to the ignore list.  Prints a decision log at the end.
+     */
+    SUPER_DFS;
 
     /** Human-readable parameter string for the trace file. */
     public String params() {
@@ -110,6 +116,10 @@ public enum HeuristicType {
                     Integer.parseInt(System.getProperty("mcts.depth",        "10")));
             case HAND          -> new HandHeuristic(
                     System.getProperty("hand.family", "unknown"), 0, 0);
+            case SUPER_DFS     -> new SuperDFSHeuristic(
+                    System.getProperty("superdfs.family", "unknown"),
+                    Integer.parseInt(System.getProperty("superdfs.n", "0")),
+                    Integer.parseInt(System.getProperty("superdfs.k", "0")));
         };
     }
 }

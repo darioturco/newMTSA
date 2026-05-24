@@ -79,4 +79,11 @@ public interface SynthesisContext {
      * Default: empty (no parent tracking).
      */
     default Set<String> predecessorsOf(String compositeState) { return Set.of(); }
+
+    /**
+     * Returns the transitions that would be added to the frontier if {@code t} is expanded next.
+     * Empty if {@code t.to()} is already visited or would be classified as losing.
+     * May pre-explore {@code t.to()} as a side effect (idempotent).
+     */
+    default List<ExtendedTransition> getFutureAddToFrontier(ExtendedTransition t) { return List.of(); }
 }

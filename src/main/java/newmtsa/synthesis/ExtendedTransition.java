@@ -1,6 +1,7 @@
 package newmtsa.synthesis;
 
 import java.util.Objects;
+import java.util.Set;
 
 /** A transition in the extended state space: from → action → to. */
 public final class ExtendedTransition {
@@ -23,11 +24,12 @@ public final class ExtendedTransition {
         this.step = step;
     }
 
-    public String from()      { return from; }
-    public String action()    { return action; }
-    public String to()        { return to; }
-    public int    step()      { return step; }
-    public void   setStep(int s) { this.step = s; }
+    public String  from()                              { return from; }
+    public String  action()                            { return action; }
+    public String  to()                                { return to; }
+    public int     step()                              { return step; }
+    public void    setStep(int s)                      { this.step = s; }
+    public boolean isControllable(Set<String> ctrl)    { return ctrl.contains(action); }
 
     @Override
     public boolean equals(Object o) {

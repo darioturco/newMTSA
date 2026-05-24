@@ -247,6 +247,9 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
             @Override public Set<String>              predecessorsOf(String s)    { return parents.getOrDefault(s, Set.of()); }
             @Override public String                   plantStateKey(String nodeId) { return plantPart(nodeId); }
             @Override public boolean                  verbose()                   { return OTFDirectedControledSyntesisGR1.this.verbose; }
+            @Override public List<ExtendedTransition> getFutureAddToFrontier(ExtendedTransition t) {
+                return OTFDirectedControledSyntesisGR1.this.getFutureAddToFrontier(t);
+            }
         });
 
         this.featureCompute = featureCompute;
@@ -300,7 +303,9 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
 
         if (explorationEnded) {
             log("Initial state is losing — UNREALIZABLE");
-            return getSynthesisResult();
+            Director r = getSynthesisResult();
+            heuristic.notifyExplorationEnd(r);
+            return r;
         }
 
         while (!isExplorationEnded()) {
@@ -325,20 +330,26 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
                 log("s0 ∈ Goals — REALIZABLE | states=" + succMap.size()
                         + " transitions=" + transitionsExplored);
                 logExplorationSummary();
-                return getSynthesisResult();
+                Director r = getSynthesisResult();
+                heuristic.notifyExplorationEnd(r);
+                return r;
             }
             if (explorationEnded) {
                 log("s0 ∈ Errors — UNREALIZABLE | states=" + succMap.size()
                         + " transitions=" + transitionsExplored);
                 logExplorationSummary();
-                return getSynthesisResult();
+                Director r = getSynthesisResult();
+                heuristic.notifyExplorationEnd(r);
+                return r;
             }
         }
 
         log("Exploration complete | states=" + succMap.size()
                 + " transitions=" + transitionsExplored);
         logExplorationSummary();
-        return getSynthesisResult();
+        Director r = getSynthesisResult();
+        heuristic.notifyExplorationEnd(r);
+        return r;
     }
 
     // ── step interface ────────────────────────────────────────────────────────
@@ -467,6 +478,15 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
 
     public List<String> getFeatureNames()    { return featureCompute != null ? featureCompute.getFeatureNames()    : Collections.emptyList(); }
     public String       getFeatureGroupName(){ return featureCompute != null ? featureCompute.getFeatureGroupName() : null; }
+
+    @Override
+    public List<ExtendedTransition> getFutureAddToFrontier(ExtendedTransition t) {
+        String eʹ = t.to();
+        if (isVisited(eʹ)) return List.of();
+        exploreState(eʹ);
+        if (isLosing(eʹ)) return List.of();
+        return List.copyOf(succMap.getOrDefault(eʹ, List.of()));
+    }
 
     public boolean       isRealizable()          { return goals.contains(s0); }
     public int           getStatesExplored()      { return succMap.size(); }
@@ -999,27 +1019,7 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
 
     // ── logging ───────────────────────────────────────────────────────────────
 
-    private void logExplorationSummary() {
-        if (!verbose) return;
-        System.out.println("[DCS-GR1] ── Components ────────────────────────────────");
-        for (int i = 0; i < components.size(); i++)
-            System.out.println("[DCS-GR1]   [" + i + "] " + components.get(i).name());
-        System.out.println("[DCS-GR1] ── Exploration summary ──────────────────────");
-        System.out.printf("[DCS-GR1] %-50s  %-7s  %-7s  %-12s%n", "plant state", "phase", "marked", "class");
-        System.out.println("[DCS-GR1] " + "-".repeat(85));
-        List<String> sorted = new ArrayList<>(succMap.keySet());
-        Collections.sort(sorted);
-        for (String nodeId : sorted) {
-            String marked = isMarked(nodeId) ? "YES" : "no";
-            String cls;
-            if (goals.contains(nodeId))       cls = "GOAL";
-            else if (errors.contains(nodeId)) cls = "ERROR";
-            else                              cls = "none";
-            System.out.printf("[DCS-GR1] %-50s  %-7s  %-7s  %-12s%n",
-                    displayPlant(nodeId), phaseOf(nodeId), marked, cls);
-        }
-        System.out.println("[DCS-GR1] " + "-".repeat(85));
-    }
+    private void logExplorationSummary() {}
 
     /**
      * Returns the display string for the plant-state portion of {@code nodeId}.
