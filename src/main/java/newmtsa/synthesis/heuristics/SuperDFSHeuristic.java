@@ -183,6 +183,7 @@ public class SuperDFSHeuristic implements Heuristic {
      * if none, pick where philosopher i is "Hungry" (min i).
      */
     private ExtendedTransition dpPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
+        if (canReturnNull) return null;
         int                readyI = Integer.MAX_VALUE;
         ExtendedTransition ready  = null;
         int                hungryI = Integer.MAX_VALUE;
@@ -209,6 +210,7 @@ public class SuperDFSHeuristic implements Heuristic {
     }
 
     private ExtendedTransition tlPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
+        if (canReturnNull) return null;
         Set<String> explored = (ctx != null) ? ctx.exploredStates() : Set.of();
 
         for (ExtendedTransition t : ctrl) {
@@ -229,6 +231,7 @@ public class SuperDFSHeuristic implements Heuristic {
     }
 
     private ExtendedTransition bwPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
+        if (canReturnNull) return null;
         // Rule 1: approve not leading to error
         for (ExtendedTransition t : ctrl) {
             if ("approve".equals(t.action()) && !goesToError(t)) return t;
@@ -259,6 +262,7 @@ public class SuperDFSHeuristic implements Heuristic {
     }
 
     private ExtendedTransition cmPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
+        if (canReturnNull) return null;
         int                bestDist = Integer.MAX_VALUE;
         int                bestI    = Integer.MAX_VALUE;
         ExtendedTransition best     = null;
@@ -300,6 +304,7 @@ public class SuperDFSHeuristic implements Heuristic {
     }
 
     private ExtendedTransition taPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
+        if (canReturnNull) return null;
         return ctrl.get(0);
     }
 
@@ -310,6 +315,7 @@ public class SuperDFSHeuristic implements Heuristic {
      * Among valid candidates, pick the one with lowest j.
      */
     private ExtendedTransition atPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
+        if (canReturnNull) return null;
         for (ExtendedTransition t : ctrl) {
             if (t.action().startsWith("approach[") && heightsAreConsecutive(t.from())) return t;
         }
