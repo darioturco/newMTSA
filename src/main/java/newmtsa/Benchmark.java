@@ -6,63 +6,46 @@ import newmtsa.parser.ast.FSPModel;
 import newmtsa.parser.ast.LTS;
 import newmtsa.parser.ast.LtlPropertyDef;
 import newmtsa.synthesis.Director;
-import newmtsa.synthesis.heuristics.HeuristicType;
-import newmtsa.synthesis.nonblocking.OTFDirectedControledSyntesisNonBlocking;
+import newmtsa.synthesis.gr1.OTFDirectedControledSyntesisGR1;
+import newmtsa.synthesis.heuristics.SuperDFSHeuristic;
 
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.nio.file.*;
 import java.util.*;
 import java.util.stream.Stream;
 
 /**
- * Benchmark runner that evaluates all non-blocking heuristics across all
- * instance families (AT, BW, CM, DP, TA, TL).
+ * Benchmark runner: SuperDFS heuristic on blocking (GR1) instances.
  *
- * <p>An instance is considered "solved" if synthesis finishes in fewer than
- * {@link #EXPANSION_LIMIT} transitions expanded.  Results are written to
- * {@code benchmark_results.csv} in the project root.
+ * <p>Families: AT, BW, CM, DP, TL (TA excluded — picker not yet implemented).
+ * Budget: 15 000 expansions per instance.
+ * Output CSV: same format as RA.csv → Instance,N,K,Name,Transitions,Time
  *
- * <p>Run with: {@code mvn exec:java -Dexec.mainClass=newmtsa.Benchmark}
+ * <p>Run: {@code mvn exec:java -Dexec.mainClass=newmtsa.Benchmark}
  */
 public class Benchmark {
 
-    static final int EXPANSION_LIMIT = 2500;
-
-    static final String BENCHMARK_DIR = "fsp/NonBlocking/Benchmark";
-
-    static final String[] FAMILIES = {"AT", "BW", "CM", "DP", "TA", "TL"};
-
-    static final HeuristicType[] HEURISTICS = {
-            HeuristicType.RANDOM,
-            HeuristicType.FIRST,
-            HeuristicType.BFS,
-            HeuristicType.RA,
-            HeuristicType.RA_ER,
-    };
+    static final int    EXPANSION_LIMIT = 15_000;
+    static final String BENCHMARK_DIR   = "fsp/Blocking/Benchmark";
+    static final String[] FAMILIES      = {"AT", "BW", "CM", "DP", "TL"};
 
     public static void main(String[] args) throws IOException {
-        Path experimentsDir = Paths.get("Experiments");
-        Files.createDirectories(experimentsDir);
-        String csvPath = experimentsDir.resolve("benchmark_results.csv").toString();
+        Path outDir = Paths.get("Experiments");
+        Files.createDirectories(outDir);
+        String csvPath = outDir.resolve("SuperDFS_results.csv").toString();
 
-        System.out.println("=== NonBlocking Heuristic Benchmark ===");
-        System.out.printf("Expansion limit : %d%n", EXPANSION_LIMIT);
-        System.out.printf("Output CSV      : %s%n%n", csvPath);
+        System.out.println("=== SuperDFS Blocking Benchmark ===");
+        System.out.printf("Budget: %d  |  Output: %s%n%n", EXPANSION_LIMIT, csvPath);
 
         try (PrintWriter csv = new PrintWriter(new FileWriter(csvPath))) {
-            // Header
-            csv.print("family,n,k,heuristic,solved,transitions");
-            csv.println();
+            csv.println("Instance,N,K,Name,Transitions,Time");
 
             for (String family : FAMILIES) {
                 System.out.printf("--- Family: %s ---%n", family);
                 Path dir = Paths.get(BENCHMARK_DIR, family);
 
-                // Collect all files for this family, sorted by (n, k)
                 List<Path> files;
                 try (Stream<Path> stream = Files.walk(dir)) {
                     files = stream
@@ -71,132 +54,97 @@ public class Benchmark {
                             .toList();
                 }
 
-                // Per-heuristic: the lowest N at which it first failed.
-                // Any instance with N > this threshold is skipped (assumed to fail).
-                Map<HeuristicType, Integer> failedFromN = new EnumMap<>(HeuristicType.class);
-
                 for (Path file : files) {
                     int[] nk = parseNKArray(file.getFileName().toString());
                     int n = nk[0], k = nk[1];
 
-                    FSPModel model = null;
+                    BenchmarkRun run = runInstance(file, family, n, k);
+                    boolean solved = run.transitions < EXPANSION_LIMIT;
+                    long timeOut = solved ? run.timeMs : -1;
 
-                    // Collect results for the end-of-instance summary line
-                    Map<HeuristicType, Integer> instanceResults = new EnumMap<>(HeuristicType.class);
-
-                    for (HeuristicType type : HEURISTICS) {
-                        // Skip if this heuristic already failed at a smaller N
-                        if (n > failedFromN.getOrDefault(type, Integer.MAX_VALUE)) {
-                            csv.printf("%s,%d,%d,%s,%b,%d%n",
-                                    family, n, k, type.name(), false, -1);
-                            instanceResults.put(type, -1);
-                            continue;
-                        }
-
-                        // Lazy-parse the model only when at least one heuristic needs it
-                        if (model == null) {
-                            try {
-                                model = FSPParser.parse(file);
-                            } catch (Exception e) {
-                                System.err.printf("  PARSE ERROR %s: %s%n", file.getFileName(), e.getMessage());
-                                break; // skip all heuristics for this file
-                            }
-                            ControllerSpecDef spec = findNonBlockingSpec(model);
-                            if (spec == null) {
-                                System.err.printf("  NO SPEC in %s — skipping%n", file.getFileName());
-                                model = null;
-                                break;
-                            }
-                        }
-
-                        ControllerSpecDef spec = findNonBlockingSpec(model);
-                        List<LtlPropertyDef> safetyProps = collectSafetyProps(model, spec);
-                        List<LTS> components = new ArrayList<>(model.processes());
-
-                        BenchmarkRun run = runWithLimit(components, safetyProps, spec, type);
-                        boolean solved = run.transitions < EXPANSION_LIMIT;
-
-                        if (!solved) {
-                            failedFromN.merge(type, n, Math::min);
-                        }
-
-                        csv.printf("%s,%d,%d,%s,%b,%d%n",
-                                family, n, k, type.name(), solved, run.transitions);
-                        instanceResults.put(type, run.transitions);
-                    }
-
-                    // Print one summary line per instance
-                    StringBuilder sb = new StringBuilder();
-                    sb.append(String.format("  N=%2d K=%2d |", n, k));
-                    for (HeuristicType type : HEURISTICS) {
-                        int t = instanceResults.getOrDefault(type, -1);
-                        String val = (t == -1) ? "  skip" : String.format("%6d", t);
-                        sb.append(String.format(" %s:%s", type.name(), val));
-                    }
-                    System.out.println(sb);
+                    csv.printf("%s,%d,%d,,%d,%d%n", family, n, k, run.transitions, timeOut);
+                    System.out.printf("  N=%2d K=%2d | %s  transitions=%d%n",
+                            n, k, solved ? "SOLVED " : "TIMEOUT", run.transitions);
                 }
             }
         }
 
-        System.out.printf("%nBenchmark complete. Results written to: %s%n", csvPath);
+        System.out.printf("%nDone. CSV: %s%n", csvPath);
     }
 
     // ── synthesis ─────────────────────────────────────────────────────────────
 
-    private static BenchmarkRun runWithLimit(List<LTS> components,
-                                             List<LtlPropertyDef> safetyProps,
-                                             ControllerSpecDef spec,
-                                             HeuristicType type) {
+    private static BenchmarkRun runInstance(Path file, String family, int n, int k) {
+        FSPModel model;
         try {
-            Director result = new OTFDirectedControledSyntesisNonBlocking(
-                    components,
-                    safetyProps,
-                    new HashSet<>(spec.marking()),
-                    new HashSet<>(spec.controllable()),
-                    type.create(),
-                    false,
-                    EXPANSION_LIMIT
-            ).run();
-            return new BenchmarkRun(result.transitionsExplored());
+            model = FSPParser.parse(file);
         } catch (Exception e) {
-            // Treat exceptions (e.g. stack overflow on huge instances) as unsolved
-            return new BenchmarkRun(Integer.MAX_VALUE);
+            System.err.printf("  PARSE ERROR %s: %s%n", file.getFileName(), e.getMessage());
+            return new BenchmarkRun(EXPANSION_LIMIT, -1);
+        }
+
+        ControllerSpecDef spec = findLivenessSpec(model);
+        if (spec == null) {
+            System.err.printf("  NO LIVENESS SPEC in %s%n", file.getFileName());
+            return new BenchmarkRun(EXPANSION_LIMIT, -1);
+        }
+
+        List<LtlPropertyDef> guarantees = collectProps(model, spec.liveness());
+        List<LtlPropertyDef> assumptions = collectProps(model, spec.assumption());
+
+        List<LTS> components = new ArrayList<>(model.processes());
+        for (LtlPropertyDef g : guarantees) components.add(g.lts());
+        for (LtlPropertyDef a : assumptions) {
+            if (components.stream().noneMatch(c -> c.name().equals(a.name()))) components.add(a.lts());
+        }
+
+        SuperDFSHeuristic h = new SuperDFSHeuristic(family, n, k);
+
+        try {
+            long start = System.nanoTime();
+            Director result = new OTFDirectedControledSyntesisGR1(
+                    components, assumptions, guarantees,
+                    new HashSet<>(spec.controllable()), h, false)
+                    .run(EXPANSION_LIMIT);
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+            int t = result.transitionsExplored();
+            if (t > EXPANSION_LIMIT) t = EXPANSION_LIMIT;
+            return new BenchmarkRun(t, elapsedMs);
+        } catch (Exception e) {
+            return new BenchmarkRun(EXPANSION_LIMIT, -1);
         }
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    private static ControllerSpecDef findNonBlockingSpec(FSPModel model) {
+    private static ControllerSpecDef findLivenessSpec(FSPModel model) {
         List<ControllerSpecDef> specs = model.controllerSpecs();
         for (int i = specs.size() - 1; i >= 0; i--) {
-            if (specs.get(i).nonblocking()) return specs.get(i);
+            if (!specs.get(i).liveness().isEmpty()) return specs.get(i);
         }
         return null;
     }
 
-    private static List<LtlPropertyDef> collectSafetyProps(FSPModel model, ControllerSpecDef spec) {
-        List<LtlPropertyDef> safety = new ArrayList<>();
-        for (String name : spec.safety()) {
-            model.ltlProperties().stream()
-                    .filter(p -> p.name().equals(name))
-                    .findFirst()
-                    .ifPresent(safety::add);
+    private static List<LtlPropertyDef> collectProps(FSPModel model, List<String> names) {
+        List<LtlPropertyDef> result = new ArrayList<>();
+        for (String name : names) {
+            model.asserts().stream().filter(p -> p.name().equals(name)).findFirst()
+                .or(() -> model.fluents().stream()
+                    .filter(f -> f.name().equals(name))
+                    .map(f -> new LtlPropertyDef(f.name(), List.of(), f))
+                    .findFirst())
+                .ifPresent(result::add);
         }
-        return safety;
+        return result;
     }
 
-    /**
-     * Parses the N-K pair from a filename like {@code AT-3-7.fsp}.
-     * Returns a {@code long} that sorts by (n, k) numerically.
-     */
     private static long parseNK(String filename) {
         int[] nk = parseNKArray(filename);
         return ((long) nk[0] << 32) | (nk[1] & 0xFFFFFFFFL);
     }
 
     private static int[] parseNKArray(String filename) {
-        // e.g. "AT-3-7.fsp" → [3, 7]
-        String base = filename.replaceAll("\\.[^.]+$", ""); // strip extension
+        String base = filename.replaceAll("\\.[^.]+$", "");
         String[] parts = base.split("-");
         if (parts.length < 3) return new int[]{0, 0};
         try {
@@ -206,5 +154,5 @@ public class Benchmark {
         }
     }
 
-    private record BenchmarkRun(int transitions) {}
+    private record BenchmarkRun(int transitions, long timeMs) {}
 }

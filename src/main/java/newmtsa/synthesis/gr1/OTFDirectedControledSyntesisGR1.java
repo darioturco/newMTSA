@@ -292,6 +292,36 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
 
     // ── public entry point ────────────────────────────────────────────────────
 
+    /** Like {@link #run()} but stops after {@code expansionLimit} expansions. */
+    public Director run(int expansionLimit) {
+        if (explorationEnded) {
+            Director r = getSynthesisResult();
+            heuristic.notifyExplorationEnd(r);
+            return r;
+        }
+        while (!isExplorationEnded()) {
+            if (transitionsExplored >= expansionLimit) {
+                Director r = getSynthesisResult();
+                heuristic.notifyExplorationEnd(r);
+                return r;
+            }
+            List<ExtendedTransition> frontier = getFrontier();
+            if (frontier.isEmpty()) break;
+            int index = heuristic.pick(frontier);
+            if (index < 0 || index >= frontier.size())
+                index = Math.max(0, Math.min(index, frontier.size() - 1));
+            expand(index);
+            if (goals.contains(s0) || explorationEnded) {
+                Director r = getSynthesisResult();
+                heuristic.notifyExplorationEnd(r);
+                return r;
+            }
+        }
+        Director r = getSynthesisResult();
+        heuristic.notifyExplorationEnd(r);
+        return r;
+    }
+
     /**
      * Runs the otf-dcs-GR(1) algorithm.
      *
