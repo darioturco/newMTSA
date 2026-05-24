@@ -32,8 +32,9 @@ public class SuperDFSHeuristic implements Heuristic {
 
     private String currentState = null;
 
-    private final Deque<ExtendedTransition>  stack   = new ArrayDeque<>();
-    private final List<ExtendedTransition>   ignored = new ArrayList<>();
+    private final Deque<ExtendedTransition>  stack          = new ArrayDeque<>();
+    private final List<ExtendedTransition>   ignored        = new ArrayList<>();
+    private final Set<String>                decidedStates  = new HashSet<>();
 
     private record ChoiceRecord(int step, ExtendedTransition chosen, List<ExtendedTransition> skipped) {}
     private final List<ChoiceRecord> choices = new ArrayList<>();
@@ -101,6 +102,9 @@ public class SuperDFSHeuristic implements Heuristic {
                 stack.push(nonCtrl.get(i));
             }
         } else if (!ctrl.isEmpty()) {
+            if (decidedStates.contains(currentState)) {
+                return pickFromStackOrIgnored(pending);
+            }
             chosen = pickControllable(ctrl);
             if (ctrl.size() > 1) {
                 ExtendedTransition finalChosen = chosen;
@@ -110,6 +114,7 @@ public class SuperDFSHeuristic implements Heuristic {
                 }
                 ignored.addAll(others);
                 choices.add(new ChoiceRecord(stepCount, chosen, others));
+                decidedStates.add(currentState);
             }
         }
 
