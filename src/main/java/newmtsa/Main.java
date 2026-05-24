@@ -126,12 +126,12 @@ public class Main {
             file = Path.of(args[0]);
         }else{
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-15-15.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-4.fsp");
+            file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-5.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-11-15.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-5-5.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-10-10.fsp");
-            file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-2-14.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-3-3.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\test21.lts");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
@@ -240,7 +240,6 @@ public class Main {
                 new HashSet<>(spec.controllable()),
                 h,
                 verbose || heuristicVerbose,
-                Integer.MAX_VALUE,
                 USE_NUMERIC_STATE_IDS,
                 null,
                 FRONTIER_RESTRICTION

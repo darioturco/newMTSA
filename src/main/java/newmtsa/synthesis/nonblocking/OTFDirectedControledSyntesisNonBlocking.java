@@ -44,7 +44,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
     // ── run options ───────────────────────────────────────────────────────────
 
     private final boolean verbose;
-    private final int     expansionLimit;
+    private       int     expansionLimit;
     private final boolean useNumericIds;
     private final boolean frontierRestriction;
 
@@ -128,6 +128,20 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
                                                    FeatureCompute       featureCompute) {
         this(components, safetyProperties, markingActions, controllable,
              heuristic, verbose, expansionLimit, useNumericIds, featureCompute, false);
+    }
+
+    /** No-budget constructor: equivalent to passing {@code Integer.MAX_VALUE} as budget. */
+    public OTFDirectedControledSyntesisNonBlocking(List<LTS>            components,
+                                                   List<LtlPropertyDef> safetyProperties,
+                                                   Set<String>          markingActions,
+                                                   Set<String>          controllable,
+                                                   Heuristic            heuristic,
+                                                   boolean              verbose,
+                                                   boolean              useNumericIds,
+                                                   FeatureCompute       featureCompute,
+                                                   boolean              frontierRestriction) {
+        this(components, safetyProperties, markingActions, controllable,
+             heuristic, verbose, Integer.MAX_VALUE, useNumericIds, featureCompute, frontierRestriction);
     }
 
     public OTFDirectedControledSyntesisNonBlocking(List<LTS>            components,
@@ -458,6 +472,12 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
         Director r = getSynthesisResult();
         heuristic.notifyExplorationEnd(r);
         return r;
+    }
+
+    /** Runs synthesis with a hard budget; equivalent to constructing with {@code expansionLimit=budget}. */
+    public Director run(int budget) {
+        this.expansionLimit = budget;
+        return run();
     }
 
     // ── private helpers ───────────────────────────────────────────────────────
