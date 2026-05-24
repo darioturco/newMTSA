@@ -97,15 +97,43 @@ public class SuperDFSHeuristic implements Heuristic {
         ExtendedTransition chosen = null;
 
         if (!nonCtrl.isEmpty()) {
-            chosen = nonCtrl.get(0);
-            for (int i = nonCtrl.size() - 1; i >= 1; i--) {
-                stack.push(nonCtrl.get(i));
+            boolean mixed = !ctrl.isEmpty() && !decidedStates.contains(currentState);
+            if (mixed) {
+                // Case 5: both noncontrollable and controllable present.
+                // Ask the family picker whether to choose a controllable (canReturnNull=true).
+                // null => expand noncontrollable as usual.
+                // non-null => pick that controllable, push all noncontrollables to stack,
+                //             push remaining controllables to ignore.
+                ExtendedTransition ctrlChoice = pickControllable(ctrl, true);
+                if (ctrlChoice != null) {
+                    chosen = ctrlChoice;
+                    for (int i = nonCtrl.size() - 1; i >= 0; i--) {
+                        stack.push(nonCtrl.get(i));
+                    }
+                    List<ExtendedTransition> others = new ArrayList<>();
+                    for (ExtendedTransition t : ctrl) {
+                        if (t != ctrlChoice) others.add(t);
+                    }
+                    ignored.addAll(others);
+                    choices.add(new ChoiceRecord(stepCount, chosen, others));
+                    decidedStates.add(currentState);
+                } else {
+                    chosen = nonCtrl.get(0);
+                    for (int i = nonCtrl.size() - 1; i >= 1; i--) {
+                        stack.push(nonCtrl.get(i));
+                    }
+                }
+            } else {
+                chosen = nonCtrl.get(0);
+                for (int i = nonCtrl.size() - 1; i >= 1; i--) {
+                    stack.push(nonCtrl.get(i));
+                }
             }
         } else if (!ctrl.isEmpty()) {
             if (decidedStates.contains(currentState)) {
                 return pickFromStackOrIgnored(pending);
             }
-            chosen = pickControllable(ctrl);
+            chosen = pickControllable(ctrl, false);
             if (ctrl.size() > 1) {
                 ExtendedTransition finalChosen = chosen;
                 List<ExtendedTransition> others = new ArrayList<>();
@@ -132,14 +160,18 @@ public class SuperDFSHeuristic implements Heuristic {
 
     // ── family-specific controllable picker ───────────────────────────────────
 
-    private ExtendedTransition pickControllable(List<ExtendedTransition> ctrl) {
+    /**
+     * @param canReturnNull true only in Case 5 (mixed nonctrl+ctrl).
+     *                      Return null to signal "don't pick a controllable; expand noncontrollable instead."
+     */
+    private ExtendedTransition pickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
         return switch (family) {
-            case "AT" -> atPickControllable(ctrl);
-            case "DP" -> dpPickControllable(ctrl);
-            case "TL" -> tlPickControllable(ctrl);
-            case "BW" -> bwPickControllable(ctrl);
-            case "CM" -> cmPickControllable(ctrl);
-            case "TA" -> taPickControllable(ctrl);
+            case "AT" -> atPickControllable(ctrl, canReturnNull);
+            case "DP" -> dpPickControllable(ctrl, canReturnNull);
+            case "TL" -> tlPickControllable(ctrl, canReturnNull);
+            case "BW" -> bwPickControllable(ctrl, canReturnNull);
+            case "CM" -> cmPickControllable(ctrl, canReturnNull);
+            case "TA" -> taPickControllable(ctrl, canReturnNull);
             default   -> ctrl.get(0);
         };
     }
@@ -150,7 +182,7 @@ public class SuperDFSHeuristic implements Heuristic {
      * Priority: pick {@code take[i][j]} where philosopher i is "Ready" (min i);
      * if none, pick where philosopher i is "Hungry" (min i).
      */
-    private ExtendedTransition dpPickControllable(List<ExtendedTransition> ctrl) {
+    private ExtendedTransition dpPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
         int                readyI = Integer.MAX_VALUE;
         ExtendedTransition ready  = null;
         int                hungryI = Integer.MAX_VALUE;
@@ -176,7 +208,7 @@ public class SuperDFSHeuristic implements Heuristic {
         return ctrl.get(0);
     }
 
-    private ExtendedTransition tlPickControllable(List<ExtendedTransition> ctrl) {
+    private ExtendedTransition tlPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
         Set<String> explored = (ctx != null) ? ctx.exploredStates() : Set.of();
 
         for (ExtendedTransition t : ctrl) {
@@ -196,7 +228,7 @@ public class SuperDFSHeuristic implements Heuristic {
         return best != null ? best : ctrl.get(0);
     }
 
-    private ExtendedTransition bwPickControllable(List<ExtendedTransition> ctrl) {
+    private ExtendedTransition bwPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
         // Rule 1: approve not leading to error
         for (ExtendedTransition t : ctrl) {
             if ("approve".equals(t.action()) && !goesToError(t)) return t;
@@ -226,7 +258,7 @@ public class SuperDFSHeuristic implements Heuristic {
         return best != null ? best : ctrl.get(0);
     }
 
-    private ExtendedTransition cmPickControllable(List<ExtendedTransition> ctrl) {
+    private ExtendedTransition cmPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
         int                bestDist = Integer.MAX_VALUE;
         int                bestI    = Integer.MAX_VALUE;
         ExtendedTransition best     = null;
@@ -267,7 +299,7 @@ public class SuperDFSHeuristic implements Heuristic {
         return Integer.parseInt(action.substring(lastBracket + 1, closeBracket));
     }
 
-    private ExtendedTransition taPickControllable(List<ExtendedTransition> ctrl) {
+    private ExtendedTransition taPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
         return ctrl.get(0);
     }
 
@@ -277,7 +309,7 @@ public class SuperDFSHeuristic implements Heuristic {
      *   2. height j is Empty in the from-state
      * Among valid candidates, pick the one with lowest j.
      */
-    private ExtendedTransition atPickControllable(List<ExtendedTransition> ctrl) {
+    private ExtendedTransition atPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
         for (ExtendedTransition t : ctrl) {
             if (t.action().startsWith("approach[") && heightsAreConsecutive(t.from())) return t;
         }
