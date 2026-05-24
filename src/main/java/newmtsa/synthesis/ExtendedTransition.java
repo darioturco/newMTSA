@@ -31,6 +31,13 @@ public final class ExtendedTransition {
     public void    setStep(int s)                      { this.step = s; }
     public boolean isControllable(Set<String> ctrl)    { return ctrl.contains(action); }
 
+    /** Extracts the first bracketed integer from actions like {@code take[i][j]}, {@code descend[i][j]}. */
+    public int extractFirstIndex() {
+        int b1 = action.indexOf('[');
+        int b2 = action.indexOf(']', b1);
+        return Integer.parseInt(action.substring(b1 + 1, b2));
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;

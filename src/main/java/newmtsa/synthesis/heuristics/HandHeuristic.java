@@ -365,7 +365,7 @@ public class HandHeuristic implements Heuristic {
                     // Busca el requestLand que se agrego en la ultima expansion
                     int rlIdx = findMinRequestLand(pending);
                     if (rlIdx != -1) {
-                        setState("descend." + extractIndex(pending.get(rlIdx).action()));
+                        setState("descend." + pending.get(rlIdx).extractFirstIndex());
                         return rlIdx;
                     }
                 }else{
@@ -387,7 +387,7 @@ public class HandHeuristic implements Heuristic {
                     for (int j = pending.size() - 1; j >= 0; j--) {
                         ExtendedTransition t = pending.get(j);
                         if (t.action().startsWith("requestLand") && hasOff(t.from())) {
-                            int plane = extractIndex(t.action());
+                            int plane = t.extractFirstIndex();
                             if (!isExpanded(t.to())) {
                                 setState("descend." + plane);
                             }
@@ -518,7 +518,7 @@ public class HandHeuristic implements Heuristic {
                     String a = pending.get(j).action();
                     if (a.startsWith("reject[") && a.contains("][") && a.endsWith("]")) {
                         int r = secondIndexOfReject(a);
-                        i = firstIndexOfReject(a);
+                        i = pending.get(j).extractFirstIndex();
                         if (r != k && n > 1) {
                             setState("recover." + i);
                         }
@@ -627,12 +627,6 @@ public class HandHeuristic implements Heuristic {
         } catch (NumberFormatException e) {
             return -1;
         }
-    }
-
-    private int firstIndexOfReject(String action) {
-        int firstBracket = action.indexOf("[");
-        int secondBracket = action.indexOf("]");
-        return Integer.parseInt(action.substring(firstBracket + 1, secondBracket));
     }
 
     private int secondIndexOfReject(String action) {
@@ -753,7 +747,7 @@ public class HandHeuristic implements Heuristic {
             ExtendedTransition t = pending.get(j);
             String a = t.action();
             if (a.startsWith("requestLand[") && t.step() == currentStep - 1) {
-                int plane = extractIndex(a);
+                int plane = t.extractFirstIndex();
                 if (plane < bestI) {
                     bestI = plane;
                     bestIdx = j;
@@ -761,12 +755,6 @@ public class HandHeuristic implements Heuristic {
             }
         }
         return bestIdx;
-    }
-
-    private int extractIndex(String action) {
-        int bracket1 = action.indexOf("[");
-        int bracket2 = action.indexOf("]");
-        return Integer.parseInt(action.substring(bracket1 + 1, bracket2));
     }
 
     private int findBestMouseMove(List<ExtendedTransition> pending, int mouseIdx) {

@@ -19,8 +19,6 @@ import java.util.*;
  * frontier), the next transition is taken from the stack.  When the stack is also empty,
  * transitions are taken from the ignore list.
  *
- * <p>A {@code mask} set can be populated externally to treat specific transitions as invisible.
- *
  * <p>At the end of guided exploration the full decision log is printed.
  */
 public class SuperDFSHeuristic implements Heuristic {
@@ -36,7 +34,6 @@ public class SuperDFSHeuristic implements Heuristic {
 
     private final Deque<ExtendedTransition>  stack   = new ArrayDeque<>();
     private final List<ExtendedTransition>   ignored = new ArrayList<>();
-    private final Set<ExtendedTransition>    mask    = new HashSet<>();
 
     private record ChoiceRecord(int step, ExtendedTransition chosen, List<ExtendedTransition> skipped) {}
     private final List<ChoiceRecord> choices = new ArrayList<>();
@@ -65,9 +62,12 @@ public class SuperDFSHeuristic implements Heuristic {
         this.controllable = ctx.controllable();
     }
 
-    /** Add a transition to the mask so it is treated as non-existent by this heuristic. */
-    public void addMask(ExtendedTransition t) { mask.add(t); }
-
+    /**
+     * Selects the next transition to expand using depth-first order guided by the stack and ignore list.
+     * Noncontrollable transitions are always preferred; remaining ones are pushed onto the stack.
+     * Among controllable transitions the family-specific picker is used; unchosen ones go to the ignore list.
+     * When no transition from the current state exists in the frontier, falls back to stack then ignore list.
+     */
     @Override
     public int pick(List<ExtendedTransition> pending) {
         stepCount++;
@@ -85,7 +85,7 @@ public class SuperDFSHeuristic implements Heuristic {
         List<ExtendedTransition> ctrl    = new ArrayList<>();
 
         for (ExtendedTransition t : pending) {
-            if (!t.from().equals(currentState) || mask.contains(t)) continue;
+            if (!t.from().equals(currentState)) continue;
             if (t.isControllable(controllable)) {
                 if (!goesToError(t)) ctrl.add(t);
             } else {
@@ -153,7 +153,7 @@ public class SuperDFSHeuristic implements Heuristic {
 
         for (ExtendedTransition t : ctrl) {
             if (!t.action().startsWith("take[")) continue;
-            int      i     = extractFirstIndex(t.action());
+            int      i     = t.extractFirstIndex();
             String[] parts = t.from().split("\\|");
             if (3 * i >= parts.length) continue;
             String philoState   = parts[3 * i];
@@ -182,7 +182,7 @@ public class SuperDFSHeuristic implements Heuristic {
         ExtendedTransition best  = null;
         for (ExtendedTransition t : ctrl) {
             if (!t.action().startsWith("get[")) continue;
-            int i = extractFirstIndex(t.action());
+            int i = t.extractFirstIndex();
             if (!goesToError(t) && i > bestI) {
                 bestI = i;
                 best  = t;
@@ -211,7 +211,7 @@ public class SuperDFSHeuristic implements Heuristic {
         for (ExtendedTransition t : ctrl) {
             if (!t.action().startsWith("assign[")) continue;
             if (goesToError(t)) continue;
-            int i = extractFirstIndex(t.action());
+            int i = t.extractFirstIndex();
             String[] fromParts = t.from().split("\\|");
             if (i + 1 < fromParts.length && "Pending".equals(fromParts[i + 1]) && i < bestI) {
                 bestI = i;
@@ -229,7 +229,7 @@ public class SuperDFSHeuristic implements Heuristic {
         for (ExtendedTransition t : ctrl) {
             String a = t.action();
             if (!a.startsWith("mouse[")) continue;
-            int mouseI = extractFirstIndex(a);
+            int mouseI = t.extractFirstIndex();
             int moveJ  = extractMovePosition(a);
             int dist   = Math.abs(moveJ - safePlace);
 
@@ -240,6 +240,20 @@ public class SuperDFSHeuristic implements Heuristic {
             }
         }
         return best != null ? best : ctrl.get(0);
+    }
+
+    private boolean heightsAreConsecutive(String fromState) {
+        String[] parts = fromState.split("\\|");
+        boolean seenEmpty = false;
+        for (int h = 0; h < k; h++) {
+            String slot = parts[2 + h];
+            if ("Empty".equals(slot)) {
+                seenEmpty = true;
+            } else if (slot.startsWith("Occupied[") && seenEmpty) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private int extractMovePosition(String action) {
@@ -260,7 +274,7 @@ public class SuperDFSHeuristic implements Heuristic {
      */
     private ExtendedTransition atPickControllable(List<ExtendedTransition> ctrl) {
         for (ExtendedTransition t : ctrl) {
-            if (t.action().startsWith("approach[")) return t;
+            if (t.action().startsWith("approach[") && heightsAreConsecutive(t.from())) return t;
         }
 
         int                bestJ = Integer.MAX_VALUE;
@@ -359,13 +373,6 @@ public class SuperDFSHeuristic implements Heuristic {
             if ("ERROR".equals(part)) return true;
         }
         return false;
-    }
-
-    /** Extracts the first bracketed index from actions like {@code take[i][j]}, {@code descend[i][j]}. */
-    private int extractFirstIndex(String action) {
-        int b1 = action.indexOf('[');
-        int b2 = action.indexOf(']', b1);
-        return Integer.parseInt(action.substring(b1 + 1, b2));
     }
 
     /** Extracts the height index j from {@code descend[i][j]}. */
