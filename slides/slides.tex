@@ -1,0 +1,450 @@
+\documentclass{beamer}
+\usepackage[utf8]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage{amsmath, amssymb, booktabs, array, xcolor, mathtools, graphicx, tikz}
+
+\usetheme{Madrid}
+\usecolortheme{seahorse}
+
+\setbeamertemplate{navigation symbols}{}
+\graphicspath{{images/}{./}}
+
+\title{Heur\'istica Manual: An\'alisis de Transiciones}
+\subtitle{S\'intesis de Directores para Instancias LTS}
+\author{Dario Turco}
+\date{}
+
+\newcommand{\bien}{\textcolor{green!60!black}{\checkmark}}
+\newcommand{\mal}{\textcolor{red}{$\times$}}
+
+% Cell (n,k): x = k-1..k, y = 15-n..16-n  (n=1 at top)
+\newcommand{\heatmap}[1]{%
+  \begin{tikzpicture}[scale=0.32]
+    \fill[gray!25] (0,0) rectangle (15,15);
+    #1
+    \draw[gray!60, very thin] (0,0) grid (15,15);
+    \draw[black, thin] (0,0) rectangle (15,15);
+    \foreach \k in {1,5,10,15}{
+      \node[below, font=\tiny] at (\k-0.5, -0.15) {\k};
+    }
+    \foreach \n in {1,5,10,15}{
+      \node[left, font=\tiny] at (-0.15, 15.5-\n) {\n};
+    }
+    \node[below, font=\scriptsize] at (7.5, -1.1) {$k$};
+    \node[left,  font=\scriptsize, rotate=90] at (-1.4, 7.5) {$n$};
+  \end{tikzpicture}%
+}
+
+\newcommand{\imgpending}[1]{%
+  \begin{tikzpicture}
+    \draw[dashed, gray!60, rounded corners] (0,0) rectangle (9,5.5);
+    \node[gray!70, font=\large] at (4.5,2.75) {\textit{Imagen pendiente --- #1}};
+  \end{tikzpicture}%
+}
+
+\begin{document}
+
+%--- T\'itulo ---
+\begin{frame}
+\titlepage
+\end{frame}
+
+%--- Motivaci\'on 1 ---
+\begin{frame}{Motivaci\'on}
+\begin{center}
+\Huge Quiero resolver todas las instancias de benchmark.
+\end{center}
+\end{frame}
+
+%--- Motivaci\'on 2 ---
+\begin{frame}{}
+\begin{center}
+  \includegraphics[width=\textwidth, height=0.88\textheight, keepaspectratio]{Meme bb.jpg}
+\end{center}
+\end{frame}
+
+%--- Motivaci\'on 3 ---
+\begin{frame}{Plan}
+\begin{center}
+\Large CM es muy dif\'icil, as\'i que vamos a resolver TL con una heur\'istica hecha a mano.
+\end{center}
+\end{frame}
+
+%==============================================================
+%  TL
+%==============================================================
+\begin{frame}{TL -- Director para TL-2-2}
+\begin{center}
+  \includegraphics[width=\textwidth, height=0.82\textheight, keepaspectratio]{TL-2-2.png}
+\end{center}
+\end{frame}
+
+\begin{frame}{TL -- Transfer Line}
+
+\textbf{Descomposici\'on estructural:}
+\begin{itemize}
+  \item Cadena $\textit{get}[0] \!\to\! \textit{put}[1] \!\to\! \textit{get}[1] \!\to\! \cdots \!\to\! \textit{put}[n] \!\to\! \textit{get}[n]$: $\;2n{+}1$ transiciones
+  \item Desde $\textit{get}[n]$: 5 expansiones para cerrar ciclos
+    \begin{itemize}
+      \item $\textit{return}[1]$
+      \item $\textit{reject} \to$ estado ganador $\to \textit{get}$ (retorno)
+      \item $\textit{accept} \to$ estado marcado $\to \textit{get}$ (retorno)
+    \end{itemize}
+\end{itemize}
+
+\begin{center}
+\begin{tabular}{ccccccc}
+\toprule
+$n$ & 1 & 3 & 5 & 7 & 10 & 15 \\
+\midrule
+$T(n)$ & 8 & 12 & 16 & 20 & 26 & 36 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{frame}
+
+\begin{frame}{TL -- F\'ormula}
+
+Esto nos dice que el director lo podemos encontrar siempre expandiendo $T(n)$ transiciones:
+
+\bigskip
+\[
+  T(n) = 1 + 2n + 2 + 3 = 2n + 6
+\]
+
+\bigskip\bigskip
+Podemos armar una m\'aquina de estados para expandir estas transiciones:
+
+\end{frame}
+
+\begin{frame}{TL -- Heur\'istica (reducida)}
+\begin{center}
+  \includegraphics[width=\textwidth, height=0.82\textheight, keepaspectratio]{heuristic_TL_reduced.png}
+\end{center}
+\end{frame}
+
+\begin{frame}{TL -- Heur\'istica (extendida)}
+\begin{center}
+  \includegraphics[width=\textwidth, height=0.82\textheight, keepaspectratio]{heuristic_TL_extended.png}
+\end{center}
+\end{frame}
+
+\begin{frame}{TL -- Instancias verificadas}
+\begin{center}
+\heatmap{%
+  \fill[green!60!black] (0,0) rectangle (15,15);
+}
+
+\bigskip
+{\small \textcolor{green!60!black}{$\blacksquare$}~verificado \quad
+        \textcolor{gray!40}{$\blacksquare$}~no verificado}
+\end{center}
+\end{frame}
+
+%==============================================================
+%  DP
+%==============================================================
+\begin{frame}{}
+\begin{center}
+\Huge Ahora vamos a DP
+\end{center}
+\end{frame}
+
+\begin{frame}{DP -- Director para DP-2-2}
+\begin{center}
+  \includegraphics[width=\textwidth, height=0.82\textheight, keepaspectratio]{DP-2-2.png}
+\end{center}
+\end{frame}
+
+\begin{frame}{DP -- Dining Philosophers}
+
+\textbf{Fases:}
+\begin{enumerate}
+  \item \textbf{\'Ordenes de pensar} --- todos los posibles \'ordenes en que piensan los $n$ fil\'osofos: $n \cdot 2^{n-1}$
+  \item \textbf{Alimentar} --- alimentar a los $n$ fil\'osofos (crece con $k$): $n(k+5)+n$
+  \item \textbf{Retorno} --- volver desde estado marcado (constante): $9$
+\end{enumerate}
+
+\bigskip
+\textbf{F\'ormula:}
+\[
+  T_{\mathrm{DP}}(n,k) \;=\; \underbrace{n \cdot 2^{n-1}}_{\text{\'ordenes de pensar}}
+    \;+\; \underbrace{n(k+5) + n}_{\text{alimentar}}
+    \;+\; \underbrace{9}_{\text{retorno}}
+\]
+
+\end{frame}
+
+\begin{frame}{DP -- Valores de ejemplo}
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{c|rrrrr}
+\toprule
+$n \;\backslash\; k$ & 1 & 3 & 5 & 10 & 15 \\
+\midrule
+2  & 27    & 31    & 35    & 45    & 55    \\
+3  & 42    & 48    & 54    & 69    & 84    \\
+5  & 124   & 134   & 144   & 169   & 194   \\
+10 & 5199  & 5219  & 5239  & 5289  & 5339  \\
+11 & 11350 & 11372 & 11394 & 11449 & 11504 \\
+12 & 24669 & 24693 & 24717 & 24777 & 24837 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\medskip
+\textit{Todos los valores verificados emp\'iricamente contra el director sintetizado.}
+
+\medskip
+$T_{\mathrm{DP}}(2,2) = 29$ \qquad $T_{\mathrm{DP}}(15,15) = 246084$
+\end{frame}
+
+\begin{frame}{DP -- Instancias verificadas}
+\begin{center}
+\heatmap{%
+  \fill[green!60!black] (0,3) rectangle (15,14);
+  \fill[red!70!black]   (0,14) rectangle (15,15);
+}
+
+\bigskip
+{\small \textcolor{green!60!black}{$\blacksquare$}~verificado \quad
+        \textcolor{red!70!black}{$\blacksquare$}~no resoluble ($n{=}1$) \quad
+        \textcolor{gray!40}{$\blacksquare$}~demasiado grande para resolver}
+\end{center}
+\end{frame}
+
+\begin{frame}{DP -- Director (extendido)}
+\begin{center}
+  \includegraphics[width=\textwidth, height=0.82\textheight, keepaspectratio]{heuristic_DP_extended.png}
+\end{center}
+\end{frame}
+
+\begin{frame}{DP -- Director (reducido)}
+\begin{center}
+  \imgpending{heuristic\_DP\_reduced.png}
+\end{center}
+\end{frame}
+
+%==============================================================
+%  CM
+%==============================================================
+\begin{frame}{Ahora s\'i a CM}
+
+Cat and Mouse tiene \textbf{dos fases}:
+
+\bigskip
+\begin{description}
+  \item[$A$ --- Aproximaci\'on] El rat\'on se mueve hacia el objetivo. Transiciones hasta llegar al goal.
+  \item[$B$ --- Retorno] El rat\'on est\'a en el objetivo; el gato recorre sus posiciones hasta volver al inicio del ciclo.
+\end{description}
+
+\bigskip
+\[
+  T_{\mathrm{CM}}(n,k) = A(n,k) + B(n,k)
+\]
+\end{frame}
+
+\begin{frame}{CM -- Cat and Mouse ($n=1$, simplificado)}
+
+Para $n=1$ la f\'ormula se simplifica a:
+\[
+  T_{\mathrm{CM}}(1,k) = 3k^2 + 12k + 6
+\]
+
+\textbf{Dos fases estructurales:}
+
+\medskip
+\begin{columns}[T]
+\column{0.48\textwidth}
+\textbf{Aproximaci\'on} $A(1,k)$:
+\[ A = 3k^2 - 2k + 1 \]
+{\small El rat\'on toma $k$ pasos hacia el centro; el gato lo sigue desde el borde.}
+
+\column{0.48\textwidth}
+\textbf{Retorno} $B(1,k)$:
+\[ B = 14k + 5 \]
+{\small El rat\'on permanece en el centro; el gato recorre las $2k{+}1$ posiciones.}
+\end{columns}
+
+\bigskip
+\[
+  A + B = (3k^2{-}2k{+}1) + (14k{+}5) = 3k^2 + 12k + 6 \quad\checkmark
+\]
+\end{frame}
+
+\begin{frame}{CM -- F\'ormula general}
+
+\textbf{Retorno:}
+\[
+  B(n,k) = (2k{+}1)^{n-1} \cdot \bigl[(n{+}3)(2k{+}1) + n\cdot 2^{n-1}(6k{+}1)\bigr]
+\]
+
+\textbf{Aproximaci\'on:} \;con $f(n,i) = (n{+}1)\,i^n + n(3i{-}1)(2i{+}1)^{n-1} + (i{+}1)^n$
+\[
+  A(n,k) = 1 + \sum_{i=1}^{k-1} f(n,i) + n\cdot k^n, \qquad
+  T_{\mathrm{CM}} = A + B
+\]
+
+\begin{columns}[c]
+\column{0.48\textwidth}
+\begin{center}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{c|ccc}
+\toprule
+$n \backslash k$ & 1 & 2 & 3 \\
+\midrule
+1 & 21  & 42   & 69   \\
+2 & 132 & 413  & 886  \\
+3 & 922 & 4741 & \textcolor{gray}{?} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\column{0.48\textwidth}
+{\small \textcolor{gray}{?} = demasiado grande para verificar emp\'iricamente}
+
+\bigskip
+{\small RA expande exactamente la misma cantidad \bien}
+\end{columns}
+\end{frame}
+
+\begin{frame}{CM -- Instancias verificadas}
+\begin{center}
+\heatmap{%
+  \fill[green!60!black] (0,14) rectangle (15,15);
+  \fill[green!60!black] (0,13) rectangle (1,14);
+  \fill[green!60!black] (1,13) rectangle (4,14);
+  \fill[green!60!black] (0,12) rectangle (1,13);
+  \fill[green!60!black] (1,12) rectangle (2,13);
+}
+
+\bigskip
+{\small \textcolor{green!60!black}{$\blacksquare$}~verificado \quad
+        \textcolor{gray!40}{$\blacksquare$}~demasiado grande para resolver}
+\end{center}
+\end{frame}
+
+\begin{frame}{CM -- 15-15}
+\begin{center}
+\[
+  T_{\mathrm{CM}}(15,15) = 16\,929\,109\,944\,024\,661\,913\,431\,311\,618 \;\approx\; 10^{28{,}23}
+\]
+\end{center}
+\end{frame}
+
+\begin{frame}{CM -- \textquestiondown Cu\'anto tardar\'ia resolverlo?}
+
+\begin{center}
+{\large Expandiendo 1 transici\'on/ns: $\approx$ \textbf{536 mil millones de a\~nos} \quad (${\sim}39\times$ la edad del universo)}
+\end{center}
+
+\bigskip\bigskip\bigskip
+\begin{center}
+  \imgpending{meme esqueleto}
+\end{center}
+\end{frame}
+
+\begin{frame}{CM -- Director (no compacto)}
+\begin{center}
+  \includegraphics[width=\textwidth, height=0.82\textheight, keepaspectratio]{heuristic_CM_extended.png}
+\end{center}
+\end{frame}
+
+\begin{frame}{CM -- Director (compacto)}
+\begin{center}
+  \includegraphics[width=\textwidth, height=0.82\textheight, keepaspectratio]{heuristic_CM_reduced.png}
+\end{center}
+\end{frame}
+
+%==============================================================
+%  Preguntas abiertas
+%==============================================================
+\begin{frame}{Preguntas}
+\begin{enumerate}
+  \item \textbf{\textquestiondown La heur\'istica manual \emph{es} el director?}\\
+    {\small Reconoce solo transiciones del director, pero \textquestiondown eso garantiza que es \emph{el} director?}
+
+  \bigskip
+  \item \textbf{\textquestiondown Se puede encontrar la heur\'istica de AT conociendo solo AT-2-$k$?}\\
+    {\small \textquestiondown Alcanza con instancias peque\~nas para derivar la heur\'istica general?}
+
+  \bigskip
+  \item \textbf{\textquestiondown Se pueden aprender estas heur\'isticas autom\'aticamente?}\\
+    {\small Conociendo el director de la instancia 2-2, \textquestiondown puede una m\'aquina inferir la heur\'istica general?}
+
+  \bigskip
+  \item \textbf{\textquestiondown Una heur\'istica general implica un conjunto suficiente de features?}\\
+    {\small Si conocemos la heur\'istica para toda una familia, \textquestiondown podemos identificar los features que resuelven todas sus instancias?}
+\end{enumerate}
+\end{frame}
+
+%==============================================================
+%  AT
+%==============================================================
+\begin{frame}{AT -- Air Traffic}
+
+\textbf{Estructura especial:} solo estudiado para $n = k$
+
+\bigskip
+\textbf{F\'ormula:} a\'un no derivada --- la complejidad estructural impide una forma cerrada simple.
+
+\bigskip
+\begin{alertblock}{RA no es \'optimo para AT}
+RA expande \emph{m\'as} transiciones que las del director. \\
+La Heur\'istica Manual supera estrictamente a RA en esta familia de instancias.
+\end{alertblock}
+\end{frame}
+
+\begin{frame}{AT -- Instancias verificadas}
+\begin{center}
+\heatmap{%
+  \foreach \n in {2,...,15}{
+    \fill[red!70!black] (0, 15-\n) rectangle (\n-1, 16-\n);
+  }
+  \foreach \n in {1,...,6}{
+    \fill[green!60!black] (\n-1, 15-\n) rectangle (15, 16-\n);
+  }
+}
+
+\bigskip
+{\small \textcolor{green!60!black}{$\blacksquare$}~verificado \quad
+        \textcolor{red!70!black}{$\blacksquare$}~no resoluble ($k{<}n$) \quad
+        \textcolor{gray!40}{$\blacksquare$}~demasiado grande para resolver}
+\end{center}
+
+\medskip
+{\small Todas las instancias verificadas logran \textbf{100\% de eficiencia}.}
+\end{frame}
+
+%==============================================================
+%  AT -- Aprendizaje
+%==============================================================
+\begin{frame}{\textquestiondown Se puede resolver AT-3-3 aprendiendo de AT-2-2?}
+
+\begin{block}{Idea}
+Los directores de instancias peque\~nas revelan la estructura del director general.
+\end{block}
+
+\bigskip
+\begin{itemize}
+  \item AT-1-1, AT-2-2 son resolubles y sus directores son conocidos
+  \item AT-3-3 es demasiado grande para resolver directamente
+  \item \textbf{Pregunta:} \textquestiondown es posible \emph{derivar} el director de AT-3-3 a partir del patr\'on observado en AT-1-1 y AT-2-2?
+\end{itemize}
+
+\bigskip
+Las siguientes slides muestran los directores de AT-1-1, AT-2-2 y AT-3-3 para buscar el patr\'on.
+\end{frame}
+
+\begin{frame}{AT -- Director para AT-1-1}
+\begin{center}
+  \imgpending{AT-1-1}
+\end{center}
+\end{frame}
+
+\begin{frame}{AT -- Director para AT-2-2}
+\begin{center}
+  \imgpending{AT-2-2}
+\end{center}
+\end{frame}
+
+\end{document}

@@ -1,0 +1,28 @@
+digraph CM_Heuristic {
+    label    = "CM – Cat and Mouse  |  Hand Heuristic State Machine";
+    labelloc = t;
+    rankdir  = LR;
+    node [shape=ellipse, fontname="Helvetica", fontsize=11];
+    edge [fontname="Helvetica", fontsize=9];
+
+    _init [shape=point, width=0.2, label=""];
+
+    "mouse.turn.0";
+    "mouse.turn.1";
+    _dots            [shape=plaintext, label="..."];
+    "mouse.turn.n-1" [label="mouse.turn.(n-1)"];
+    "cat.turn";
+    "mouse.sync";
+
+    _init              -> "mouse.turn.0"   [];
+    "mouse.turn.0"     -> "mouse.turn.1"   [label="mouse[0].move[p]\np = argmin |p - k|"];
+    "mouse.turn.1"     -> _dots            [label="mouse[1].move[p]\np = argmin |p - k|"];
+    _dots              -> "mouse.turn.n-1" [];
+    "mouse.turn.n-1"   -> "cat.turn"       [label="mouse[n-1].move[p]\np = argmin |p - k|"];
+
+    "cat.turn"         -> "cat.turn"       [label="uncontrollable\n(not mouse.turn)"];
+    "cat.turn"         -> "mouse.sync"     [label="no cat moves left"];
+    "mouse.sync"       -> "mouse.turn.0"   [label="mouse.turn"];
+
+    { rank=same; "mouse.turn.0"; "mouse.turn.1"; _dots; "mouse.turn.n-1"; }
+}

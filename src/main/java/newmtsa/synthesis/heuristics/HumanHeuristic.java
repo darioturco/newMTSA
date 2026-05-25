@@ -71,7 +71,7 @@ public class HumanHeuristic implements Heuristic {
             if (hidden.contains(key(t))) continue;
             Integer markLevel = marked.get(key(t));
             String stars = markLevel != null ? " [34m" + "*".repeat(markLevel) + "[0m" : "";
-            System.out.printf("  [%d] %s --[%s]--> %s%s%n", i, t.from(), t.action(), t.to(), stars);
+            System.out.printf("  [%d] (step %d) %s --[%s]--> %s%s%n", i, t.step(), t.from(), t.action(), t.to(), stars);
         }
     }
 

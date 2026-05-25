@@ -88,7 +88,8 @@ public class Main {
     // Scripted frontier indices used when HEURISTIC = RANDOM.
     // At step k picks pending.get(SCRIPT[k]); falls back to random once exhausted.
     // List.of() = pure random from the start.
-    static final List<Integer> SCRIPT = List.of(0, 3, 6, 9, 12, 14, 17, 18, 14, 15, 22, 25, 27, 22, 28, 17);   // unused when HEURISTIC != RANDOM (Expansion to solve TL-2-2 in the same way the original RA should.)
+    //static final List<Integer> SCRIPT = List.of(0, 3, 6, 9, 12, 14, 17, 18, 14, 15, 22, 25, 27, 22, 28, 17);   // unused when HEURISTIC != RANDOM (Expansion to solve TL-2-2 in the same way the original RA should.)
+    static final List<Integer> SCRIPT = List.of(2, 5, 4, 8, 16, 15, 13, 23, 21, 26, 33, 32, 19, 40, 38, 43, 50, 49, 30, 58, 55, 62, 68, 61, 70, 69, 72, 36, 77, 74, 82, 77, 46, 86, 83, 91, 86, 52, 95, 92, 100, 95);
     //static final List<Integer> SCRIPT = List.of();
 
     // ── trace recording ───────────────────────────────────────────────────────
@@ -126,13 +127,13 @@ public class Main {
             file = Path.of(args[0]);
         }else{
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-15-15.fsp");
-            file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-5.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-5.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-11-15.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-5-5.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp");
+            file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-10-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-10-10.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-3-3.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\BW\\BW-8-8.fsp");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\test21.lts");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
             //file = Path.of("C:\\Users\\diort\\Downloads\\data\\krka_et_al_FSE14\\reference_models\\ElemNumber$NumberFormatStringTokenizer.lts");

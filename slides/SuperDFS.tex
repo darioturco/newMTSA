@@ -1,0 +1,768 @@
+\documentclass{beamer}
+\usepackage[utf8]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage{amsmath, amssymb, booktabs, array, xcolor, mathtools, graphicx, tikz}
+\usetikzlibrary{arrows.meta, positioning}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+\usetheme{Madrid}
+\usecolortheme{seahorse}
+
+\setbeamertemplate{navigation symbols}{}
+\graphicspath{{images/}{./}}
+
+\title{SuperDFS Heur\'istica}
+\subtitle{Exploraci\'on en Profundidad Guiada por Pila e Ignorados}
+\author{Dario Turco}
+\date{}
+
+% ---- colors ----
+\colorlet{cChosen}{green!55!black}
+\colorlet{cStack}{orange!85!black}
+\colorlet{cIgnore}{blue!70!black}
+\colorlet{cError}{red!70!black}
+% ---- heatmap bucket colors (transitions) ----
+\definecolor{cB1}{RGB}{255,235,0}    % <=100: yellow
+\definecolor{cB2}{RGB}{255,130,0}    % 100-999: orange
+\definecolor{cB3}{RGB}{200,40,80}    % 1k-5k: red
+\definecolor{cB4}{RGB}{110,0,180}    % 5k-15k: violet
+
+\newcommand{\imgpending}[1]{%
+  \begin{tikzpicture}
+    \draw[dashed, gray!60, rounded corners] (0,0) rectangle (9,4.5);
+    \node[gray!70, font=\large] at (4.5,2.25) {\textit{Pendiente: #1}};
+  \end{tikzpicture}%
+}
+
+\tikzset{
+  st/.style     = {circle, draw=black, thick, minimum size=7mm, font=\small},
+  errst/.style  = {circle, draw=cError, thick, minimum size=7mm, font=\small, text=cError},
+  tChosen/.style = {-{Stealth[length=2.5mm]}, thick, cChosen},
+  tStack/.style  = {-{Stealth[length=2.5mm]}, thick, cStack},
+  tIgnore/.style = {-{Stealth[length=2.5mm]}, thick, cIgnore},
+  tError/.style  = {-{Stealth[length=2.5mm]}, thick, cError},
+  tPend/.style   = {-{Stealth[length=2.5mm]}, thick, gray!50},
+  lbl/.style    = {font=\footnotesize},
+}
+
+\begin{document}
+
+%--- T\'itulo ---
+\begin{frame}
+\titlepage
+\end{frame}
+
+%=======================================================================
+% RESUMEN
+%=======================================================================
+\begin{frame}{Funcionamiento de la Heur\'istica}
+
+\begin{alertblock}{Premisa}
+La instancia es \textbf{resoluble} (existe un director). El estado actual $s$ \textbf{pertenece al director}.
+\end{alertblock}
+
+\medskip
+DFS guiado por dos estructuras auxiliares:
+
+\bigskip
+\begin{columns}[t]
+\column{0.48\textwidth}
+\textbf{Estructuras:}
+\begin{itemize}
+  \item \textcolor{cStack}{\textbf{Pila} (\textsc{stack})} -- no-controlables diferidas
+  \item \textcolor{cIgnore}{\textbf{Ignorados} (\textsc{ignore})} -- controlables no elegidas
+\end{itemize}
+
+\column{0.48\textwidth}
+\textbf{En cada estado $s$:}
+\begin{enumerate}
+  \item Si hay no-controlables desde $s$:\\
+    elegir la primera, apilar el resto
+  \item Si solo hay controlables desde $s$:\\
+    \emph{picker} de familia, resto $\to$ ignorados
+  \item Sin transiciones desde $s$:\\
+    pop \textcolor{cStack}{\textsc{stack}} $\to$ pop \textcolor{cIgnore}{\textsc{ignore}}
+\end{enumerate}
+\end{columns}
+
+\end{frame}
+
+%=======================================================================
+% CASO 1 -- una controlable
+%=======================================================================
+\begin{frame}{Caso 1 -- \'Unica transici\'on controlable}
+\begin{columns}[c]
+\column{0.42\textwidth}
+\begin{center}
+\begin{tikzpicture}[node distance=2.2cm]
+  \node[st, fill=gray!12] (s) {$s$};
+  \node[st, right of=s]   (t) {$t$};
+  \draw[tChosen] (s) -- node[above, lbl]{$a$} (t);
+  \node[below=0.05cm of s, cChosen, font=\tiny] {actual};
+\end{tikzpicture}
+\end{center}
+
+\column{0.54\textwidth}
+\textbf{Desde $s$}: solo una transici\'on controlable $a$.
+
+\medskip
+\begin{itemize}
+  \item[\textcolor{cChosen}{$\blacktriangleright$}] Elegir $a \to t$
+  \item \textsc{stack}: sin cambios
+  \item \textsc{ignore}: sin cambios
+  \item Siguiente estado: $t$
+\end{itemize}
+
+\medskip
+{\small No hay decisi\'on que tomar; \'unica opci\'on v\'alida.}
+\end{columns}
+\end{frame}
+
+%=======================================================================
+% CASO 2 -- una no-controlable
+%=======================================================================
+\begin{frame}{Caso 2 -- \'Unica transici\'on no-controlable}
+\begin{columns}[c]
+\column{0.42\textwidth}
+\begin{center}
+\begin{tikzpicture}[node distance=2.2cm]
+  \node[st, fill=gray!12] (s) {$s$};
+  \node[st, right of=s]   (t) {$t$};
+  \draw[tChosen] (s) -- node[above, lbl]{${\sim}a$} (t);
+  \node[below=0.05cm of s, cChosen, font=\tiny] {actual};
+\end{tikzpicture}
+\end{center}
+
+\column{0.54\textwidth}
+\textbf{Desde $s$}: solo una transici\'on no-controlable ${\sim}a$.
+
+\medskip
+\begin{itemize}
+  \item[\textcolor{cChosen}{$\blacktriangleright$}] Elegir ${\sim}a \to t$ (forzosa)
+  \item \textsc{stack}: sin cambios
+  \item \textsc{ignore}: sin cambios
+  \item Siguiente estado: $t$
+\end{itemize}
+
+\medskip
+{\small El director \emph{siempre} debe explorar no-controlables; no puede bloquearlas.}
+\end{columns}
+\end{frame}
+
+%=======================================================================
+% CASO 3 -- m\'ultiples no-controlables
+%=======================================================================
+\begin{frame}{Caso 3 -- M\'ultiples transiciones no-controlables}
+\begin{columns}[c]
+\column{0.44\textwidth}
+\begin{center}
+\begin{tikzpicture}[node distance=1.9cm]
+  \node[st, fill=gray!12] (s)  {$s$};
+  \node[st, above right=0.8cm and 1.8cm of s] (t1) {$t_1$};
+  \node[st, right of=s]                       (t2) {$t_2$};
+  \node[st, below right=0.8cm and 1.8cm of s] (t3) {$t_3$};
+  \draw[tChosen] (s) -- node[above, lbl, sloped]{${\sim}a$} (t1);
+  \draw[tStack]  (s) -- node[above, lbl]{${\sim}b$}         (t2);
+  \draw[tStack]  (s) -- node[below, lbl, sloped]{${\sim}c$} (t3);
+  \node[below=0.05cm of s, cChosen, font=\tiny] {actual};
+\end{tikzpicture}
+\end{center}
+
+\column{0.52\textwidth}
+\textbf{Desde $s$}: tres no-controlables.
+
+\medskip
+\begin{itemize}
+  \item[\textcolor{cChosen}{$\blacktriangleright$}] Elegir ${\sim}a \to t_1$ (primera)
+  \item[\textcolor{cStack}{$\blacktriangleright$}] Apilar ${\sim}b \to t_2$
+  \item[\textcolor{cStack}{$\blacktriangleright$}] Apilar ${\sim}c \to t_3$
+  \item \textsc{ignore}: sin cambios
+  \item Siguiente estado: $t_1$
+\end{itemize}
+
+\medskip
+\begin{block}{Observaci\'on clave}
+Como $s$ pertenece al director, \emph{todas} sus no-controlables tambi\'en pertenecen al director. No importa cu\'al se elige primero: el orden es irrelevante.
+\end{block}
+\end{columns}
+\end{frame}
+
+%=======================================================================
+% CASO 4 -- m\'ultiples controlables
+%=======================================================================
+\begin{frame}{Caso 4 -- M\'ultiples transiciones controlables}
+\begin{columns}[c]
+\column{0.44\textwidth}
+\begin{center}
+\begin{tikzpicture}[node distance=1.9cm]
+  \node[st, fill=gray!12] (s)  {$s$};
+  \node[st, above right=0.8cm and 1.8cm of s] (t1) {$t_1$};
+  \node[st, right of=s]                       (t2) {$t_2$};
+  \node[st, below right=0.8cm and 1.8cm of s] (t3) {$t_3$};
+  \draw[tChosen] (s) -- node[above, lbl, sloped]{$a$} (t1);
+  \draw[tIgnore] (s) -- node[above, lbl]{$b$}         (t2);
+  \draw[tIgnore] (s) -- node[below, lbl, sloped]{$c$} (t3);
+  \node[below=0.05cm of s, cChosen, font=\tiny] {actual};
+\end{tikzpicture}
+\end{center}
+
+\column{0.52\textwidth}
+\textbf{Desde $s$}: tres controlables.
+
+\medskip
+\begin{itemize}
+  \item[\textcolor{cChosen}{$\blacktriangleright$}] Elegir $a \to t_1$ (\emph{picker} de familia)
+  \item[\textcolor{cIgnore}{$\blacktriangleright$}] Ignorar $b \to t_2$
+  \item[\textcolor{cIgnore}{$\blacktriangleright$}] Ignorar $c \to t_3$
+  \item \textsc{stack}: sin cambios
+  \item Siguiente estado: $t_1$
+\end{itemize}
+
+\medskip
+\begin{block}{Heur\'istica de segundo nivel}
+O sea, tenemos otra heur\'istica para decidir qu\'e expandir (solo para controlables).
+\end{block}
+\end{columns}
+\end{frame}
+
+%=======================================================================
+% CASO 5 -- mezcla no-controlables y controlables
+%=======================================================================
+\begin{frame}{Caso 5a -- Mezcla: picker elige no-controlable (\texttt{null})}
+\begin{columns}[c]
+\column{0.44\textwidth}
+\begin{center}
+\begin{tikzpicture}[node distance=1.9cm]
+  \node[st, fill=gray!12] (s)  {$s$};
+  \node[st, above right=0.8cm and 1.8cm of s] (t1) {$t_1$};
+  \node[st, right of=s]                       (t2) {$t_2$};
+  \node[st, below right=0.8cm and 1.8cm of s] (t3) {$t_3$};
+  \draw[tChosen] (s) -- node[above, lbl, sloped]{${\sim}a$} (t1);
+  \draw[tStack]  (s) -- node[above, lbl]{${\sim}b$}         (t2);
+  \draw[tPend]   (s) -- node[below, lbl, sloped]{$c$}       (t3);
+  \node[below=0.05cm of s, cChosen, font=\tiny] {actual};
+  \node[right=0cm of t3, gray!60, font=\tiny] {(frontera)};
+\end{tikzpicture}
+\end{center}
+
+\column{0.52\textwidth}
+\textbf{Picker devuelve \texttt{null}}: no quiere elegir controlable.
+
+\medskip
+\begin{itemize}
+  \item[\textcolor{cChosen}{$\blacktriangleright$}] Elegir ${\sim}a \to t_1$
+  \item[\textcolor{cStack}{$\blacktriangleright$}] Apilar ${\sim}b \to t_2$
+  \item[\textcolor{gray!70}{$-$}] $c \to t_3$ queda en la \emph{frontera}
+  \item \textsc{ignore}: sin cambios
+\end{itemize}
+
+\medskip
+{\small El director restringe todas las controlables; solo habilita las no-controlables.}
+\end{columns}
+\end{frame}
+
+\begin{frame}{Caso 5b -- Mezcla: picker elige controlable (non-\texttt{null})}
+\begin{columns}[c]
+\column{0.44\textwidth}
+\begin{center}
+\begin{tikzpicture}[node distance=1.9cm]
+  \node[st, fill=gray!12] (s)  {$s$};
+  \node[st, above right=0.8cm and 1.8cm of s] (t1) {$t_1$};
+  \node[st, right of=s]                       (t2) {$t_2$};
+  \node[st, below right=0.8cm and 1.8cm of s] (t3) {$t_3$};
+  \draw[tChosen] (s) -- node[above, lbl, sloped]{$c$}       (t1);
+  \draw[tStack]  (s) -- node[above, lbl]{${\sim}a$}         (t2);
+  \draw[tStack]  (s) -- node[below, lbl, sloped]{${\sim}b$} (t3);
+  \node[below=0.05cm of s, cChosen, font=\tiny] {actual};
+\end{tikzpicture}
+\end{center}
+
+\column{0.52\textwidth}
+\textbf{Picker devuelve} $c$: elige la controlable.
+
+\medskip
+\begin{itemize}
+  \item[\textcolor{cChosen}{$\blacktriangleright$}] Elegir $c \to t_1$ (\emph{picker} de familia)
+  \item[\textcolor{cStack}{$\blacktriangleright$}] Apilar ${\sim}a \to t_2$
+  \item[\textcolor{cStack}{$\blacktriangleright$}] Apilar ${\sim}b \to t_3$
+  \item \textsc{ignore}: otras controlables (si hubiera)
+\end{itemize}
+
+\medskip
+{\small Las no-controlables van al \textsc{stack} (no al \textsc{ignore}): deben explorarse todas.}
+\end{columns}
+\end{frame}
+
+%=======================================================================
+% FILTRADO DE ERRORES
+%=======================================================================
+\begin{frame}{Filtrado -- Transiciones controlables a error}
+\begin{columns}[c]
+\column{0.44\textwidth}
+\begin{center}
+\begin{tikzpicture}[node distance=1.9cm]
+  \node[st, fill=gray!12] (s)  {$s$};
+  \node[st, above right=0.8cm and 1.8cm of s] (t1) {$t_1$};
+  \node[errst, below right=0.8cm and 1.8cm of s] (e) {\footnotesize ERR};
+  \draw[tChosen] (s) -- node[above, lbl, sloped]{$a$} (t1);
+  \draw[tError]  (s) -- node[below, lbl, sloped]{$b$} (e);
+  \node[below=0.05cm of s, cChosen, font=\tiny] {actual};
+\end{tikzpicture}
+\end{center}
+
+\column{0.52\textwidth}
+\textbf{Transiciones controlables a error} son descartadas antes de aplicar cualquier regla.
+
+\medskip
+\begin{itemize}
+  \item[\textcolor{cChosen}{$\blacktriangleright$}] Elegir $a \to t_1$
+  \item[\textcolor{cError}{$\times$}] $b \to \text{ERR}$ descartada
+\end{itemize}
+
+\medskip
+{\small Un estado es \emph{error} si est\'a en el conjunto de errores del contexto, o si alg\'un sub-estado del producto paralelo es \texttt{``ERROR''}.}
+
+\medskip
+{\small Las no-controlables a error \textbf{no} se filtran (el director debe expandirlas).}
+\end{columns}
+\end{frame}
+
+%=======================================================================
+% FALLBACK
+%=======================================================================
+\begin{frame}{Fallback -- Pila e Ignorados}
+
+Cuando no hay transiciones desde el \textbf{estado actual} en la \emph{frontera}:
+
+\bigskip
+\begin{enumerate}
+  \item[\textcolor{cStack}{\textbf{1.}}] \textcolor{cStack}{\textbf{Pop stack}} -- tomar la transici\'on del tope de la pila.\\
+    {\small Pila $\to$ no-controlables diferidas de pasos anteriores.}
+
+  \bigskip
+  \item[\textcolor{cIgnore}{\textbf{2.}}] \textcolor{cIgnore}{\textbf{Pop ignore}} -- si la pila est\'a vac\'ia, tomar de la lista de ignorados.\\
+    {\small Ignorados $\to$ controlables descartadas en decisiones anteriores.}
+
+  \bigskip
+  \item[\textbf{3.}] \textbf{Primera de la frontera} -- \'ultimo recurso si ambas listas est\'an vac\'ias.
+\end{enumerate}
+
+\bigskip
+\begin{alertblock}{Invariante}
+Pila $\to$ ignorados garantiza que todas las ramas no-controlables se exploran \emph{antes} de revisar las decisiones controlables diferidas.
+\end{alertblock}
+\end{frame}
+
+%=======================================================================
+% PICKERS POR FAMILIA
+%=======================================================================
+\begin{frame}{}
+\begin{center}
+\Huge \texttt{pickControllable} por familia
+\end{center}
+\end{frame}
+
+%=======================================================================
+% PICKER: DP
+%=======================================================================
+\begin{frame}{\texttt{pickControllable} -- DP (Dining Philosophers)}
+
+\textbf{Candidatas}: \texttt{take[i][j]} (fil\'osofo $i$ toma el fork $j$).
+
+\bigskip
+\textbf{Prioridad}:
+\begin{enumerate}
+  \item \textbf{Ready}: elegir \texttt{take[i]} con menor $i$ tal que el fil\'osofo $i$ est\'a en \texttt{``Ready''}.
+  \item \textbf{Hungry}: elegir \texttt{take[i]} con menor $i$ tal que el fil\'osofo $i$ est\'a en \texttt{``Hungry''}\\
+    y el monitor \emph{no} est\'a en \texttt{``Done''}.
+  \item \textbf{Fallback}: primera transici\'on.
+\end{enumerate}
+
+\bigskip
+\begin{block}{Intuici\'on}
+\texttt{Ready} significa que el fil\'osofo ya obtuvo el primer fork y puede comer si toma el segundo. Atenderlo primero minimiza la espera. El \'indice m\'inimo da orden determin\'istico.
+\end{block}
+\end{frame}
+
+%=======================================================================
+% PICKER: TL
+%=======================================================================
+\begin{frame}{\texttt{pickControllable} -- TL (Transfer Line)}
+
+\textbf{Candidatas}: \texttt{get[i]} (recoger pieza en posici\'on $i$).
+
+\bigskip
+\textbf{Prioridad}:
+\begin{enumerate}
+  \item \textbf{Ya explorado}: elegir \texttt{get[i]} cuyo estado destino ya fue visitado.\\
+    {\small Cierra el ciclo de la l\'inea de transferencia.}
+  \item \textbf{Mayor \'indice}: elegir \texttt{get[i]} con $i$ m\'aximo (que no vaya a error).\\
+    {\small Avanza lo m\'as posible hacia el final de la cadena.}
+  \item \textbf{Fallback}: primera transici\'on.
+\end{enumerate}
+
+\bigskip
+\begin{block}{Intuici\'on}
+La l\'inea tiene un orden lineal natural. Cerrar el ciclo primero; si no es posible, avanzar al m\'aximo $i$ sin error.
+\end{block}
+\end{frame}
+
+%=======================================================================
+% PICKER: AT
+%=======================================================================
+\begin{frame}{\texttt{pickControllable} -- AT (Air Traffic)}
+
+\textbf{Candidatas}: \texttt{approach[i]}, \texttt{descend[i][j]}.
+
+\bigskip
+\textbf{Prioridad}:
+\begin{enumerate}
+  \item \textbf{Approach}: elegir \texttt{approach[i]} si las alturas del estado actual son \emph{consecutivas}\\
+    (sin huecos vac\'ios entre aviones).
+  \item \textbf{Descend}: elegir \texttt{descend[i][j]} con menor $j$ tal que:
+    \begin{itemize}
+      \item el avi\'on $i$ est\'a en altura $j{+}1$ (justo encima del objetivo), y
+      \item la altura $j$ est\'a vac\'ia (\texttt{``Empty''}) en el estado actual.
+    \end{itemize}
+  \item \textbf{Fallback}: primera transici\'on.
+\end{enumerate}
+
+\bigskip
+\begin{block}{Intuici\'on}
+Primero completar aproximaciones cuando los aviones est\'an ordenados; luego bajar el avi\'on que est\'a justo encima del primer hueco libre.
+\end{block}
+\end{frame}
+
+%=======================================================================
+% PICKER: CM
+%=======================================================================
+\begin{frame}{\texttt{pickControllable} -- CM (Cat and Mouse)}
+
+\textbf{Candidatas}: \texttt{mouse[i][move[j]]} (rat\'on $i$ se mueve a posici\'on $j$).
+
+\bigskip
+\textbf{Regla}:
+\[
+  \text{safePlace} = \left\lfloor\frac{2k+1}{2}\right\rfloor
+\]
+\begin{itemize}
+  \item Elegir el movimiento que minimiza $|j - \text{safePlace}|$ (destino m\'as cercano al centro).
+  \item Empate: menor \'indice de rat\'on $i$.
+  \item \textbf{Fallback}: primera transici\'on.
+\end{itemize}
+
+\bigskip
+\begin{block}{Intuici\'on}
+El rat\'on debe alcanzar el centro del tablero (posici\'on segura / goal). Mover siempre hacia la posici\'on central minimiza los pasos hasta el objetivo.
+\end{block}
+\end{frame}
+
+%=======================================================================
+% PICKER: BW
+%=======================================================================
+\begin{frame}{\texttt{pickControllable} -- BW (Bidding Workflow)}
+
+\textbf{Candidatas}: \texttt{approve}, \texttt{refuse}, \texttt{assign[i]}.
+
+\bigskip
+\textbf{Prioridad}:
+\begin{enumerate}
+  \item \textbf{Approve}: elegir \texttt{approve} si no lleva a error.
+  \item \textbf{Refuse}: elegir \texttt{refuse} si el primer sub-estado del estado \emph{origen} es \texttt{``Rejected''}.
+  \item \textbf{Assign}: elegir \texttt{assign[i]} con menor $i$ tal que:
+    \begin{itemize}
+      \item el crew $i$ est\'a en \texttt{``Pending''} o \texttt{``Rejected[x]''} en el estado actual, y
+      \item no lleva a error.
+    \end{itemize}
+  \item \textbf{Fallback}: primera transici\'on.
+\end{enumerate}
+
+\bigskip
+\begin{block}{Intuici\'on}
+Aprobar y rechazar correctamente antes de asignar; dentro de las asignaciones, el orden por \'indice da determinismo.
+\end{block}
+\end{frame}
+
+%=======================================================================
+% PICKER: TA (placeholder)
+%=======================================================================
+\begin{frame}{\texttt{pickControllable} -- TA (Travel Agency)}
+
+\textbf{Candidatas}: \texttt{purchase[i]}, \texttt{cancel[i]}, \texttt{agency.succ}, \texttt{agency.fail}.
+
+{\small Layout: \texttt{[Agency | AgencyMonitor | Svc(0) | SvcMon(0) | \ldots | Svc(n{-}1) | SvcMon(n{-}1) | fluent]}}
+
+\medskip
+\textbf{Prioridad}:
+\begin{enumerate}
+  \item \textbf{All Success}: si todos los sub-estados \texttt{SvcMon(i)} son \texttt{``Success''} y \texttt{agency.succ} no lleva a error $\to$ expandir \texttt{agency.succ}.
+  \item \textbf{agency.fail}: si \texttt{agency.fail} no lleva a error $\to$ expandirla.
+  \item \textbf{purchase[i]}: elegir \texttt{purchase[i]} con $i$ m\'as cercano al \'indice $j$ del sub-estado \texttt{AgencyMonitor = ``Disallow[j]''}, tal que \texttt{SvcMon(i)} $\ne$ \texttt{``Success''}.
+  \item \textbf{Fallback}: primera transici\'on.
+\end{enumerate}
+
+\medskip
+\begin{block}{Intuici\'on}
+Confirmar la compra cuando todos los servicios aceptaron; si no, comprar el servicio m\'as cercano al \'indice actualmente denegado por el monitor de la agencia.
+\end{block}
+\end{frame}
+
+%=======================================================================
+% HEATMAP MACRO
+% Cell (n,k): x=k-1..k, y=n-1..n  (n=1 at bottom, n=15 at top)
+% #1 = title, #2 = fill commands
+%=======================================================================
+\newcommand{\cmap}[2]{%
+  \begin{tikzpicture}[scale=0.135]
+    \node[above, font=\bfseries\scriptsize, inner sep=1.5pt] at (7.5,15) {#1};
+    \fill[black] (0,0) rectangle (15,15);
+    #2
+    \draw[gray!30, ultra thin, step=1] (0,0) grid (15,15);
+    \draw[black, thin] (0,0) rectangle (15,15);
+    \node[font=\tiny, below] at (0.5,-0.3)  {\tiny 1};
+    \node[font=\tiny, below] at (14.5,-0.3) {\tiny 15};
+    \node[font=\tiny, left]  at (-0.3,0.5)  {\tiny 1};
+    \node[font=\tiny, left]  at (-0.3,14.5) {\tiny 15};
+    \node[font=\tiny, below] at (7.5,-1.2) {\tiny$k$};
+    \node[font=\tiny, left, rotate=90] at (-1.5,7.5) {\tiny$n$};
+  \end{tikzpicture}%
+}
+
+% Legend helper
+\newcommand{\hmlegend}{%
+  \vspace{2pt}
+  {\tiny
+    \textcolor{cB1}{$\blacksquare$}~$\le100$\quad
+    \textcolor{cB2}{$\blacksquare$}~$\le999$\quad
+    \textcolor{cB3}{$\blacksquare$}~$\le5000$\quad
+    \textcolor{cB4}{$\blacksquare$}~$\le15000$\quad
+    \textcolor{white}{$\blacksquare$}\llap{\colorbox{black}{\phantom{X}}}~timeout
+  }
+}
+
+%=======================================================================
+% RESULTADOS
+%=======================================================================
+\begin{frame}{}
+\begin{center}
+\Huge Resultados comparativos\\[0.5em]
+\large Budget: 15\,000 expansiones por instancia
+\end{center}
+\end{frame}
+
+%=======================================================================
+% RA heatmaps (6 families, 3+3 layout)
+%=======================================================================
+\begin{frame}{RA -- Instancias resueltas (budget = 15\,000)}
+\begin{center}
+\vspace{-6pt}
+\cmap{AT (81/225)}{%
+  \fill[cB1] (0,0) rectangle (15,2);
+  \fill[cB1] (0,2) rectangle (1,3);
+  \fill[cB2] (1,2) rectangle (15,3);
+  \fill[cB1] (0,3) rectangle (1,4);
+  \fill[cB2] (1,3) rectangle (2,4);
+  \fill[cB3] (2,3) rectangle (3,4);
+  \fill[cB2] (3,3) rectangle (15,4);
+  \fill[cB2] (0,4) rectangle (1,5);
+  \fill[cB3] (1,4) rectangle (2,5);
+  \fill[cB4] (2,4) rectangle (4,5);
+  \fill[cB3] (4,4) rectangle (15,5);
+  \fill[cB2] (0,5) rectangle (1,6);
+  \fill[cB4] (1,5) rectangle (2,6);
+  \fill[cB3] (0,6) rectangle (1,7);
+  \fill[cB3] (0,7) rectangle (1,8);
+  \fill[cB4] (0,8) rectangle (1,9);
+  \fill[cB4] (0,9) rectangle (1,10);
+}%
+\hspace{6pt}%
+\cmap{BW (146/225)}{%
+  \fill[cB1] (0,0) rectangle (15,2);
+  \fill[cB1] (0,2) rectangle (6,3);
+  \fill[cB2] (6,2) rectangle (15,3);
+  \fill[cB1] (0,3) rectangle (2,4);
+  \fill[cB2] (2,3) rectangle (15,4);
+  \fill[cB2] (0,4) rectangle (15,5);
+  \fill[cB2] (0,5) rectangle (8,6);
+  \fill[cB3] (8,5) rectangle (15,6);
+  \fill[cB2] (0,6) rectangle (3,7);
+  \fill[cB3] (3,6) rectangle (15,7);
+  \fill[cB3] (0,7) rectangle (11,8);
+  \fill[cB4] (11,7) rectangle (15,8);
+  \fill[cB3] (0,8) rectangle (4,9);
+  \fill[cB4] (4,8) rectangle (15,9);
+  \fill[cB3] (0,9) rectangle (1,10);
+  \fill[cB4] (1,9) rectangle (8,10);
+  \fill[cB4] (0,10) rectangle (3,11);
+}%
+\hspace{6pt}%
+\cmap{CM (23/225)}{%
+  \fill[cB1] (0,0) rectangle (3,1);
+  \fill[cB2] (3,0) rectangle (15,1);
+  \fill[cB2] (0,1) rectangle (3,2);
+  \fill[cB3] (3,1) rectangle (4,2);
+  \fill[cB2] (0,2) rectangle (1,3);
+  \fill[cB3] (1,2) rectangle (2,3);
+  \fill[cB4] (2,2) rectangle (3,3);
+  \fill[cB4] (0,3) rectangle (1,4);
+}%
+\\[3pt]
+\cmap{DP (165/225)}{%
+  \fill[cB1] (0,0) rectangle (15,3);
+  \fill[cB1] (0,3) rectangle (8,4);
+  \fill[cB2] (8,3) rectangle (15,4);
+  \fill[cB2] (0,4) rectangle (15,7);
+  \fill[cB3] (0,7) rectangle (15,9);
+  \fill[cB4] (0,9) rectangle (15,11);
+}%
+\hspace{6pt}%
+\cmap{TL (225/225)}{%
+  \fill[cB1] (0,0) rectangle (15,15);
+  \fill[cB2] (0,5) rectangle (1,13);
+  \fill[cB3] (0,13) rectangle (1,15);
+}%
+\hspace{6pt}%
+\cmap{TA (60/225)}{%
+  \fill[cB1] (0,0) rectangle (15,1);
+  \fill[cB2] (0,1) rectangle (15,3);
+  \fill[cB3] (0,3) rectangle (15,4);
+}%
+
+\vspace{3pt}
+\hmlegend
+\end{center}
+\end{frame}
+
+%=======================================================================
+% SuperDFS heatmaps (6 families, 3+3 layout)
+%=======================================================================
+\begin{frame}{SuperDFS -- Instancias resueltas (budget = 15\,000)}
+\begin{center}
+\vspace{-6pt}
+\cmap{AT (85/225)}{%
+  \fill[cB1] (0,0) rectangle (15,4);
+  \fill[cB1] (0,4) rectangle (1,5);
+  \fill[cB3] (1,4) rectangle (2,5);
+  \fill[cB4] (2,4) rectangle (3,5);
+  \fill[cB3] (4,4) rectangle (15,5);
+  \fill[cB1] (0,5) rectangle (1,6);
+  \fill[cB4] (1,5) rectangle (2,6);
+  \fill[cB1] (0,6) rectangle (1,15);
+}%
+\hspace{6pt}%
+\cmap{BW (146/225)}{%
+  \fill[cB1] (0,0) rectangle (15,2);
+  \fill[cB1] (0,2) rectangle (6,3);
+  \fill[cB2] (6,2) rectangle (15,3);
+  \fill[cB1] (0,3) rectangle (2,4);
+  \fill[cB2] (2,3) rectangle (15,4);
+  \fill[cB2] (0,4) rectangle (15,5);
+  \fill[cB2] (0,5) rectangle (8,6);
+  \fill[cB3] (8,5) rectangle (15,6);
+  \fill[cB2] (0,6) rectangle (3,7);
+  \fill[cB3] (3,6) rectangle (15,7);
+  \fill[cB3] (0,7) rectangle (11,8);
+  \fill[cB4] (11,7) rectangle (15,8);
+  \fill[cB3] (0,8) rectangle (4,9);
+  \fill[cB4] (4,8) rectangle (15,9);
+  \fill[cB3] (0,9) rectangle (1,10);
+  \fill[cB4] (1,9) rectangle (8,10);
+  \fill[cB4] (0,10) rectangle (3,11);
+}%
+\hspace{6pt}%
+\cmap{CM (30/225)}{%
+  \fill[cB1] (0,0) rectangle (3,1);
+  \fill[cB2] (3,0) rectangle (15,1);
+  \fill[cB2] (0,1) rectangle (3,2);
+  \fill[cB3] (3,1) rectangle (6,2);
+  \fill[cB4] (6,1) rectangle (11,2);
+  \fill[cB2] (0,2) rectangle (1,3);
+  \fill[cB3] (1,2) rectangle (2,3);
+  \fill[cB4] (2,2) rectangle (3,3);
+  \fill[cB4] (0,3) rectangle (1,4);
+}%
+\\[3pt]
+\cmap{DP (165/225)}{%
+  \fill[cB1] (0,0) rectangle (15,3);
+  \fill[cB1] (0,3) rectangle (9,4);
+  \fill[cB2] (9,3) rectangle (15,4);
+  \fill[cB2] (0,4) rectangle (15,8);
+  \fill[cB3] (0,8) rectangle (15,10);
+  \fill[cB4] (0,10) rectangle (15,11);
+}%
+\hspace{6pt}%
+\cmap{TL (225/225)}{%
+  \fill[cB1] (0,0) rectangle (15,15);
+}%
+\hspace{6pt}%
+\cmap{TA (129/225)}{%
+  \fill[cB1] (0,0) rectangle (15,1);
+  \fill[cB1] (0,1) rectangle (6,2);
+  \fill[cB2] (6,1) rectangle (15,2);
+  \fill[cB2] (0,2) rectangle (15,4);
+  \fill[cB2] (0,4) rectangle (7,5);
+  \fill[cB3] (7,4) rectangle (15,5);
+  \fill[cB2] (0,5) rectangle (2,6);
+  \fill[cB3] (2,5) rectangle (15,6);
+  \fill[cB3] (0,6) rectangle (10,7);
+  \fill[cB4] (10,6) rectangle (15,7);
+  \fill[cB3] (0,7) rectangle (3,8);
+  \fill[cB4] (3,7) rectangle (15,8);
+  \fill[cB4] (0,8) rectangle (7,9);
+  \fill[cB4] (0,9) rectangle (2,10);
+}%
+
+\vspace{3pt}
+\hmlegend
+\end{center}
+\end{frame}
+
+%=======================================================================
+% GRAFICO COMPARATIVO
+%=======================================================================
+\begin{frame}[shrink=2]{Comparativa -- Instancias resueltas (budget = 15\,000)}
+\begin{center}
+\begin{tikzpicture}
+\begin{axis}[
+    ybar stacked,
+    bar width=1.8cm,
+    symbolic x coords={RA, SuperDFS},
+    xtick=data,
+    x tick label style={font=\large\bfseries},
+    ylabel={Instancias resueltas},
+    ylabel style={font=\normalsize},
+    ymin=0, ymax=900,
+    width=9cm, height=7.1cm,
+    legend style={at={(1.02,1)}, anchor=north west, font=\scriptsize},
+    legend cell align=left,
+    enlarge x limits=0.5,
+    xtick style={draw=none},
+    ymajorgrids=true,
+    grid style={dashed, gray!40},
+    nodes near coords,
+    nodes near coords align={center},
+    nodes near coords style={font=\scriptsize\bfseries, text=white},
+    every node near coord/.append style={yshift=0pt},
+]
+\addplot+[fill=blue!50,   draw=blue!80!black]    coordinates {(RA,81)  (SuperDFS,85)};
+\addlegendentry{AT}
+\addplot+[fill=orange!70, draw=orange!90!black]  coordinates {(RA,146) (SuperDFS,146)};
+\addlegendentry{BW}
+\addplot+[fill=red!60,    draw=red!80!black]     coordinates {(RA,23)  (SuperDFS,30)};
+\addlegendentry{CM}
+\addplot+[fill=green!60!black, draw=green!80!black] coordinates {(RA,165) (SuperDFS,165)};
+\addlegendentry{DP}
+\addplot+[fill=purple!60, draw=purple!80!black]  coordinates {(RA,225) (SuperDFS,225)};
+\addlegendentry{TL}
+\addplot+[fill=teal!70,   draw=teal!90!black]    coordinates {(RA,60)  (SuperDFS,129)};
+\addlegendentry{TA}
+\end{axis}
+% Totals on top
+\node[font=\normalsize\bfseries] at (2.55,6.30) {700};
+\node[font=\normalsize\bfseries] at (6.45,6.95) {780};
+\end{tikzpicture}
+\end{center}
+\end{frame}
+
+\end{document}

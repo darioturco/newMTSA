@@ -1,0 +1,47 @@
+digraph AT_Heuristic {
+    label    = "AT – Air Traffic (n = k)  |  Hand Heuristic State Machine";
+    labelloc = t;
+    rankdir  = LR;
+    node [shape=ellipse, fontname="Helvetica", fontsize=11];
+    edge [fontname="Helvetica", fontsize=8];
+
+    _init [shape=point, width=0.2, label=""];
+
+    noncontrolable;
+    descend_p   [label="descend.p\n(p = 0..n-1)"];
+    descend_all [label="descend.all"];
+    approach_i  [label="approach.i\n(i = plane at h=0)"];
+    control_all [label="control.all"];
+
+    // ── initial ──────────────────────────────────────────────────────
+    _init       -> noncontrolable;
+    noncontrolable -> descend_p      [label="init  (p = 0)"];
+
+    // ── descend.p ────────────────────────────────────────────────────
+    descend_p -> descend_p   [label="descend[p][h]\n!allHeight, nextFree=p'\n(update p to nextFree)\n──────────────────\nrequestLand[p]  fresh\n(no state change)"];
+
+    descend_p -> approach_i  [label="descend[p][h]\nallHeight  &  !expanded"];
+
+    descend_p -> control_all [label="descend[p][h]  allHeight  &  expanded\n──────────────────────────────\ndescend[p][h]  !allHeight  &  nextFree=-1\n──────────────────────────────\nstale frontier"];
+
+    // ── descend.all ──────────────────────────────────────────────────
+    descend_all -> descend_all  [label="descend[*][h]\nEmpty below  &  !expanded"];
+
+    descend_all -> control_all  [label="descend[*][h]\nEmpty below  &  expanded"];
+
+    descend_all -> approach_i   [label="no descend avail\nplane at h=0"];
+
+    // ── approach.i ───────────────────────────────────────────────────
+    approach_i -> approach_i  [label="approach[i]  fresh\n(no state change)"];
+
+    approach_i -> control_all [label="land[i]\nallLanded  |  expanded"];
+
+    approach_i -> descend_all [label="land[i]\n!allLanded  &  !expanded"];
+
+    // ── control.all ──────────────────────────────────────────────────
+    control_all -> descend_p  [label="control.all action  (p=1)\n──────────────────────────\nrequestLand[i]  fresh   (p=i)\n──────────────────────────\nextendFlight[i]  off  freePlane=p  !expanded\n──────────────────────────\nrequestLand[i]  off  !expanded   (p=i)"];
+
+    control_all -> approach_i [label="extendFlight[i]  off\nplaneAt0=i  !expanded"];
+
+    control_all -> control_all [label="extendFlight[i]  off\n&  expanded"];
+}

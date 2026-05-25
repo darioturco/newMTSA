@@ -1,0 +1,27 @@
+digraph TL_Heuristic_Reduced {
+    label     = "TL – Transfer Line  |  Hand Heuristic (Reduced)";
+    labelloc  = t;
+    rankdir   = LR;
+    node [shape=ellipse, fontname="Helvetica", fontsize=11];
+    edge [fontname="Helvetica", fontsize=9];
+
+    _init      [shape=point, width=0.2, label=""];
+
+    get;
+    put;
+    returning;
+    reject;
+    "return.get";
+    accept;
+    "accept.get";
+
+    _init        -> get;
+    get          -> put          [label="get[i]  (i < n)"];
+    get          -> returning    [label="get[n]"];
+    put          -> get          [label="put[i]"];
+    returning    -> reject       [label="return*"];
+    reject       -> "return.get" [label="reject"];
+    "return.get" -> accept       [label="get[1]"];
+    accept       -> "accept.get" [label="accept"];
+    "accept.get" -> "accept.get" [label="get[0]"];
+}

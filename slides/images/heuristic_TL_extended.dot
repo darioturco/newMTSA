@@ -1,0 +1,36 @@
+digraph TL_Heuristic {
+    label     = "TL – Transfer Line  |  Hand Heuristic State Machine";
+    labelloc  = t;
+    rankdir   = LR;
+    node [shape=ellipse, fontname="Helvetica", fontsize=11];
+    edge [fontname="Helvetica", fontsize=9];
+
+    _init        [shape=point, width=0.2, label=""];
+
+    "get.0";
+    "put.1";
+    "get.1";
+    "put.2";
+    _dots        [shape=plaintext, label="..."];
+    "put.n";
+    "get.n";
+    returning;
+    reject;
+    "return.get";
+    accept;
+    "accept.get";
+
+    _init          -> "get.0"        [];
+    "get.0"        -> "put.1"        [label="get[0]"];
+    "put.1"        -> "get.1"        [label="put[1]"];
+    "get.1"        -> "put.2"        [label="get[1]"];
+    "put.2"        -> _dots          [label="get[2]", style=dashed];
+    _dots          -> "put.n"        [style=dashed];
+    "put.n"        -> "get.n"        [label="put[n]"];
+    "get.n"        -> returning      [label="get[n]"];
+    returning      -> reject         [label="return*"];
+    reject         -> "return.get"   [label="reject"];
+    "return.get"   -> accept         [label="get[1]"];
+    accept         -> "accept.get"   [label="accept"];
+    "accept.get"   -> "accept.get"   [label="get[0]"];
+}

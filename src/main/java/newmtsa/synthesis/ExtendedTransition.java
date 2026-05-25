@@ -38,6 +38,13 @@ public final class ExtendedTransition {
         return Integer.parseInt(action.substring(b1 + 1, b2));
     }
 
+    /** Extracts the last bracketed integer from actions like {@code mouse[i][move[j]]}, {@code descend[i][j]}. */
+    public int extractLastIndex() {
+        int b1 = action.lastIndexOf('[');
+        int b2 = action.lastIndexOf(']');
+        return Integer.parseInt(action.substring(b1 + 1, b2));
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;

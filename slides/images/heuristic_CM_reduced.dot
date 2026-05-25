@@ -1,0 +1,20 @@
+digraph CM_Heuristic_Reduced {
+    label    = "CM – Cat and Mouse  |  Hand Heuristic (Reduced)";
+    labelloc = t;
+    rankdir  = LR;
+    node [shape=ellipse, fontname="Helvetica", fontsize=11];
+    edge [fontname="Helvetica", fontsize=9];
+
+    _init [shape=point, width=0.2, label=""];
+
+    "mouse.turn";
+    "cat.turn";
+    "mouse.sync";
+
+    _init          -> "mouse.turn";
+    "mouse.turn"   -> "mouse.turn"   [label="mouse[i].move[p]  (i < n-1)\np = argmin |p - k|"];
+    "mouse.turn"   -> "cat.turn"     [label="mouse[n-1].move[p]  (last mouse)\np = argmin |p - k|"];
+    "cat.turn"     -> "cat.turn"     [label="uncontrollable\n(not mouse.turn)"];
+    "cat.turn"     -> "mouse.sync"   [label="no cat moves left"];
+    "mouse.sync"   -> "mouse.turn"   [label="mouse.turn"];
+}

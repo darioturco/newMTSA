@@ -1,0 +1,53 @@
+digraph DP_Heuristic {
+    label    = "DP – Dining Philosophers  |  Hand Heuristic State Machine";
+    labelloc = t;
+    rankdir  = LR;
+    node [shape=ellipse, fontname="Helvetica", fontsize=11];
+    edge [fontname="Helvetica", fontsize=9];
+
+    _init [shape=point, width=0.2, label=""];
+
+    noncontrolable;
+    "step.0";
+    "eat.0";
+    "feeding.1";
+    "step.1";
+    "eat.1";
+    _dots         [shape=plaintext, label="..."];
+    "feeding.n-1" [label="feeding.(n-1)"];
+    "step.n-1"    [label="step.(n-1)"];
+    "eat.n-1"     [label="eat.(n-1)"];
+    "eat.all.first";
+    "eat.all.comeback";
+    "eat.all.second";
+    "eat.all.think";
+    "eat.all.third";
+
+    _init           -> noncontrolable      [];
+    noncontrolable  -> noncontrolable      [label="uncontrollable*"];
+    noncontrolable  -> "step.0"            [label="take[0][0]\n(all Hungry)"];
+
+    "step.0"        -> "step.0"            [label="step[0]"];
+    "step.0"        -> "eat.0"             [label="take[0][(0+1)%n]"];
+    "eat.0"         -> "eat.0"             [label="eat[0]*\nrelease[0]*"];
+    "eat.0"         -> "feeding.1"         [label="think[0]"];
+
+    "feeding.1"     -> "step.1"            [label="take[1][1]  (fresh)"];
+    "step.1"        -> "step.1"            [label="step[1]"];
+    "step.1"        -> "eat.1"             [label="take[1][(1+1)%n]"];
+    "eat.1"         -> "eat.1"             [label="eat[1]*\nrelease[1]*"];
+    "eat.1"         -> _dots               [label="think[1]"];
+
+    _dots           -> "feeding.n-1"       [];
+    "feeding.n-1"   -> "step.n-1"          [label="take[n-1][n-1]  (fresh)"];
+    "step.n-1"      -> "step.n-1"          [label="step[n-1]"];
+    "step.n-1"      -> "eat.n-1"           [label="take[n-1][0]"];
+    "eat.n-1"       -> "eat.n-1"           [label="eat[n-1]*\nrelease[n-1]*"];
+    "eat.n-1"       -> "eat.all.first"     [label="think[n-1]"];
+
+    "eat.all.first"    -> "eat.all.comeback" [label="eat.all"];
+    "eat.all.comeback" -> "eat.all.second"   [label="take[0][0]"];
+    "eat.all.second"   -> "eat.all.think"    [label="eat.all"];
+    "eat.all.think"    -> "eat.all.third"    [label="think*"];
+    "eat.all.third"    -> "eat.all.third"    [label="release*  /  eat.all\n(terminal)"];
+}

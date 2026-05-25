@@ -4,6 +4,9 @@ import newmtsa.synthesis.Director;
 import newmtsa.synthesis.ExtendedTransition;
 
 import java.util.*;
+import java.util.Comparator;
+import java.util.function.Predicate;
+import java.util.function.ToIntFunction;
 
 /**
  * SuperDFS heuristic: depth-first search guided by a stack (pile) and an ignore list.
@@ -41,7 +44,6 @@ public class SuperDFSHeuristic implements Heuristic {
 
     private int     stepCount         = 0;
     private int     ignoredExpansions = 0;
-    private boolean summaryPrinted    = false;
     private boolean forceStackPop     = false;
 
     public SuperDFSHeuristic() {
@@ -184,103 +186,173 @@ public class SuperDFSHeuristic implements Heuristic {
      */
     private ExtendedTransition dpPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
         if (canReturnNull) return null;
-        int                readyI = Integer.MAX_VALUE;
-        ExtendedTransition ready  = null;
-        int                hungryI = Integer.MAX_VALUE;
-        ExtendedTransition hungry  = null;
-
-        for (ExtendedTransition t : ctrl) {
-            if (!t.action().startsWith("take[")) continue;
-            int      i     = t.extractFirstIndex();
-            String[] parts = t.from().split("\\|");
-            if (3 * i >= parts.length) continue;
-            String philoState   = parts[3 * i];
-            String monitorState = (3 * i + 2 < parts.length) ? parts[3 * i + 2] : "";
-            if ("Ready".equals(philoState) && i < readyI) {
-                readyI = i;
-                ready  = t;
-            } else if ("Hungry".equals(philoState) && !"Done".equals(monitorState) && i < hungryI) {
-                hungryI = i;
-                hungry  = t;
-            }
-        }
-        if (ready  != null) return ready;
+        ExtendedTransition ready = minByKey(ctrl, "take[",
+            t -> { int i = t.extractFirstIndex(); String[] p = t.from().split("\\|"); return 3*i < p.length && "Ready".equals(p[3*i]); },
+            ExtendedTransition::extractFirstIndex);
+        if (ready != null) return ready;
+        ExtendedTransition hungry = minByKey(ctrl, "take[",
+            t -> { int i = t.extractFirstIndex(); String[] p = t.from().split("\\|"); if (3*i >= p.length) return false; String ms = (3*i+2 < p.length) ? p[3*i+2] : ""; return "Hungry".equals(p[3*i]) && !"Done".equals(ms); },
+            ExtendedTransition::extractFirstIndex);
         if (hungry != null) return hungry;
         return ctrl.get(0);
     }
 
+    /**
+     * TL: candidates are {@code get[i]} (pick up piece at position i).
+     * Priority: (1) get[i] whose destination was already explored (closes the cycle);
+     * (2) get[i] with max i that does not go to error (advance as far as possible);
+     * (3) fallback: first transition.
+     */
     private ExtendedTransition tlPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
         if (canReturnNull) return null;
         Set<String> explored = (ctx != null) ? ctx.exploredStates() : Set.of();
-
         for (ExtendedTransition t : ctrl) {
             if (t.action().startsWith("get[") && explored.contains(t.to())) return t;
         }
-
-        int                bestI = -1;
-        ExtendedTransition best  = null;
-        for (ExtendedTransition t : ctrl) {
-            if (!t.action().startsWith("get[")) continue;
-            int i = t.extractFirstIndex();
-            if (!goesToError(t) && i > bestI) {
-                bestI = i;
-                best  = t;
-            }
-        }
+        ExtendedTransition best = maxByKey(ctrl, "get[", t -> !goesToError(t), ExtendedTransition::extractFirstIndex);
         return best != null ? best : ctrl.get(0);
     }
 
+    /**
+     * BW: candidates are {@code approve}, {@code refuse}, {@code assign[i]}.
+     * Priority: (1) approve if it does not go to error;
+     * (2) refuse if the first sub-state of the from-state is "Rejected";
+     * (3) assign[i] with min i where crew i is "Pending" or "Rejected[x]" and no error;
+     * (4) fallback: first transition.
+     */
     private ExtendedTransition bwPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
         if (canReturnNull) return null;
-        // Rule 1: approve not leading to error
         for (ExtendedTransition t : ctrl) {
             if ("approve".equals(t.action()) && !goesToError(t)) return t;
         }
-
-        // Rule 2: refuse where to-state first substate = 'Rejected'
         for (ExtendedTransition t : ctrl) {
             if ("refuse".equals(t.action())) {
-                String[] toParts = t.to().split("\\|");
-                if (toParts.length > 0 && "Rejected".equals(toParts[0])) return t;
+                String[] fromParts = t.from().split("\\|");
+                if (fromParts.length > 0 && "Rejected".equals(fromParts[0])) return t;
             }
         }
-
-        // Rule 3: assign[i] with min i where crew i is 'Pending' and no error
-        int                bestI = Integer.MAX_VALUE;
-        ExtendedTransition best  = null;
-        for (ExtendedTransition t : ctrl) {
-            if (!t.action().startsWith("assign[")) continue;
-            if (goesToError(t)) continue;
-            int i = t.extractFirstIndex();
-            String[] fromParts = t.from().split("\\|");
-            if (i + 1 < fromParts.length && "Pending".equals(fromParts[i + 1]) && i < bestI) {
-                bestI = i;
-                best  = t;
-            }
-        }
+        ExtendedTransition best = minByKey(ctrl, "assign[",
+            t -> { if (goesToError(t)) return false; int i = t.extractFirstIndex(); String[] p = t.from().split("\\|"); String cs = i+1 < p.length ? p[i+1] : ""; return "Pending".equals(cs) || cs.startsWith("Rejected"); },
+            ExtendedTransition::extractFirstIndex);
         return best != null ? best : ctrl.get(0);
     }
 
+    /**
+     * CM: candidates are {@code mouse[i][move[j]]} (mouse i moves to position j).
+     * Pick the move that minimises |j - safePlace| (closest to the safe centre position).
+     * Tie-break: lowest mouse index i. Fallback: first transition.
+     * safePlace = floor((2k+1)/2).
+     */
     private ExtendedTransition cmPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
         if (canReturnNull) return null;
-        int                bestDist = Integer.MAX_VALUE;
-        int                bestI    = Integer.MAX_VALUE;
-        ExtendedTransition best     = null;
+        ExtendedTransition best = minByComparator(ctrl, "mouse[", (a, b) -> {
+            int distA = Math.abs(a.extractLastIndex() - safePlace);
+            int distB = Math.abs(b.extractLastIndex() - safePlace);
+            int cmp   = Integer.compare(distA, distB);
+            return cmp != 0 ? cmp : Integer.compare(a.extractFirstIndex(), b.extractFirstIndex());
+        });
+        return best != null ? best : ctrl.get(0);
+    }
 
-        for (ExtendedTransition t : ctrl) {
-            String a = t.action();
-            if (!a.startsWith("mouse[")) continue;
-            int mouseI = t.extractFirstIndex();
-            int moveJ  = extractMovePosition(a);
-            int dist   = Math.abs(moveJ - safePlace);
+    /**
+     * TA: state layout is [Agency | AgencyMonitor | Service(0) | ServiceMonitor(0) | ... | Service(n-1) | ServiceMonitor(n-1) | fluent].
+     * ServiceMonitor(i) is at parts[3 + 2*i]. Controllable actions: agency.succ, agency.fail, purchase[i], cancel[i].
+     * Priority:
+     * (1) All ServiceMonitor substates are "Success" → expand agency.succ (not going to error).
+     * (2) agency.fail does not lead to any ERROR substate → expand agency.fail.
+     * (3) Otherwise → expand purchase[i] where ServiceMonitor(i) is not "Success"
+     *     and i is closest to j parsed from AgencyMonitor substate "Disallow[j]".
+     */
+    private ExtendedTransition taPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
+        if (canReturnNull) return null;
 
-            if (dist < bestDist || (dist == bestDist && mouseI < bestI)) {
-                bestDist = dist;
-                bestI    = mouseI;
-                best     = t;
+        String[] parts = ctrl.get(0).from().split("\\|");
+
+        boolean allSuccess = true;
+        for (int i = 0; i < n; i++) {
+            int idx = 3 + 2 * i;
+            if (idx >= parts.length || !"Success".equals(parts[idx])) { allSuccess = false; break; }
+        }
+
+        if (allSuccess) {
+            for (ExtendedTransition t : ctrl) {
+                if ("agency.succ".equals(t.action()) && !goesToError(t)) return t;
             }
         }
+
+        for (ExtendedTransition t : ctrl) {
+            if ("agency.fail".equals(t.action()) && !goesToError(t)) return t;
+        }
+
+        int j = 0;
+        String agentMonState = parts.length > 1 ? parts[1] : "";
+        if (agentMonState.startsWith("Disallow[")) {
+            int b1 = agentMonState.indexOf('[');
+            int b2 = agentMonState.indexOf(']', b1);
+            if (b1 >= 0 && b2 > b1) {
+                try { j = Integer.parseInt(agentMonState.substring(b1 + 1, b2)); }
+                catch (NumberFormatException ignored) {}
+            }
+        }
+
+        final int target = j;
+        ExtendedTransition best = minByKey(ctrl, "purchase[",
+            t -> { int i = t.extractFirstIndex(); int idx = 3 + 2 * i; return idx < parts.length && !"Success".equals(parts[idx]); },
+            t -> Math.abs(t.extractFirstIndex() - target));
         return best != null ? best : ctrl.get(0);
+    }
+
+    /**
+     * AT: prefer approach[i] if present; otherwise pick descend[i][j] where:
+     *   1. plane i is currently at height j+1 (one step above target — no skipping)
+     *   2. height j is Empty in the from-state
+     * Among valid candidates, pick the one with lowest j.
+     */
+    private ExtendedTransition atPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
+        if (canReturnNull) return null;
+        for (ExtendedTransition t : ctrl) {
+            if (t.action().startsWith("approach[") && heightsAreConsecutive(t.from())) return t;
+        }
+        ExtendedTransition best = minByKey(ctrl, "descend[",
+            t -> { int j = descendY(t.action()); String[] p = t.from().split("\\|"); return p.length > j + 2 && "Empty".equals(p[j + 2]); },
+            t -> descendY(t.action()));
+        return best != null ? best : ctrl.get(0);
+    }
+
+    // ── search helpers ────────────────────────────────────────────────────────
+
+    private ExtendedTransition minByKey(List<ExtendedTransition> ctrl, String prefix,
+                                        Predicate<ExtendedTransition> cond, ToIntFunction<ExtendedTransition> keyFn) {
+        int best = Integer.MAX_VALUE;
+        ExtendedTransition result = null;
+        for (ExtendedTransition t : ctrl) {
+            if (!t.action().startsWith(prefix) || !cond.test(t)) continue;
+            int key = keyFn.applyAsInt(t);
+            if (key < best) { best = key; result = t; }
+        }
+        return result;
+    }
+
+    private ExtendedTransition maxByKey(List<ExtendedTransition> ctrl, String prefix,
+                                        Predicate<ExtendedTransition> cond, ToIntFunction<ExtendedTransition> keyFn) {
+        int best = Integer.MIN_VALUE;
+        ExtendedTransition result = null;
+        for (ExtendedTransition t : ctrl) {
+            if (!t.action().startsWith(prefix) || !cond.test(t)) continue;
+            int key = keyFn.applyAsInt(t);
+            if (key > best) { best = key; result = t; }
+        }
+        return result;
+    }
+
+    private ExtendedTransition minByComparator(List<ExtendedTransition> ctrl, String prefix,
+                                               Comparator<ExtendedTransition> cmp) {
+        ExtendedTransition best = null;
+        for (ExtendedTransition t : ctrl) {
+            if (!t.action().startsWith(prefix)) continue;
+            if (best == null || cmp.compare(t, best) < 0) best = t;
+        }
+        return best;
     }
 
     private boolean heightsAreConsecutive(String fromState) {
@@ -297,49 +369,11 @@ public class SuperDFSHeuristic implements Heuristic {
         return true;
     }
 
-    private int extractMovePosition(String action) {
-        int lastBracket  = action.lastIndexOf('[');
-        int closeBracket = action.lastIndexOf(']');
-        return Integer.parseInt(action.substring(lastBracket + 1, closeBracket));
-    }
-
-    private ExtendedTransition taPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
-        if (canReturnNull) return null;
-        return ctrl.get(0);
-    }
-
-    /**
-     * AT: prefer approach[i] if present; otherwise pick descend[i][j] where:
-     *   1. plane i is currently at height j+1 (one step above target — no skipping)
-     *   2. height j is Empty in the from-state
-     * Among valid candidates, pick the one with lowest j.
-     */
-    private ExtendedTransition atPickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
-        if (canReturnNull) return null;
-        for (ExtendedTransition t : ctrl) {
-            if (t.action().startsWith("approach[") && heightsAreConsecutive(t.from())) return t;
-        }
-
-        int                bestJ = Integer.MAX_VALUE;
-        ExtendedTransition best  = null;
-        for (ExtendedTransition t : ctrl) {
-            String a = t.action();
-            if (!a.startsWith("descend[")) continue;
-            int      j     = descendY(a);
-            String[] parts = t.from().split("\\|");
-            if (parts.length > j + 2 && "Empty".equals(parts[j + 2]) && j < bestJ) {
-                bestJ = j;
-                best  = t;
-            }
-        }
-        return best != null ? best : ctrl.get(0);
-    }
-
     // ── backtrack ─────────────────────────────────────────────────────────────
 
     @Override
     public void notifyExplorationEnd(Director result) {
-        printSummary(result);
+
     }
 
     private int pickFromStackOrIgnored(List<ExtendedTransition> pending) {
@@ -369,39 +403,6 @@ public class SuperDFSHeuristic implements Heuristic {
             return 0;
         }
         return 0;
-    }
-
-    // ── summary ───────────────────────────────────────────────────────────────
-
-    private void printSummary(Director result) {
-        if (summaryPrinted) return;
-        summaryPrinted = true;
-
-        System.out.println("\n=== SuperDFS Exploration Summary ===");
-        if (choices.isEmpty()) {
-            System.out.println("  No multi-controllable choice points.");
-        } else {
-            System.out.println("  Multi-controllable decisions (" + choices.size() + "):");
-            for (ChoiceRecord cr : choices) {
-                boolean chosenInDirector = inDirector(result, cr.chosen());
-                System.out.println("  Step " + cr.step() + ":"
-                        + (result.isRealizable() ? " [chosen was " + (chosenInDirector ? "RIGHT" : "WRONG") + "]" : ""));
-                System.out.println("    Chosen:  " + cr.chosen().format());
-                for (ExtendedTransition sk : cr.skipped()) {
-                    boolean skInDirector = inDirector(result, sk);
-                    String tag = result.isRealizable() ? (skInDirector ? " [IN DIRECTOR]" : "") : "";
-                    System.out.println("    Ignored: " + sk.format() + tag);
-                }
-            }
-        }
-        if (result.isRealizable() && !choices.isEmpty()) {
-            long right = choices.stream().filter(cr -> inDirector(result, cr.chosen())).count();
-            long wrong = choices.size() - right;
-            System.out.println("  RIGHT decisions: " + right + " / " + choices.size()
-                    + "   WRONG decisions: " + wrong + " / " + choices.size());
-        }
-        System.out.println("  Expansions from ignored list: " + ignoredExpansions);
-        System.out.println("====================================\n");
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

@@ -27,9 +27,10 @@ import java.util.stream.Stream;
  */
 public class Benchmark {
 
-    static final int    EXPANSION_LIMIT = 15_000;
-    static final String BENCHMARK_DIR   = "fsp/Blocking/Benchmark";
-    static final String[] FAMILIES      = {"AT", "BW", "CM", "DP", "TL"};
+    static final int    EXPANSION_LIMIT   = 15_000;
+    static final String BENCHMARK_DIR     = "fsp/Blocking/Benchmark";
+    static final String[] FAMILIES        = {"TA", "AT", "BW", "CM", "DP", "TL"};
+    static final boolean  TIMEOUT_CUTS    = true;  // false = run every instance regardless of prior timeouts
 
     public static void main(String[] args) throws IOException {
         Path outDir = Paths.get("Experiments");
@@ -39,8 +40,7 @@ public class Benchmark {
         System.out.println("=== SuperDFS Blocking Benchmark ===");
         System.out.printf("Budget: %d  |  Output: %s%n%n", EXPANSION_LIMIT, csvPath);
 
-        try (PrintWriter csv = new PrintWriter(new FileWriter(csvPath))) {
-            csv.println("Instance,N,K,Name,Transitions,Time");
+        try (PrintWriter csv = new PrintWriter(new FileWriter(csvPath, true))) {
 
             for (String family : FAMILIES) {
                 System.out.printf("--- Family: %s ---%n", family);
@@ -54,9 +54,21 @@ public class Benchmark {
                             .toList();
                 }
 
+                int skipFromN = Integer.MAX_VALUE; // skip all n >= this
+                int currentN  = -1;
+                int skipFromK = Integer.MAX_VALUE; // skip k >= this within currentN
+
                 for (Path file : files) {
                     int[] nk = parseNKArray(file.getFileName().toString());
                     int n = nk[0], k = nk[1];
+
+                    if (n != currentN) { currentN = n; skipFromK = Integer.MAX_VALUE; }
+
+                    if (TIMEOUT_CUTS && (n >= skipFromN || k >= skipFromK)) {
+                        csv.printf("%s,%d,%d,,%d,%d%n", family, n, k, EXPANSION_LIMIT, -1);
+                        System.out.printf("  N=%2d K=%2d | SKIPPED%n", n, k);
+                        continue;
+                    }
 
                     BenchmarkRun run = runInstance(file, family, n, k);
                     boolean solved = run.transitions < EXPANSION_LIMIT;
@@ -65,6 +77,11 @@ public class Benchmark {
                     csv.printf("%s,%d,%d,,%d,%d%n", family, n, k, run.transitions, timeOut);
                     System.out.printf("  N=%2d K=%2d | %s  transitions=%d%n",
                             n, k, solved ? "SOLVED " : "TIMEOUT", run.transitions);
+
+                    if (!solved && TIMEOUT_CUTS) {
+                        skipFromK = k + 1;          // skip k > j for same n
+                        if (k == 1) skipFromN = n;  // k=1 failed → skip all n >= i
+                    }
                 }
             }
         }
