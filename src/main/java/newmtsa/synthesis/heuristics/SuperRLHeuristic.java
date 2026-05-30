@@ -48,9 +48,6 @@ public class SuperRLHeuristic extends SuperHeuristic {
      *         or an empty list when exploration has ended.
      */
     public List<float[]> driveToDecision() {
-        // Do NOT reset lastCtrlExpanded/lastNonCtrlExpanded here — they carry
-        // the count from the preceding expandChoice() call so the Python side
-        // sees agent-choice + auto-expanded in one combined step total.
         rlCandidates = Collections.emptyList();
 
         while (!engine.isExplorationEnded()) {
@@ -75,6 +72,7 @@ public class SuperRLHeuristic extends SuperHeuristic {
             if (t.isControllable(controllable)) lastCtrlExpanded++;
             else lastNonCtrlExpanded++;
             engine.expand(idx);
+            forceStackPop = false; // RL never had this; don't let base class disrupt DFS order
         }
 
         rlCandidates = Collections.emptyList();
@@ -101,7 +99,7 @@ public class SuperRLHeuristic extends SuperHeuristic {
         if (idx >= 0) {
             engine.expand(idx);
             currentState = chosen.to();
-            if (ctx.getFutureAddToFrontier(chosen).isEmpty()) forceStackPop = true;
+            forceStackPop = false;
             lastCtrlExpanded = 1;
         }
         rlCandidates = Collections.emptyList();
