@@ -260,10 +260,7 @@ public class MCTSHeuristic implements Heuristic, AutoCloseable {
             int N = frontier.size();
             int F = features.compute(frontier.get(0)).length;
             float[][] data = new float[N][F];
-            for (int i = 0; i < N; i++) {
-                int[] fv = features.compute(frontier.get(i));
-                for (int j = 0; j < F; j++) data[i][j] = fv[j];
-            }
+            for (int i = 0; i < N; i++) data[i] = features.compute(frontier.get(i));
 
             try (OnnxTensor tensor = OnnxTensor.createTensor(ortEnv, data);
                  OrtSession.Result res = ortSession.run(Map.of("features", tensor))) {

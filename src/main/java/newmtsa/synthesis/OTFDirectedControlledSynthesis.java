@@ -24,7 +24,7 @@ public interface OTFDirectedControlledSynthesis {
     List<ExtendedTransition> getFrontier();
     boolean                  isExplorationEnded();
     void                     expand(int index);
-    List<int[]>              getFrontierWithFeatures();
+    List<float[]>            getFrontierWithFeatures();
     Director                 getSynthesisResult();
     boolean                  isRealizable();
     int                      getTransitionsExplored();

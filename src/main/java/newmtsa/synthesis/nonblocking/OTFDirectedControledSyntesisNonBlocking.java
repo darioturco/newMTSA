@@ -378,12 +378,12 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
         return Director.unrealizable(succMap.size(), transitionsExplored, reason);
     }
 
-    public List<int[]> getFrontierWithFeatures() {
+    public List<float[]> getFrontierWithFeatures() {
         if (featureCompute == null)
             throw new IllegalStateException(
                     "No FeatureCompute registered — use the constructor overload that accepts FeatureCompute");
         prunePending();
-        List<int[]> result = new ArrayList<>(pending.size());
+        List<float[]> result = new ArrayList<>(pending.size());
         for (ExtendedTransition tr : pending) result.add(featureCompute.compute(tr));
         return result;
     }

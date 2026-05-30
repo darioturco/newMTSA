@@ -68,8 +68,8 @@ class DCSEnvironment:
             self._heuristic_name,
             self._feature_type_name or "",
         )
-        self.is_finished = bool(self._dcs.isExplorationEnded())
         self._frontier   = self._read_frontier()
+        self.is_finished = bool(self._dcs.isExplorationEnded())
         return self._frontier
 
     def step(self, action: int) -> tuple:
@@ -84,15 +84,31 @@ class DCSEnvironment:
             raise IndexError(f"action {action} out of range [0, {len(self._frontier)})")
 
         self._dcs.expand(action)
-        self.is_finished = bool(self._dcs.isExplorationEnded())
         self._frontier   = self._read_frontier()
+        self.is_finished = bool(self._dcs.isExplorationEnded())
+
+        ctrl_exp     = int(self._dcs.getLastCtrlExpanded())
+        non_ctrl_exp = int(self._dcs.getLastNonCtrlExpanded())
+        reward       = -2 * ctrl_exp - non_ctrl_exp
+
+        terminal_bonus = None
+        if self.is_finished:
+            episode_expansions = int(self._dcs.getTransitionsExplored())
+            director_trans     = int(self._dcs.getDirectorTransitions())
+            terminal_bonus     = 10 * min(director_trans - episode_expansions + 1, 0)
+            reward += terminal_bonus
 
         info = {
             "transitions_explored": int(self._dcs.getTransitionsExplored()),
+            "expansions":           ctrl_exp + non_ctrl_exp,
+            "ctrl_expanded":        ctrl_exp,
+            "non_ctrl_expanded":    non_ctrl_exp,
             "states_explored":      int(self._dcs.getStatesExplored()),
-            "realizable": bool(self._dcs.isRealizable()) if self.is_finished else None,
+            "realizable":           bool(self._dcs.isRealizable()) if self.is_finished else None,
+            "director_transitions":  director_trans if self.is_finished else None,
+            "terminal_bonus":       terminal_bonus,
         }
-        return self._frontier, -1, self.is_finished, info
+        return self._frontier, reward, self.is_finished, info
 
     @property
     def frontier(self) -> list:

@@ -21,7 +21,7 @@ public class DCSBenchmark {
 
     private interface RLPolicy extends AutoCloseable {
         void resetEpisode();
-        int  selectAction(List<int[]> frontier) throws OrtException;
+        int  selectAction(List<float[]> frontier) throws OrtException;
         @Override void close() throws OrtException;
     }
 
@@ -39,11 +39,10 @@ public class DCSBenchmark {
         @Override public void resetEpisode() {}
 
         @Override
-        public int selectAction(List<int[]> frontier) throws OrtException {
+        public int selectAction(List<float[]> frontier) throws OrtException {
             int N = frontier.size(), F = frontier.get(0).length;
             float[][] data = new float[N][F];
-            for (int i = 0; i < N; i++)
-                for (int j = 0; j < F; j++) data[i][j] = frontier.get(i)[j];
+            for (int i = 0; i < N; i++) data[i] = frontier.get(i);
             try (OnnxTensor t   = OnnxTensor.createTensor(env, data);
                  var        res = session.run(Map.of("features", t))) {
                 return argmax((float[]) res.get(outputName).orElseThrow().getValue());
@@ -76,13 +75,12 @@ public class DCSBenchmark {
         }
 
         @Override
-        public int selectAction(List<int[]> frontier) throws OrtException {
+        public int selectAction(List<float[]> frontier) throws OrtException {
             int N = frontier.size(), F = frontier.get(0).length;
             if (prevFeat == null) prevFeat = new float[1][1][F];
 
             float[][] cands = new float[N][F];
-            for (int i = 0; i < N; i++)
-                for (int j = 0; j < F; j++) cands[i][j] = frontier.get(i)[j];
+            for (int i = 0; i < N; i++) cands[i] = frontier.get(i);
 
             try (OnnxTensor tP = OnnxTensor.createTensor(env, prevFeat);
                  OnnxTensor tH = OnnxTensor.createTensor(env, h);
@@ -103,8 +101,7 @@ public class DCSBenchmark {
                     c = (float[][][]) res.get("c_out").orElseThrow().getValue();
 
                     prevFeat = new float[1][1][F];
-                    int[] chosen = frontier.get(action);
-                    for (int j = 0; j < F; j++) prevFeat[0][0][j] = chosen[j];
+                    prevFeat[0][0] = frontier.get(action).clone();
                     return action;
                 }
             }
@@ -131,7 +128,7 @@ public class DCSBenchmark {
         }
 
         @Override
-        public int selectAction(List<int[]> frontier) throws OrtException {
+        public int selectAction(List<float[]> frontier) throws OrtException {
             int N = frontier.size(), F = frontier.get(0).length;
             if (prevFeat == null) prevFeat = new float[F];
 
@@ -141,8 +138,7 @@ public class DCSBenchmark {
             for (int t = 0; t < T; t++) seq[0][t] = history.get(t);
 
             float[][] cands = new float[N][F];
-            for (int i = 0; i < N; i++)
-                for (int j = 0; j < F; j++) cands[i][j] = frontier.get(i)[j];
+            for (int i = 0; i < N; i++) cands[i] = frontier.get(i);
 
             try (OnnxTensor tS = OnnxTensor.createTensor(env, seq);
                  OnnxTensor tK = OnnxTensor.createTensor(env, cands);
@@ -150,9 +146,7 @@ public class DCSBenchmark {
                 float[] scores = (float[]) res.get("scores").orElseThrow().getValue();
                 int action = argmax(scores);
 
-                prevFeat = new float[F];
-                int[] chosen = frontier.get(action);
-                for (int j = 0; j < F; j++) prevFeat[j] = chosen[j];
+                prevFeat = frontier.get(action).clone();
                 return action;
             }
         }
@@ -189,9 +183,13 @@ public class DCSBenchmark {
 
     private static DCSForPython loadInstance(Path fspPath, String featureType,
                                               boolean frontierRestriction) throws IOException {
-        // Heuristic is required by the constructor but never called in RL mode —
-        // the ONNX policy overrides all action selection. FIRST is the cheapest placeholder.
-        return DCSForPython.fromPath(fspPath.toString(), "FIRST", featureType, frontierRestriction);
+        return loadInstance(fspPath, "FIRST", featureType, frontierRestriction);
+    }
+
+    private static DCSForPython loadInstance(Path fspPath, String heuristicType,
+                                              String featureType,
+                                              boolean frontierRestriction) throws IOException {
+        return DCSForPython.fromPath(fspPath.toString(), heuristicType, featureType, frontierRestriction);
     }
 
     private static String extractAgentFromPath(String onnxPath) {
@@ -223,11 +221,19 @@ public class DCSBenchmark {
         return "flat";
     }
 
+    private static boolean isSuperRLPath(String onnxPath) {
+        for (Path part : Paths.get(onnxPath)) {
+            String s = part.toString().toLowerCase();
+            if (s.equals("super_rl") || s.equals("superrl")) return true;
+        }
+        return false;
+    }
+
     private static BenchResult runEpisode(DCSForPython dcs, RLPolicy policy,
                                           int budget) throws OrtException {
         policy.resetEpisode();
         while (!dcs.isExplorationEnded() && dcs.getTransitionsExplored() < budget) {
-            List<int[]> frontier = dcs.getFrontierWithFeatures();
+            List<float[]> frontier = dcs.getFrontierWithFeatures();
             if (frontier.isEmpty()) break;
             dcs.expand(policy.selectAction(frontier));
         }
@@ -400,7 +406,7 @@ public class DCSBenchmark {
         for (Path fsp : fspFiles) {
             System.out.printf("Processing %s ...%n", fsp.getFileName());
 
-            Map<String, int[]>   vectorByKey = new LinkedHashMap<>();
+            Map<String, float[]> vectorByKey = new LinkedHashMap<>();
             Map<String, Integer> countByKey  = new LinkedHashMap<>();
 
             for (int run = 0; run < runs; run++) {
@@ -414,8 +420,8 @@ public class DCSBenchmark {
                 }
 
                 while (!dcs.isExplorationEnded()) {
-                    List<int[]> features = dcs.getFrontierWithFeatures();
-                    for (int[] fv : features) {
+                    List<float[]> features = dcs.getFrontierWithFeatures();
+                    for (float[] fv : features) {
                         String key = Arrays.toString(fv);
                         countByKey.merge(key, 1, Integer::sum);
                         vectorByKey.putIfAbsent(key, fv);
@@ -444,10 +450,7 @@ public class DCSBenchmark {
                     fsp.getFileName(), heuristicType, featureType, runs, sorted.size());
                 pw.println("---");
                 for (var entry : sorted) {
-                    int[] fv = vectorByKey.get(entry.getKey());
-                    java.math.BigInteger dec = java.math.BigInteger.ZERO;
-                    for (int bit : fv) dec = dec.shiftLeft(1).add(java.math.BigInteger.valueOf(bit));
-                    pw.printf("count=%-6d  decimal=%-20s  %s%n", entry.getValue(), dec, entry.getKey());
+                    pw.printf("count=%-6d  %s%n", entry.getValue(), entry.getKey());
                 }
             }
             System.out.printf("  %d unique vectors → %s%n", sorted.size(), outPath);
@@ -469,6 +472,16 @@ public class DCSBenchmark {
     //private static final String  DEFAULT_ONNX_PATH     = ".\\python\\results\\blocking\\BW\\basic\\ppo_flat\\ppo_ep0650.onnx";
     // ONNX model used when DEFAULT_HEURISTIC_TYPE = "MCTS_RL"
     private static final String  DEFAULT_MCTS_ONNX_PATH = ".\\python\\results\\blocking\\TL\\basic\\ppo_flat\\ppo_ep0415.onnx";
+    // ONNX model for SuperRL mode (path must contain a "super_rl" directory component)
+    //private static final String DEFAULT_SUPER_RL_ONNX_PATH = ".\\python\\results\\blocking\\TA\\super_rl\\ppo_flat\\ppo_ep0750.onnx";
+
+    // One trained ONNX model per benchmark family (used for multi-family runs).
+    private static final String[] FAMILY_ONNX_PATHS = {
+        ".\\python\\results\\blocking\\AT\\rol\\ppo_flat\\ppo_ep0330.onnx",
+        ".\\python\\results\\blocking\\TA\\rol\\ppo_flat\\ppo_ep0750.onnx",
+        ".\\python\\results\\blocking\\BW\\rol\\ppo_flat\\ppo_ep1115.onnx",
+        ".\\python\\results\\blocking\\TL\\basic\\ppo_flat\\ppo_ep0415.onnx",
+    };
 
     //private static final String  DEFAULT_FSP_DIR        = ".\\fsp\\Blocking\\Benchmark\\BW\\";
     private static final String  DEFAULT_FSP_DIR        = ".\\fsp\\Blocking\\Benchmark\\TL\\";
@@ -511,8 +524,9 @@ public class DCSBenchmark {
                 System.out.printf("  mode  = heuristic (%s)%n  dir   = %s%n  budget= %d%n%n",
                     heuristicType, fspDir, budget);
             } else {
-                System.out.printf("  onnx  = %s%n  dir   = %s%n  budget= %d%n%n",
-                    onnxPath, fspDir, budget);
+                boolean isSuperRL = isSuperRLPath(onnxPath);
+                System.out.printf("  mode  = %s%n  onnx  = %s%n  dir   = %s%n  budget= %d%n%n",
+                    isSuperRL ? "SUPER_RL" : "RL", onnxPath, fspDir, budget);
             }
         } else if (args.length < 2) {
             System.err.println(
@@ -546,20 +560,24 @@ public class DCSBenchmark {
             return;
         }
 
-        String agentType   = extractAgentFromPath(onnxPath);
-        String featureType = extractFeatureFromPath(onnxPath);
-        String networkType = extractNetworkFromPath(onnxPath);
-        Path   root        = findProjectRoot(Paths.get(onnxPath));
-        String csvPath     = root.resolve("python").resolve("results")
-                                 .resolve(agentType + "_" + networkType + "_" + featureType + "_benchmark.csv")
-                                 .toString();
+        String agentType        = extractAgentFromPath(onnxPath);
+        boolean superRL         = isSuperRLPath(onnxPath);
+        String featureType      = superRL ? "super" : extractFeatureFromPath(onnxPath);
+        String networkType      = extractNetworkFromPath(onnxPath);
+        String instanceHeuristic = superRL ? "SUPER_RL" : "FIRST";
+        Path   root             = findProjectRoot(Paths.get(onnxPath));
+        String csvName          = (superRL ? "super_rl" : agentType)
+                                  + "_" + networkType + "_" + featureType + "_benchmark.csv";
+        String csvPath          = root.resolve("python").resolve("results")
+                                      .resolve(csvName)
+                                      .toString();
 
         OrtEnvironment ortEnv = OrtEnvironment.getEnvironment();
         try (OrtSession session = ortEnv.createSession(onnxPath)) {
             String modelType  = detectModelType(session);
             int    expectedF  = extractExpectedFeatureSize(session, modelType);
-            System.out.printf("Model : %s%nType  : %s%nFeature: %s%nF     : %d features%nBudget: %d transitions%n%n",
-                Paths.get(onnxPath).getFileName(), modelType, featureType.toUpperCase(), expectedF, budget);
+            System.out.printf("Model   : %s%nType    : %s%nFeature : %s%nSuperRL : %b%nF       : %d features%nBudget  : %d transitions%n%n",
+                Paths.get(onnxPath).getFileName(), modelType, featureType.toUpperCase(), superRL, expectedF, budget);
 
             Pattern pat = Pattern.compile(".+-(\\d+)-(\\d+)\\.fsp");
             Map<Integer, List<Map.Entry<Integer, Path>>> byN = new TreeMap<>();
@@ -608,7 +626,8 @@ public class DCSBenchmark {
 
                         DCSForPython dcs;
                         try {
-                            dcs = loadInstance(fsp, featureType.toUpperCase(), DEFAULT_FRONTIER_RESTRICTION);
+                            dcs = loadInstance(fsp, instanceHeuristic,
+                                               featureType.toUpperCase(), DEFAULT_FRONTIER_RESTRICTION);
                         } catch (Exception e) {
                             System.err.printf("  N=%-3d K=%-3d  ERROR loading: %s%n",
                                 n, k, e.getMessage());
@@ -616,7 +635,7 @@ public class DCSBenchmark {
                         }
 
                         if (!dcs.isExplorationEnded()) {
-                            List<int[]> probe = dcs.getFrontierWithFeatures();
+                            List<float[]> probe = dcs.getFrontierWithFeatures();
                             if (!probe.isEmpty() && probe.get(0).length != expectedF) {
                                 System.err.printf(
                                     "  N=%-3d K=%-3d  SKIP: feature size mismatch" +

@@ -28,10 +28,10 @@ public interface FeatureCompute {
     void init(FeaturesContext context);
 
     /**
-     * Returns a binary (0/1) feature vector for the given frontier transition.
+     * Returns a feature vector for the given frontier transition.
      * The returned array must have the same length for every call within one episode.
      */
-    int[] compute(ExtendedTransition transition);
+    float[] compute(ExtendedTransition transition);
 
     /**
      * Returns an ordered list of names, one per position in the vector returned by

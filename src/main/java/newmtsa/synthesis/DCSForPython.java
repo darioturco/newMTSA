@@ -10,6 +10,7 @@ import newmtsa.synthesis.features.FeatureType;
 import newmtsa.synthesis.gr1.OTFDirectedControledSyntesisGR1;
 import newmtsa.synthesis.heuristics.Heuristic;
 import newmtsa.synthesis.heuristics.HeuristicType;
+import newmtsa.synthesis.heuristics.SuperRLHeuristic;
 import newmtsa.synthesis.nonblocking.OTFDirectedControledSyntesisNonBlocking;
 
 import java.io.IOException;
@@ -158,6 +159,10 @@ public class DCSForPython {
         this.controllable = gr1Engine.getControllable();
     }
 
+    // ── per-step expansion counts (non-SuperRL; SuperRL delegates to heuristic) ─
+    private int lastCtrlExpanded    = 0;
+    private int lastNonCtrlExpanded = 0;
+
     // ── public API ────────────────────────────────────────────────────────────
 
     /** Returns whether this instance is running a non-blocking or a GR(1) synthesis. */
@@ -188,11 +193,56 @@ public class DCSForPython {
     /**
      * Performs one step of the DCS main loop by expanding the transition at position
      * {@code index} in the current frontier.
+     * When the heuristic is {@link SuperRLHeuristic}, {@code index} is interpreted
+     * as an index into the last candidate list returned by {@link #getFrontierWithFeatures()}.
      */
-    public void expand(int index) { engine.expand(index); }
+    public void expand(int index) {
+        if (heuristic instanceof SuperRLHeuristic rl) {
+            rl.expandChoice(index);
+        } else {
+            List<ExtendedTransition> frontier = engine.getFrontier();
+            if (index < frontier.size()) {
+                boolean ctrl    = frontier.get(index).isControllable(controllable);
+                lastCtrlExpanded    = ctrl ? 1 : 0;
+                lastNonCtrlExpanded = ctrl ? 0 : 1;
+            }
+            engine.expand(index);
+        }
+    }
 
-    /** Returns one binary feature vector per frontier transition. */
-    public List<int[]> getFrontierWithFeatures() { return engine.getFrontierWithFeatures(); }
+    /** Controllable transitions expanded in the last agent step (including SuperDFS auto-steps). */
+    public int getLastCtrlExpanded() {
+        if (heuristic instanceof SuperRLHeuristic rl) return rl.getLastCtrlExpanded();
+        return lastCtrlExpanded;
+    }
+
+    /** Non-controllable transitions expanded in the last agent step (including SuperDFS auto-steps). */
+    public int getLastNonCtrlExpanded() {
+        if (heuristic instanceof SuperRLHeuristic rl) return rl.getLastNonCtrlExpanded();
+        return lastNonCtrlExpanded;
+    }
+
+    /** Total transitions in the director (controller strategy); 0 when unrealizable or not yet finished. */
+    public int getDirectorTransitions() {
+        Director d = engine.getSynthesisResult();
+        if (d == null || !d.isRealizable()) return 0;
+        int count = 0;
+        for (var list : d.enabled().values()) count += list.size();
+        return count;
+    }
+
+    /**
+     * Returns feature vectors for the current frontier.
+     * When the heuristic is {@link SuperRLHeuristic}, auto-drives all non-decision
+     * steps first and returns SUPER features only for the controllable candidates
+     * at the next decision point (or an empty list when the episode has ended).
+     */
+    public List<float[]> getFrontierWithFeatures() {
+        if (heuristic instanceof SuperRLHeuristic rl) {
+            return rl.driveToDecision();
+        }
+        return engine.getFrontierWithFeatures();
+    }
 
     /** Returns ordered feature names matching positions in feature vectors. Empty list when no FeatureCompute is set. */
     public List<String> getFeatureNames()     { return engine.getFeatureNames(); }
@@ -237,12 +287,14 @@ public class DCSForPython {
             FeatureCompute fc = (featureType != null && !featureType.isEmpty())
                 ? FeatureType.valueOf(featureType.toUpperCase()).create()
                 : null;
-            return new DCSForPython(name,
+            DCSForPython nb = new DCSForPython(name,
                 new ArrayList<>(model.processes()),
                 safetyProps,
                 new HashSet<>(spec.marking()),
                 new HashSet<>(spec.controllable()),
                 heuristic, fc, frontierRestriction);
+            if (heuristic instanceof SuperRLHeuristic rl) rl.bind(nb.engine, fc);
+            return nb;
         }
 
         // GR(1) / blocking path
@@ -277,8 +329,10 @@ public class DCSForPython {
         FeatureCompute fc = (featureType != null && !featureType.isEmpty())
             ? FeatureType.valueOf(featureType.toUpperCase()).create()
             : null;
-        return new DCSForPython(name, components, assumptions, guarantees,
+        DCSForPython gr1 = new DCSForPython(name, components, assumptions, guarantees,
             new HashSet<>(spec.controllable()), heuristic, fc, frontierRestriction);
+        if (heuristic instanceof SuperRLHeuristic rl) rl.bind(gr1.engine, fc);
+        return gr1;
     }
 
     // ── additional observable state ───────────────────────────────────────────

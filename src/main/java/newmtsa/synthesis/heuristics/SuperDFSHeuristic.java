@@ -10,47 +10,23 @@ import java.util.function.ToIntFunction;
 
 /**
  * SuperDFS heuristic: depth-first search guided by a stack (pile) and an ignore list.
- *
- * <p>Rules applied at each state:
- * <ol>
- *   <li>If the state has noncontrollable transitions: pick one, push the rest onto the stack.</li>
- *   <li>If the state has exactly one non-error controllable transition: pick it.</li>
- *   <li>If the state has multiple non-error controllable transitions: delegate to the
- *       family-specific picker; push the rest onto the ignore list and record the decision.</li>
- * </ol>
- * When the current DFS branch is exhausted (no transitions from the current state in the
- * frontier), the next transition is taken from the stack.  When the stack is also empty,
- * transitions are taken from the ignore list.
- *
- * <p>At the end of guided exploration the full decision log is printed.
+ * Extends SuperHeuristic, implementing pickControllable() with family-specific logic.
  */
-public class SuperDFSHeuristic implements Heuristic {
+public class SuperDFSHeuristic extends SuperHeuristic {
 
     private final String family;
     private final int    n;
     private final int    k;
-
-    private SynthesisContext ctx;
-    private Set<String>      controllable;
-
-    private String currentState = null;
-
-    private final Deque<ExtendedTransition>  stack          = new ArrayDeque<>();
-    private final List<ExtendedTransition>   ignored        = new ArrayList<>();
-    private final Set<String>                decidedStates  = new HashSet<>();
+    private final int    safePlace;
 
     private record ChoiceRecord(int step, ExtendedTransition chosen, List<ExtendedTransition> skipped) {}
     private final List<ChoiceRecord> choices = new ArrayList<>();
 
-    private int     stepCount         = 0;
-    private int     ignoredExpansions = 0;
-    private boolean forceStackPop     = false;
+    private int subHeuristicCalls = 0;
 
     public SuperDFSHeuristic() {
         this("unknown", 0, 0);
     }
-
-    private final int safePlace;
 
     public SuperDFSHeuristic(String family, int n, int k) {
         this.family    = family;
@@ -60,113 +36,8 @@ public class SuperDFSHeuristic implements Heuristic {
     }
 
     @Override
-    public void init(SynthesisContext ctx) {
-        this.ctx          = ctx;
-        this.controllable = ctx.controllable();
-    }
-
-    /**
-     * Selects the next transition to expand using depth-first order guided by the stack and ignore list.
-     * Noncontrollable transitions are always preferred; remaining ones are pushed onto the stack.
-     * Among controllable transitions the family-specific picker is used; unchosen ones go to the ignore list.
-     * When no transition from the current state exists in the frontier, falls back to stack then ignore list.
-     */
-    @Override
-    public int pick(List<ExtendedTransition> pending) {
-        stepCount++;
-
-        if (forceStackPop) {
-            forceStackPop = false;
-            return pickFromStackOrIgnored(pending);
-        }
-
-        if (currentState == null && !pending.isEmpty()) {
-            currentState = pending.get(0).from();
-        }
-
-        List<ExtendedTransition> nonCtrl = new ArrayList<>();
-        List<ExtendedTransition> ctrl    = new ArrayList<>();
-
-        for (ExtendedTransition t : pending) {
-            if (!t.from().equals(currentState)) continue;
-            if (t.isControllable(controllable)) {
-                if (!goesToError(t)) ctrl.add(t);
-            } else {
-                nonCtrl.add(t);
-            }
-        }
-
-        ExtendedTransition chosen = null;
-
-        if (!nonCtrl.isEmpty()) {
-            boolean mixed = !ctrl.isEmpty() && !decidedStates.contains(currentState);
-            if (mixed) {
-                // Case 5: both noncontrollable and controllable present.
-                // Ask the family picker whether to choose a controllable (canReturnNull=true).
-                // null => expand noncontrollable as usual.
-                // non-null => pick that controllable, push all noncontrollables to stack,
-                //             push remaining controllables to ignore.
-                ExtendedTransition ctrlChoice = pickControllable(ctrl, true);
-                if (ctrlChoice != null) {
-                    chosen = ctrlChoice;
-                    for (int i = nonCtrl.size() - 1; i >= 0; i--) {
-                        stack.push(nonCtrl.get(i));
-                    }
-                    List<ExtendedTransition> others = new ArrayList<>();
-                    for (ExtendedTransition t : ctrl) {
-                        if (t != ctrlChoice) others.add(t);
-                    }
-                    ignored.addAll(others);
-                    choices.add(new ChoiceRecord(stepCount, chosen, others));
-                    decidedStates.add(currentState);
-                } else {
-                    chosen = nonCtrl.get(0);
-                    for (int i = nonCtrl.size() - 1; i >= 1; i--) {
-                        stack.push(nonCtrl.get(i));
-                    }
-                }
-            } else {
-                chosen = nonCtrl.get(0);
-                for (int i = nonCtrl.size() - 1; i >= 1; i--) {
-                    stack.push(nonCtrl.get(i));
-                }
-            }
-        } else if (!ctrl.isEmpty()) {
-            if (decidedStates.contains(currentState)) {
-                return pickFromStackOrIgnored(pending);
-            }
-            chosen = pickControllable(ctrl, false);
-            if (ctrl.size() > 1) {
-                ExtendedTransition finalChosen = chosen;
-                List<ExtendedTransition> others = new ArrayList<>();
-                for (ExtendedTransition t : ctrl) {
-                    if (t != finalChosen) others.add(t);
-                }
-                ignored.addAll(others);
-                choices.add(new ChoiceRecord(stepCount, chosen, others));
-                decidedStates.add(currentState);
-            }
-        }
-
-        if (chosen != null) {
-            int idx = findInPending(pending, chosen);
-            if (idx >= 0) {
-                currentState = chosen.to();
-                if (ctx.getFutureAddToFrontier(chosen).isEmpty()) forceStackPop = true;
-                return idx;
-            }
-        }
-
-        return pickFromStackOrIgnored(pending);
-    }
-
-    // ── family-specific controllable picker ───────────────────────────────────
-
-    /**
-     * @param canReturnNull true only in Case 5 (mixed nonctrl+ctrl).
-     *                      Return null to signal "don't pick a controllable; expand noncontrollable instead."
-     */
-    private ExtendedTransition pickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
+    protected ExtendedTransition pickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
+        subHeuristicCalls++;
         return switch (family) {
             case "AT" -> atPickControllable(ctrl, canReturnNull);
             case "DP" -> dpPickControllable(ctrl, canReturnNull);
@@ -177,6 +48,18 @@ public class SuperDFSHeuristic implements Heuristic {
             default   -> ctrl.get(0);
         };
     }
+
+    @Override
+    protected void onControllableChosen(ExtendedTransition chosen, List<ExtendedTransition> others) {
+        choices.add(new ChoiceRecord(stepCount, chosen, others));
+    }
+
+    @Override
+    public void notifyExplorationEnd(Director result) {
+        System.out.println("[SuperDFS] Sub-heuristic calls: " + subHeuristicCalls);
+    }
+
+    // ── family-specific controllable pickers ──────────────────────────────────
 
     /**
      * DP: state layout is blocks of 3 per philosopher at positions 3i, 3i+1, 3i+2.
@@ -369,71 +252,10 @@ public class SuperDFSHeuristic implements Heuristic {
         return true;
     }
 
-    // ── backtrack ─────────────────────────────────────────────────────────────
-
-    @Override
-    public void notifyExplorationEnd(Director result) {
-
-    }
-
-    private int pickFromStackOrIgnored(List<ExtendedTransition> pending) {
-        while (!stack.isEmpty()) {
-            ExtendedTransition t = stack.pop();
-            int idx = findInPending(pending, t);
-            if (idx >= 0) {
-                currentState = t.to();
-                return idx;
-            }
-        }
-
-        Iterator<ExtendedTransition> it = ignored.iterator();
-        while (it.hasNext()) {
-            ExtendedTransition t = it.next();
-            it.remove();
-            int idx = findInPending(pending, t);
-            if (idx >= 0) {
-                ignoredExpansions++;
-                currentState = t.to();
-                return idx;
-            }
-        }
-
-        if (!pending.isEmpty()) {
-            currentState = pending.get(0).to();
-            return 0;
-        }
-        return 0;
-    }
-
-    // ── helpers ───────────────────────────────────────────────────────────────
-
-    private boolean inDirector(Director d, ExtendedTransition t) {
-        return d.goals().contains(t.to());
-    }
-
-    private boolean goesToError(ExtendedTransition t) {
-        if (ctx != null && ctx.errors().contains(t.to())) return true;
-        for (String part : t.to().split("\\|")) {
-            if ("ERROR".equals(part)) return true;
-        }
-        return false;
-    }
-
-    /** Extracts the height index j from {@code descend[i][j]}. */
     private int descendY(String action) {
         int b2 = action.indexOf(']');
         int b3 = action.indexOf('[', b2);
         int b4 = action.indexOf(']', b3);
         return Integer.parseInt(action.substring(b3 + 1, b4));
-    }
-
-    private int findInPending(List<ExtendedTransition> pending, ExtendedTransition t) {
-        for (int i = 0; i < pending.size(); i++) {
-            ExtendedTransition p = pending.get(i);
-            if (p.from().equals(t.from()) && p.action().equals(t.action()) && p.to().equals(t.to())) {
-                return i;
-            }
-        }
-        return -1;
     }
 }

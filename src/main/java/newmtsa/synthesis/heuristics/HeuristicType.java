@@ -71,7 +71,21 @@ public enum HeuristicType {
      * Noncontrollable transitions are prioritised; multiple controllable choices defer
      * all but the first to the ignore list.  Prints a decision log at the end.
      */
-    SUPER_DFS;
+    SUPER_DFS,
+    /**
+     * SuperHuman: identical to SuperDFS but when a controllable-choice decision must be
+     * made the human user is prompted interactively instead of a family-specific heuristic.
+     * In Case 5 (mixed state) the user may answer "none" to expand noncontrollable first.
+     */
+    SUPER_HUMAN,
+    /**
+     * SuperDFS logic with RL-driven controllable choice.
+     * Auto-expands non-controllable, single-controllable, and backtrack steps;
+     * pauses for the Python agent when multiple controllable candidates exist.
+     * Pair with feature_type=SUPER. Driven via DCSForPython.getFrontierWithFeatures()
+     * and DCSForPython.expand(idx).
+     */
+    SUPER_RL;
 
     /** Human-readable parameter string for the trace file. */
     public String params() {
@@ -120,6 +134,8 @@ public enum HeuristicType {
                     System.getProperty("superdfs.family", "unknown"),
                     Integer.parseInt(System.getProperty("superdfs.n", "0")),
                     Integer.parseInt(System.getProperty("superdfs.k", "0")));
+            case SUPER_HUMAN   -> new SuperHumanHeuristic();
+            case SUPER_RL      -> new SuperRLHeuristic();
         };
     }
 }

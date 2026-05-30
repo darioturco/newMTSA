@@ -64,7 +64,8 @@ public class Main {
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG_OPEN;
     //static final HeuristicType HEURISTIC = HeuristicType.HAND;
-    static final HeuristicType HEURISTIC = HeuristicType.SUPER_DFS;
+    //static final HeuristicType HEURISTIC = HeuristicType.SUPER_DFS;
+    static final HeuristicType HEURISTIC = HeuristicType.SUPER_HUMAN;
     //static final HeuristicType HEURISTIC = HeuristicType.RL;
     //static final HeuristicType HEURISTIC = HeuristicType.MCTS_RL;
 
@@ -129,10 +130,10 @@ public class Main {
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-15-15.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-5.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-11-15.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-5-5.fsp");
-            file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-10-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-15-15.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-10-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-10-10.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-3-3.fsp");
+            file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\BW\\BW-8-8.fsp");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\test21.lts");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
@@ -302,7 +303,7 @@ public class Main {
 
         int runs = (HEURISTIC == HeuristicType.RANDOM) ? RANDOM_RUNS : 1;
 
-        Map<String, int[]>  vectorByKey = new LinkedHashMap<>();
+        Map<String, float[]>  vectorByKey = new LinkedHashMap<>();
         Map<String, Integer> countByKey = new LinkedHashMap<>();
 
         for (int run = 0; run < runs; run++) {
@@ -314,8 +315,8 @@ public class Main {
                 : buildGR1DCSWithFeatures(model, spec, h, fc);
 
             while (!dcs.isExplorationEnded()) {
-                List<int[]> features = dcs.getFrontierWithFeatures();
-                for (int[] fv : features) {
+                List<float[]> features = dcs.getFrontierWithFeatures();
+                for (float[] fv : features) {
                     String key = Arrays.toString(fv);
                     countByKey.merge(key, 1, Integer::sum);
                     vectorByKey.putIfAbsent(key, fv);
@@ -345,10 +346,7 @@ public class Main {
                 file.getFileName(), HEURISTIC, FEATURE_TYPE, runs, sorted.size());
             pw.println("---");
             for (var entry : sorted) {
-                int[] fv = vectorByKey.get(entry.getKey());
-                java.math.BigInteger dec = java.math.BigInteger.ZERO;
-                for (int bit : fv) dec = dec.shiftLeft(1).add(java.math.BigInteger.valueOf(bit));
-                pw.printf("count=%-6d  decimal=%-20s  %s%n", entry.getValue(), dec, entry.getKey());
+                pw.printf("count=%-6d  %s%n", entry.getValue(), entry.getKey());
             }
         }
         System.out.println("Feature vectors saved to: " + outPath);

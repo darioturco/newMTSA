@@ -27,11 +27,16 @@ Thumbs.db
 .claude/
 
 # Others
-slides/
+slides/*.aux
+slides/*.log
+slides/*.nav
+slides/*.out
+slides/*.snm
+slides/*.toc
 plan.txt
 run_test.txt
+rol.txt
 *.png
-*.pdf
 *.sol
 
 # Python

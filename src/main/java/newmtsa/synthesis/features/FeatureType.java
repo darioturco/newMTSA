@@ -9,18 +9,23 @@ package newmtsa.synthesis.features;
  * <pre>
  * BASIC – features from "On the fly controller synthesis via reinforcement learning"
  * ROL   – BASIC features + role-based encoding (abstract submachine per component) + one-hot action + has_index
+ * SUPER – per-transition scoring features: abstract action, normalised indices, destination state,
+ *         role fractions, changed-role encoding, phase — size-normalised for cross-instance generalisation
  * </pre>
  */
 public enum FeatureType {
 
     BASIC,
     /** BasicFeatures extended with role-based component state encoding — see {@link RolFeatures}. */
-    ROL;
+    ROL,
+    /** Per-transition scoring features designed for cross-instance generalisation — see {@link SuperFeatures}. */
+    SUPER;
 
     public FeatureCompute create() {
         return switch (this) {
-            case BASIC -> new BasicFeatures();
-            case ROL   -> new RolFeatures();
+            case BASIC  -> new BasicFeatures();
+            case ROL    -> new RolFeatures();
+            case SUPER  -> new SuperFeatures();
         };
     }
 }

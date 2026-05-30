@@ -62,13 +62,13 @@ public class RolFeatures implements FeatureCompute {
     }
 
     @Override
-    public int[] compute(ExtendedTransition t) {
-        int[] basicF = basic.compute(t);
-        int   n      = ctx.getNoIdxAlphabet().size();
-        int   r      = abstractRoles.size();
+    public float[] compute(ExtendedTransition t) {
+        float[] basicF = basic.compute(t);
+        int     n      = ctx.getNoIdxAlphabet().size();
+        int     r      = abstractRoles.size();
 
         // Append role + action features after the BasicFeatures vector.
-        int[] f = Arrays.copyOf(basicF, basicF.length + 3 * r + n + 1);
+        float[] f = Arrays.copyOf(basicF, basicF.length + 3 * r + n + 1);
         int   p = basicF.length;
 
         // Split composite states into per-component parts.
@@ -158,7 +158,7 @@ public class RolFeatures implements FeatureCompute {
      *
      * @return next free index in {@code f}
      */
-    private int fillTernaryRoles(List<String> roles, int[] f, int offset) {
+    private int fillTernaryRoles(List<String> roles, float[] f, int offset) {
         // count occurrences of each abstract role, cap at 2, then shift to [-1, 0, 1]
         for (String role : roles) {
             int idx = Collections.binarySearch(abstractRoles, role);

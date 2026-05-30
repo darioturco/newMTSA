@@ -29,7 +29,7 @@ Sequential : EpisodeReplayBuffer — stores full episodes; samples seq_len windo
 import csv
 import re
 import random
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
@@ -514,10 +514,10 @@ def train(
 
     results_path = Path(results_dir)
     results_path.mkdir(parents=True, exist_ok=True)
-    csv_path = results_path / "dqn_training.csv"
+    csv_path = results_path / "training.csv"
 
     with open(csv_path, "w", newline="") as f:
-        csv.writer(f).writerow(["episode", "total_reward", "steps", "realizable"])
+        csv.writer(f).writerow(["episode", "total_reward", "steps", "expansions", "loss", "realizable", "ctrl_actions"])
 
     best_ep_reward = float("-inf")
     best_avg     = float("-inf")
@@ -526,6 +526,10 @@ def train(
     recent: deque = deque(maxlen=50)
     global_steps = 0
     stop_reason  = f"max episodes ({max_episodes})"
+
+    feat_counter: Counter = Counter()
+    feature_names: list = None
+    is_super_rl = getattr(env, "_heuristic_name", "") == "SUPER_RL"
 
     if agent._use_sequential:
         agent._fill_episode_buffer(env, fsp_path)
@@ -543,21 +547,35 @@ def train(
     for ep in range(1, max_episodes + 1):
         frontier = env.reset(fsp_path)
 
+        if feature_names is None and frontier:
+            try:
+                raw = env._dcs.getFeatureNames()
+                feature_names = [str(n) for n in raw]
+            except Exception:
+                pass
+
         if frontier and not agent._initialized:
             agent._init_networks(len(frontier[0]))
 
         agent.reset_episode()
 
-        ep_reward = 0
-        ep_steps  = 0
-        ep_info   = {}
+        ep_reward      = 0
+        ep_steps       = 0
+        ep_expansions  = 0
+        ep_info        = {}
+        ep_trace: list = [] if is_super_rl else None
 
         while not env.is_finished:
             if not frontier:
                 break
 
+            for fv in frontier:
+                feat_counter[tuple(fv)] += 1
+
             prev_frontier = frontier
             action        = agent.select_action(frontier)
+            if ep_trace is not None:
+                ep_trace.append(action)
 
             frontier, reward, done, ep_info = env.step(action)
             next_feats = frontier if (not done and frontier) else []
@@ -565,18 +583,21 @@ def train(
             if agent._initialized:
                 agent.observe(prev_frontier, action, reward, next_feats, done)
 
-            ep_reward    += reward
-            ep_steps     += 1
+            ep_reward     += reward
+            ep_steps      += 1
+            ep_expansions += ep_info.get("expansions", 0)
             global_steps += 1
             agent.decay_epsilon()
 
-            if global_steps >= max_steps:
-                stop_reason = f"max steps ({max_steps:,})"
-                break
-
+        realizable = ep_info.get("realizable")
+        if realizable is None and env.is_finished:
+            realizable = bool(env._dcs.isRealizable())
+        loss_val   = f"{agent.last_loss:.6f}" if agent.last_loss is not None else ""
+        ctrl_acts = " ".join(map(str, ep_trace)) if ep_trace is not None else ""
         with open(csv_path, "a", newline="") as f:
             csv.writer(f).writerow(
-                [ep, ep_reward, ep_steps, ep_info.get("realizable")]
+                [ep, ep_reward, ep_steps, ep_expansions, loss_val,
+                 realizable, ctrl_acts]
             )
 
         if ep % agent.save_frequency == 0 and agent._initialized:
@@ -602,8 +623,14 @@ def train(
 
         if verbose:
             loss_str = f"{agent.last_loss:.5f}" if agent.last_loss is not None else "N/A   "
+            if env._heuristic_name == "SUPER_RL":
+                tb  = ep_info.get("terminal_bonus") or 0
+                dt  = ep_info.get("director_transitions") or 0
+                exp_str = f" | expansions={ep_expansions:6d} | director={dt:6d} | bonus={tb:6d}"
+            else:
+                exp_str = ""
             print(
-                f"Ep {ep:4d} | reward={ep_reward:6d} | steps={ep_steps:4d} | "
+                f"Ep {ep:4d} | reward={ep_reward:6d} | steps={ep_steps:4d}{exp_str} | "
                 f"ε={agent.epsilon:.5f} | avg50={avg:7.1f} | "
                 f"loss={loss_str} | patience={no_improve}/{patience}"
             )
@@ -612,6 +639,7 @@ def train(
             stop_reason = f"patience ({patience} episodes without improvement)"
             break
         if global_steps >= max_steps:
+            stop_reason = f"max steps ({max_steps:,})"
             break
 
     print(
@@ -619,5 +647,22 @@ def train(
         f"  —  best reward: {best_ep_reward}"
         f"  —  end: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
+
+
+    if feat_counter:
+        dim = len(next(iter(feat_counter)))
+        if feature_names and len(feature_names) == dim:
+            header = feature_names + ["count"]
+        else:
+            header = [f"f{i}" for i in range(dim)] + ["count"]
+        feat_path = results_path / "feature_vectors.csv"
+        with open(feat_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(header)
+            for vec, cnt in sorted(feat_counter.items(), key=lambda x: -x[1]):
+                w.writerow([*vec, cnt])
+        if verbose:
+            print(f"[Features] {len(feat_counter):,} unique vectors → {feat_path}")
+
     agent.trained = True
     return agent

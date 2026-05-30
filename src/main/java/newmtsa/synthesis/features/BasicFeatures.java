@@ -42,9 +42,9 @@ public class BasicFeatures implements FeatureCompute {
     }
 
     @Override
-    public int[] compute(ExtendedTransition t) {
-        int n   = ctx.getNoIdxAlphabet().size();
-        int[] f = new int[2 * n + 19];
+    public float[] compute(ExtendedTransition t) {
+        int n     = ctx.getNoIdxAlphabet().size();
+        float[] f = new float[2 * n + 19];
         int   p = 0;
 
         // 1. event label — one-hot of ℓ in Σ̃

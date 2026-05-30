@@ -20,7 +20,7 @@ DQN = dict(
     epsilon_start=1.0,
     epsilon_end=0.05,
     epsilon_decay="auto",
-    epsilon_decay_episodes=400,
+    epsilon_decay_episodes=800,
     target_update_freq=200,
     tau=1.0,
     min_replay_size=500,
@@ -82,7 +82,7 @@ SAC = dict(
 )
 
 TRAIN = dict(
-    max_episodes=1600,
-    max_steps=150_000,
-    patience=150,
+    max_episodes=5000,
+    max_steps=1_000_000,
+    patience=500,
 )
