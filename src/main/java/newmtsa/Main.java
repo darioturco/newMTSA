@@ -64,8 +64,9 @@ public class Main {
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG;
     //static final HeuristicType HEURISTIC = HeuristicType.RA_ERG_OPEN;
     //static final HeuristicType HEURISTIC = HeuristicType.HAND;
-    //static final HeuristicType HEURISTIC = HeuristicType.SUPER_DFS;
-    static final HeuristicType HEURISTIC = HeuristicType.SUPER_HUMAN;
+    static final HeuristicType HEURISTIC = HeuristicType.SUPER_DFS;
+    //static final HeuristicType HEURISTIC = HeuristicType.SuperRL;
+    //static final HeuristicType HEURISTIC = HeuristicType.SUPER_HUMAN;
     //static final HeuristicType HEURISTIC = HeuristicType.RL;
     //static final HeuristicType HEURISTIC = HeuristicType.MCTS_RL;
 
@@ -79,12 +80,12 @@ public class Main {
     static final int     RANDOM_RUNS          = 10;    // Number of runs when HEURISTIC=RANDOM and SAVE_FEATURE_VECTORS=true; other heuristics always do 1 run.
 
     // Path of the ONNX model loaded by RL and MCTS_RL heuristics.
-    static final String MODEL_PATH = ".\\python\\results\\blocking\\TL\\rol\\ppo_flat\\ppo_ep0710.onnx";
+    static final String MODEL_PATH = "python\\results\\blocking\\TL\\super_custom\\path_flat\\path_best.onnx";
 
     // Possible features types:
     //  "BASIC"
     //  "ROL"
-    static final String FEATURE_TYPE = "ROL";
+    static final String FEATURE_TYPE = "SUPER_CUSTOM";
 
     // Scripted frontier indices used when HEURISTIC = RANDOM.
     // At step k picks pending.get(SCRIPT[k]); falls back to random once exhausted.
@@ -127,14 +128,14 @@ public class Main {
         if(args.length > 0){
             file = Path.of(args[0]);
         }else{
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-15-15.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-5.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-11-15.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TL\\TL-2-2.fsp");
+            file = Path.of(".\\fsp\\Blocking\\Benchmark\\CM\\CM-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-15-15.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-10-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\Benchmark\\DP\\DP-10-10.fsp");
-            file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp");
-            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\BW\\BW-8-8.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp");
+            //file = Path.of(".\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\test21.lts");
             //file = Path.of(".\\fsp\\Blocking\\ControllableFSPs\\GR1Test43.lts");
             //file = Path.of("C:\\Users\\diort\\Downloads\\data\\krka_et_al_FSE14\\reference_models\\ElemNumber$NumberFormatStringTokenizer.lts");
@@ -155,6 +156,7 @@ public class Main {
         System.setProperty("mcts.onnx.path", MODEL_PATH);
         System.setProperty("feature_type", FEATURE_TYPE);
         System.setProperty("random.script", SCRIPT.toString());
+        System.setProperty("rl.verbose",    String.valueOf(VERBOSE));
 
         runSynthesis(model, true, file);
 
@@ -192,6 +194,21 @@ public class Main {
             baseH = HEURISTIC == HeuristicType.HAND
                     ? new HandHeuristic(family, n, k)
                     : new newmtsa.synthesis.heuristics.SuperDFSHeuristic(family, n, k);
+        } else if (HEURISTIC == HeuristicType.SuperRL) {
+            String family = (file.getParent() != null) ? file.getParent().getFileName().toString() : "unknown";
+            String fname = file.getFileName().toString();
+            int n = 0, k = 0;
+            if (fname.endsWith(".fsp")) {
+                String[] parts = fname.substring(0, fname.length() - 4).split("-");
+                if (parts.length >= 3) {
+                    n = Integer.parseInt(parts[parts.length - 2]);
+                    k = Integer.parseInt(parts[parts.length - 1]);
+                }
+            }
+            System.setProperty("superdfs.family", family);
+            System.setProperty("superdfs.n", String.valueOf(n));
+            System.setProperty("superdfs.k", String.valueOf(k));
+            baseH = HEURISTIC.create();
         } else {
             baseH = HEURISTIC.create();
         }
@@ -213,6 +230,12 @@ public class Main {
 
         boolean realizable = result.isRealizable();
         System.out.println("  Result: " + (realizable ? "REALIZABLE" : "UNREALIZABLE"));
+
+        if (HEURISTIC == HeuristicType.SUPER_DFS) {
+            List<Integer> decisions = new ArrayList<>();
+            for (TraceStep step : recorder.getTrace()) decisions.add(step.index());
+            System.out.println("  SuperDFS decisions: " + decisions);
+        }
 
         System.out.println("  Expansions: " + recorder.getTrace().size());
         int directorTransitionCount = result.enabled().values().stream().mapToInt(List::size).sum();

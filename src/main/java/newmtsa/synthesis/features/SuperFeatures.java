@@ -168,7 +168,9 @@ public class SuperFeatures implements FeatureCompute {
     }
 
     private static String abstractRole(String state) {
-        String s = FeaturesContext.removeIndices(state);
+        String s = FeaturesContext.removeIndices(state);   // strips [N]
+        s = s.replaceAll("_[0-9]+", "");                   // strips _N (FSP split-state suffixes)
+        s = s.replaceAll("[0-9]+$", "");                   // strips trailing bare digits
         return s.replaceAll("\\(\\d+(?:,\\s*\\d+)*\\)$", "");
     }
 

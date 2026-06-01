@@ -2,6 +2,7 @@ package newmtsa.synthesis.features;
 
 import newmtsa.synthesis.ExtendedTransition;
 
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -26,6 +27,14 @@ public interface FeatureCompute {
      * data that would otherwise be recomputed on every {@link #compute} call.
      */
     void init(FeaturesContext context);
+
+    /**
+     * Called once per decision point with the full list of controllable candidates,
+     * before any per-transition {@link #compute} calls for those candidates.
+     * Use this to pre-compute cross-candidate aggregates (e.g., min/max indices).
+     * Default implementation is a no-op.
+     */
+    default void precompute(List<ExtendedTransition> candidates) {}
 
     /**
      * Returns a feature vector for the given frontier transition.

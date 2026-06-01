@@ -79,19 +79,25 @@ public enum HeuristicType {
      */
     SUPER_HUMAN,
     /**
-     * SuperDFS logic with RL-driven controllable choice.
+     * SuperDFS logic with RL-driven controllable choice (training / Python-driven mode).
      * Auto-expands non-controllable, single-controllable, and backtrack steps;
      * pauses for the Python agent when multiple controllable candidates exist.
      * Pair with feature_type=SUPER. Driven via DCSForPython.getFrontierWithFeatures()
      * and DCSForPython.expand(idx).
      */
-    SUPER_RL;
+    SUPER_RL,
+    /**
+     * SuperDFS logic with ONNX-driven controllable choice (standalone / deploy mode).
+     * Loads the model from system property {@code rl.onnx.path}.
+     * Pair with feature_type=SUPER or SUPER_CUSTOM. Runs fully autonomously without Python.
+     */
+    SuperRL;
 
     /** Human-readable parameter string for the trace file. */
     public String params() {
         return switch (this) {
             case RANDOM  -> "SCRIPT=" + System.getProperty("random.script", "[]");
-            case RL      -> "model_path=" + System.getProperty("rl.onnx.path", "")
+            case RL, SuperRL -> "model_path=" + System.getProperty("rl.onnx.path", "")
                     + ", feature_type=" + System.getProperty("feature_type", "ROL");
             case MCTS_RL -> "model_path=" + System.getProperty("mcts.onnx.path", "model.onnx")
                     + ", feature_type=" + System.getProperty("feature_type", "ROL")
@@ -136,6 +142,7 @@ public enum HeuristicType {
                     Integer.parseInt(System.getProperty("superdfs.k", "0")));
             case SUPER_HUMAN   -> new SuperHumanHeuristic();
             case SUPER_RL      -> new SuperRLHeuristic();
+            case SuperRL       -> new SuperRLHeuristic(System.getProperty("rl.onnx.path"));
         };
     }
 }

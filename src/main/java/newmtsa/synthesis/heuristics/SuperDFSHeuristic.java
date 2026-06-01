@@ -1,7 +1,10 @@
 package newmtsa.synthesis.heuristics;
 
+import newmtsa.parser.ast.LTS;
 import newmtsa.synthesis.Director;
 import newmtsa.synthesis.ExtendedTransition;
+import newmtsa.synthesis.features.FeaturesContext;
+import newmtsa.synthesis.features.SuperCustomFeatures;
 
 import java.util.*;
 import java.util.Comparator;
@@ -14,13 +17,22 @@ import java.util.function.ToIntFunction;
  */
 public class SuperDFSHeuristic extends SuperHeuristic {
 
+    // Proof-of-concept: when true, pickControllable() uses only SuperCustomFeatures to
+    // select the best controllable transition, bypassing the hand-coded heuristic logic.
+    // This is intended solely to verify that the SuperCustomFeatures information is
+    // sufficient to replicate the oracle decision without access to the raw state.
+    public static boolean USE_CUSTOM_FEATURES = true;
+
     private final String family;
     private final int    n;
     private final int    k;
     private final int    safePlace;
 
+    private SuperCustomFeatures customFeatures;
+
     private record ChoiceRecord(int step, ExtendedTransition chosen, List<ExtendedTransition> skipped) {}
     private final List<ChoiceRecord> choices = new ArrayList<>();
+    private final List<Integer> pickControllableDecisions = new ArrayList<>();
 
     private int subHeuristicCalls = 0;
 
@@ -36,9 +48,41 @@ public class SuperDFSHeuristic extends SuperHeuristic {
     }
 
     @Override
+    public void init(SynthesisContext ctx) {
+        super.init(ctx);
+        if (!USE_CUSTOM_FEATURES) return;
+
+        Set<String> alphabet = new LinkedHashSet<>();
+        for (LTS lts : ctx.components()) alphabet.addAll(lts.actions());
+
+        Set<String> goals    = ctx.goals();
+        Set<String> errors   = ctx.errors();
+        Set<String> explored = ctx.exploredStates();
+        Set<String> noneView = new AbstractSet<>() {
+            @Override public boolean contains(Object o) {
+                return explored.contains(o) && !goals.contains(o) && !errors.contains(o);
+            }
+            @Override public Iterator<String> iterator() { return Collections.emptyIterator(); }
+            @Override public int size() { return 0; }
+        };
+        Map<String, List<ExtendedTransition>> succMapProxy = new AbstractMap<>() {
+            @Override public boolean containsKey(Object key) { return explored.contains(key); }
+            @Override public List<ExtendedTransition> get(Object key) { return ctx.successorsOf((String) key); }
+            @Override public Set<Map.Entry<String, List<ExtendedTransition>>> entrySet() { return Collections.emptySet(); }
+        };
+
+        FeaturesContext featCtx = new FeaturesContext(
+                goals, errors, noneView, succMapProxy, new HashMap<>(),
+                ctx.controllable(), Collections.unmodifiableSet(alphabet),
+                ctx.components(), ctx.componentMarked());
+        customFeatures = new SuperCustomFeatures(family, n, k);
+        customFeatures.init(featCtx);
+    }
+
+    @Override
     protected ExtendedTransition pickControllable(List<ExtendedTransition> ctrl, boolean canReturnNull) {
         subHeuristicCalls++;
-        return switch (family) {
+        ExtendedTransition chosen = USE_CUSTOM_FEATURES ? pickByFeatures(ctrl, canReturnNull) : switch (family) {
             case "AT" -> atPickControllable(ctrl, canReturnNull);
             case "DP" -> dpPickControllable(ctrl, canReturnNull);
             case "TL" -> tlPickControllable(ctrl, canReturnNull);
@@ -47,6 +91,89 @@ public class SuperDFSHeuristic extends SuperHeuristic {
             case "TA" -> taPickControllable(ctrl, canReturnNull);
             default   -> ctrl.get(0);
         };
+        if (chosen != null) pickControllableDecisions.add(ctrl.indexOf(chosen));
+        return chosen;
+    }
+
+    private ExtendedTransition pickByFeatures(List<ExtendedTransition> ctrl, boolean canReturnNull) {
+        if (canReturnNull) return null;
+        customFeatures.precompute(ctrl);
+        float[][] feats = new float[ctrl.size()][];
+        for (int i = 0; i < ctrl.size(); i++) feats[i] = customFeatures.compute(ctrl.get(i));
+        return switch (family) {
+            case "AT" -> pickATByFeatures(ctrl, feats);
+            case "DP" -> pickDPByFeatures(ctrl, feats);
+            case "BW" -> pickBWByFeatures(ctrl, feats);
+            case "CM" -> pickCMByFeatures(ctrl, feats);
+            case "TL" -> pickTLByFeatures(ctrl, feats);
+            case "TA" -> pickTAByFeatures(ctrl, feats);
+            default   -> ctrl.get(0);
+        };
+    }
+
+    // Features: is_approach[0], target_height_empty[1], plane_at_height_above[2],
+    //           heights_consecutive[3], num_planes_norm[4], height_idx_norm[5], plane_idx_norm[6]
+    private ExtendedTransition pickATByFeatures(List<ExtendedTransition> ctrl, float[][] feats) {
+        // Priority 1: is_approach && heights_consecutive
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][0] == 1f && feats[i][3] == 1f) return ctrl.get(i);
+        // Priority 2: target_height_empty — pick min height_idx_norm
+        int bestIdx = -1; float bestHeight = Float.MAX_VALUE;
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][1] == 1f && feats[i][5] < bestHeight) { bestHeight = feats[i][5]; bestIdx = i; }
+        return bestIdx >= 0 ? ctrl.get(bestIdx) : ctrl.get(0);
+    }
+
+    // Features: is_take[0], phil_is_ready[1], phil_is_hungry[2],
+    //           is_min_ready_idx[3], is_min_hungry_idx[4], num_ready_norm[5], num_hungry_norm[6]
+    private ExtendedTransition pickDPByFeatures(List<ExtendedTransition> ctrl, float[][] feats) {
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][0] == 1f && feats[i][1] == 1f && feats[i][3] == 1f) return ctrl.get(i);
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][0] == 1f && feats[i][2] == 1f && feats[i][4] == 1f) return ctrl.get(i);
+        return ctrl.get(0);
+    }
+
+    // Features: is_approve[0], is_refuse[1], is_assign[2], doc_is_rejected[3],
+    //           crew_is_pending[4], crew_is_rejected[5], is_min_eligible_assign[6], num_pending_norm[7]
+    private ExtendedTransition pickBWByFeatures(List<ExtendedTransition> ctrl, float[][] feats) {
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][0] == 1f) return ctrl.get(i);
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][1] == 1f && feats[i][3] == 1f) return ctrl.get(i);
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][2] == 1f && (feats[i][4] == 1f || feats[i][5] == 1f) && feats[i][6] == 1f) return ctrl.get(i);
+        return ctrl.get(0);
+    }
+
+    // Features: dist_to_safe_norm[0], is_min_dist_candidate[1], is_min_mouse_among_min_dist[2], current_pos_norm[3]
+    private ExtendedTransition pickCMByFeatures(List<ExtendedTransition> ctrl, float[][] feats) {
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][1] == 1f && feats[i][2] == 1f) return ctrl.get(i);
+        return ctrl.get(0);
+    }
+
+    // Features: dest_is_explored[0], is_max_index[1]
+    private ExtendedTransition pickTLByFeatures(List<ExtendedTransition> ctrl, float[][] feats) {
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][0] == 1f) return ctrl.get(i);
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][1] == 1f) return ctrl.get(i);
+        return ctrl.get(0);
+    }
+
+    // Features: is_agency_succ[0], is_agency_fail[1], is_purchase[2], all_monitors_success[3],
+    //           this_monitor_success[4], agency_disallow_idx_norm[5], purchase_to_disallow_dist_norm[6]
+    private ExtendedTransition pickTAByFeatures(List<ExtendedTransition> ctrl, float[][] feats) {
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][0] == 1f && feats[i][3] == 1f) return ctrl.get(i);
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][1] == 1f) return ctrl.get(i);
+        // pick purchase where monitor not success, min dist to disallow
+        int bestIdx = -1; float bestDist = Float.MAX_VALUE;
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][2] == 1f && feats[i][4] == 0f && feats[i][6] < bestDist) { bestDist = feats[i][6]; bestIdx = i; }
+        return bestIdx >= 0 ? ctrl.get(bestIdx) : ctrl.get(0);
     }
 
     @Override
@@ -56,7 +183,10 @@ public class SuperDFSHeuristic extends SuperHeuristic {
 
     @Override
     public void notifyExplorationEnd(Director result) {
-        System.out.println("[SuperDFS] Sub-heuristic calls: " + subHeuristicCalls);
+        if(ctx.verbose()) {
+            System.out.println("[SuperDFS] Sub-heuristic calls: " + subHeuristicCalls);
+            System.out.println("[SuperDFS] pickControllable decisions: " + pickControllableDecisions);
+        }
     }
 
     // ── family-specific controllable pickers ──────────────────────────────────

@@ -547,7 +547,7 @@ def train(
     csv_path = results_path / "training.csv"
 
     with open(csv_path, "w", newline="") as f:
-        csv.writer(f).writerow(["episode", "total_reward", "steps", "expansions", "loss", "realizable", "ctrl_actions"])
+        csv.writer(f).writerow(["episode", "total_reward", "steps", "expansions", "loss", "realizable", "director_transitions", "ctrl_actions"])
 
     best_ep_reward = float("-inf")
     best_avg     = float("-inf")
@@ -613,10 +613,11 @@ def train(
             realizable = bool(env._dcs.isRealizable())
         loss_val   = f"{agent.last_loss:.6f}" if agent.last_loss is not None else ""
         ctrl_acts = " ".join(map(str, ep_trace)) if ep_trace is not None else ""
+        director_trans = ep_info.get("director_transitions")
         with open(csv_path, "a", newline="") as f:
             csv.writer(f).writerow(
                 [ep, ep_reward, ep_steps, ep_expansions, loss_val,
-                 realizable, ctrl_acts]
+                 realizable, director_trans, ctrl_acts]
             )
 
         if ep % agent.save_frequency == 0 and agent._initialized:

@@ -7,7 +7,10 @@ import newmtsa.parser.ast.LTS;
 import newmtsa.parser.ast.LtlPropertyDef;
 import newmtsa.synthesis.Director;
 import newmtsa.synthesis.gr1.OTFDirectedControledSyntesisGR1;
+import newmtsa.synthesis.heuristics.Heuristic;
 import newmtsa.synthesis.heuristics.SuperDFSHeuristic;
+import newmtsa.synthesis.heuristics.SuperHumanHeuristic;
+import newmtsa.synthesis.heuristics.SuperRLHeuristic;
 
 import java.io.FileWriter;
 import java.io.IOException;
@@ -29,18 +32,30 @@ public class Benchmark {
 
     static final int    EXPANSION_LIMIT   = 15_000;
     static final String BENCHMARK_DIR     = "fsp/Blocking/Benchmark";
-    static final String[] FAMILIES        = {"TA", "AT", "BW", "CM", "DP", "TL"};
+    static final Map<String, String> ONNX_FILES = Map.of(
+        "TA", "python\\results\\blocking\\TA\\super_custom\\path_flat\\path_best.onnx",
+        "AT", "python\\results\\blocking\\AT\\super_custom\\path_flat\\path_best.onnx",
+        "BW", "python\\results\\blocking\\BW\\super_custom\\path_flat\\path_best.onnx",
+        "DP", "python\\results\\blocking\\DP\\super_custom\\path_flat\\path_best.onnx",
+        "CM", "python\\results\\blocking\\CM\\super_custom\\path_flat\\path_best.onnx",
+        "TL", "python\\results\\blocking\\TL\\super_custom\\path_flat\\path_best.onnx"
+    );
+    static final String HEURISTIC         = "SuperRL"; // options: "SuperDFS", "SuperRL", "SuperHuman"
+    static final String FEATURE_GROUP     = "SUPER_CUSTOM"; // options: "BASIC", "ROL", "SUPER", "SUPER_CUSTOM" — used by feature-based heuristics
+    //static final String[] FAMILIES        = {"TA", "AT", "BW", "CM", "DP", "TL"};
+    //static final String[] FAMILIES        = {"TA", "AT", "BW", "DP", "TL"};
+    static final String[] FAMILIES        = {"BW"};
     static final boolean  TIMEOUT_CUTS    = true;  // false = run every instance regardless of prior timeouts
 
     public static void main(String[] args) throws IOException {
-        Path outDir = Paths.get("Experiments");
+        Path outDir = Paths.get("python/results/Benchmark");
         Files.createDirectories(outDir);
-        String csvPath = outDir.resolve("SuperDFS_results.csv").toString();
+        String csvPath = outDir.resolve(HEURISTIC + "_results.csv").toString();
 
-        System.out.println("=== SuperDFS Blocking Benchmark ===");
+        System.out.println("=== " + HEURISTIC + " Blocking Benchmark ===");
         System.out.printf("Budget: %d  |  Output: %s%n%n", EXPANSION_LIMIT, csvPath);
 
-        try (PrintWriter csv = new PrintWriter(new FileWriter(csvPath, true))) {
+        try (PrintWriter csv = new PrintWriter(new FileWriter(csvPath, true), true)) {
 
             for (String family : FAMILIES) {
                 System.out.printf("--- Family: %s ---%n", family);
@@ -66,15 +81,25 @@ public class Benchmark {
 
                     if (TIMEOUT_CUTS && (n >= skipFromN || k >= skipFromK)) {
                         csv.printf("%s,%d,%d,,%d,%d%n", family, n, k, EXPANSION_LIMIT, -1);
+                        csv.flush();
                         System.out.printf("  N=%2d K=%2d | SKIPPED%n", n, k);
                         continue;
                     }
 
                     BenchmarkRun run = runInstance(file, family, n, k);
+
+                    if (run.isError()) {
+                        csv.printf("%s,%d,%d,,ERROR,-1%n", family, n, k);
+                        csv.flush();
+                        System.out.printf("  N=%2d K=%2d | ERROR%n", n, k);
+                        continue;
+                    }
+
                     boolean solved = run.transitions < EXPANSION_LIMIT;
                     long timeOut = solved ? run.timeMs : -1;
 
                     csv.printf("%s,%d,%d,,%d,%d%n", family, n, k, run.transitions, timeOut);
+                    csv.flush();
                     System.out.printf("  N=%2d K=%2d | %s  transitions=%d%n",
                             n, k, solved ? "SOLVED " : "TIMEOUT", run.transitions);
 
@@ -97,13 +122,13 @@ public class Benchmark {
             model = FSPParser.parse(file);
         } catch (Exception e) {
             System.err.printf("  PARSE ERROR %s: %s%n", file.getFileName(), e.getMessage());
-            return new BenchmarkRun(EXPANSION_LIMIT, -1);
+            return BenchmarkRun.asError();
         }
 
         ControllerSpecDef spec = findLivenessSpec(model);
         if (spec == null) {
             System.err.printf("  NO LIVENESS SPEC in %s%n", file.getFileName());
-            return new BenchmarkRun(EXPANSION_LIMIT, -1);
+            return BenchmarkRun.asError();
         }
 
         List<LtlPropertyDef> guarantees = collectProps(model, spec.liveness());
@@ -115,7 +140,17 @@ public class Benchmark {
             if (components.stream().noneMatch(c -> c.name().equals(a.name()))) components.add(a.lts());
         }
 
-        SuperDFSHeuristic h = new SuperDFSHeuristic(family, n, k);
+        System.setProperty("feature_type", FEATURE_GROUP);
+        System.setProperty("superdfs.family", family);
+        System.setProperty("superdfs.n", String.valueOf(n));
+        System.setProperty("superdfs.k", String.valueOf(k));
+
+        Heuristic h = switch (HEURISTIC) {
+            case "SuperDFS"   -> new SuperDFSHeuristic(family, n, k);
+            case "SuperHuman" -> new SuperHumanHeuristic();
+            case "SuperRL"    -> new SuperRLHeuristic(ONNX_FILES.get(family));
+            default           -> throw new IllegalArgumentException("Unknown heuristic: " + HEURISTIC);
+        };
 
         try {
             long start = System.nanoTime();
@@ -126,9 +161,13 @@ public class Benchmark {
             long elapsedMs = (System.nanoTime() - start) / 1_000_000;
             int t = result.transitionsExplored();
             if (t > EXPANSION_LIMIT) t = EXPANSION_LIMIT;
-            return new BenchmarkRun(t, elapsedMs);
+            if (h instanceof AutoCloseable ac) { try { ac.close(); } catch (Exception ignored) {} }
+            return BenchmarkRun.of(t, elapsedMs);
         } catch (Exception e) {
-            return new BenchmarkRun(EXPANSION_LIMIT, -1);
+            System.err.printf("  ERROR %s N=%d K=%d: %s%n", family, n, k, e.getMessage());
+            if (e.getCause() != null) System.err.printf("    cause: %s%n", e.getCause().getMessage());
+            if (h instanceof AutoCloseable ac) { try { ac.close(); } catch (Exception ignored) {} }
+            return BenchmarkRun.asError();
         }
     }
 
@@ -171,5 +210,9 @@ public class Benchmark {
         }
     }
 
-    private record BenchmarkRun(int transitions, long timeMs) {}
+    private record BenchmarkRun(int transitions, long timeMs, boolean isError) {
+        static BenchmarkRun timeout()              { return new BenchmarkRun(EXPANSION_LIMIT, -1, false); }
+        static BenchmarkRun asError()              { return new BenchmarkRun(EXPANSION_LIMIT, -1, true);  }
+        static BenchmarkRun of(int t, long ms)     { return new BenchmarkRun(t, ms, false); }
+    }
 }

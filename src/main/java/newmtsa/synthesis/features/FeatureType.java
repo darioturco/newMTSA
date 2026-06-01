@@ -19,13 +19,19 @@ public enum FeatureType {
     /** BasicFeatures extended with role-based component state encoding — see {@link RolFeatures}. */
     ROL,
     /** Per-transition scoring features designed for cross-instance generalisation — see {@link SuperFeatures}. */
-    SUPER;
+    SUPER,
+    /** Family-specific features encoding the exact decision-relevant state used by SuperDFS — see {@link SuperCustomFeatures}. */
+    SUPER_CUSTOM;
 
     public FeatureCompute create() {
         return switch (this) {
-            case BASIC  -> new BasicFeatures();
-            case ROL    -> new RolFeatures();
-            case SUPER  -> new SuperFeatures();
+            case BASIC        -> new BasicFeatures();
+            case ROL          -> new RolFeatures();
+            case SUPER        -> new SuperFeatures();
+            case SUPER_CUSTOM -> new SuperCustomFeatures(
+                System.getProperty("superdfs.family", ""),
+                Integer.parseInt(System.getProperty("superdfs.n", "1")),
+                Integer.parseInt(System.getProperty("superdfs.k", "1")));
         };
     }
 }

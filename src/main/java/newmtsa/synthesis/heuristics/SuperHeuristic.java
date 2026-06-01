@@ -28,11 +28,13 @@ public abstract class SuperHeuristic implements Heuristic {
     protected int     stepCount         = 0;
     protected boolean forceStackPop     = false;
     protected int     ignoredExpansions = 0;
+    protected int     totalExpanded     = 0;
 
     @Override
     public void init(SynthesisContext ctx) {
-        this.ctx          = ctx;
-        this.controllable = ctx.controllable();
+        this.ctx           = ctx;
+        this.controllable  = ctx.controllable();
+        this.totalExpanded = 0;
     }
 
     @Override
@@ -86,9 +88,11 @@ public abstract class SuperHeuristic implements Heuristic {
             if (decidedStates.contains(currentState)) {
                 return pickFromStackOrIgnored(pending);
             }
-            chosen = pickControllable(ctrl, false);
-            if (chosen == null) return -1;
-            if (ctrl.size() > 1) {
+            if (ctrl.size() == 1) {
+                chosen = ctrl.get(0);
+            } else {
+                chosen = pickControllable(ctrl, false);
+                if (chosen == null) return -1;
                 ExtendedTransition finalChosen = chosen;
                 List<ExtendedTransition> others = new ArrayList<>();
                 for (ExtendedTransition t : ctrl) if (t != finalChosen) others.add(t);

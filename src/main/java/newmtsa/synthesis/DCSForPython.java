@@ -273,6 +273,14 @@ public class DCSForPython {
         Path      path  = Paths.get(fspPath);
         FSPModel  model = FSPParser.parse(path);
         String    name  = path.getFileName().toString().replace(".fsp", "");
+        if ("SUPER_CUSTOM".equalsIgnoreCase(featureType)) {
+            String[] nameParts = name.split("-");
+            if (nameParts.length >= 3) {
+                System.setProperty("superdfs.family", nameParts[0]);
+                System.setProperty("superdfs.n",      nameParts[1]);
+                System.setProperty("superdfs.k",      nameParts[2]);
+            }
+        }
         Heuristic heuristic = HeuristicType.valueOf(heuristicType.toUpperCase()).create();
 
         Optional<ControllerSpecDef> nbSpec = model.controllerSpecs().stream()

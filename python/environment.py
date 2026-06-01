@@ -46,12 +46,16 @@ class DCSEnvironment:
     >>> obs = env.reset("path/to/instance.fsp")   # list of int[] feature vectors
     """
 
-    def __init__(self, heuristic: str = "FIRST", feature_type: str = None):
+    def __init__(self, heuristic: str = "FIRST", feature_type: str = None, verbose: bool = False):
         self._heuristic_name    = heuristic
         self._feature_type_name = feature_type
         self._dcs               = None
         self._frontier          = []
         self.is_finished        = False
+        jpype.JClass("java.lang.System").setProperty("rl.verbose", "true" if verbose else "false")
+
+    def set_verbose(self, verbose: bool):
+        jpype.JClass("java.lang.System").setProperty("rl.verbose", "true" if verbose else "false")
 
     # ── public API ──────────────────────────────────────────────────────────
 
