@@ -273,7 +273,7 @@ public class DCSForPython {
         Path      path  = Paths.get(fspPath);
         FSPModel  model = FSPParser.parse(path);
         String    name  = path.getFileName().toString().replace(".fsp", "");
-        if ("SUPER_CUSTOM".equalsIgnoreCase(featureType)) {
+        if ("SUPER_CUSTOM".equalsIgnoreCase(featureType) || "SUPER_GENERAL".equalsIgnoreCase(featureType)) {
             String[] nameParts = name.split("-");
             if (nameParts.length >= 3) {
                 System.setProperty("superdfs.family", nameParts[0]);

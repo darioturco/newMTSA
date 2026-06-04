@@ -70,6 +70,14 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
     private final Map<String, Integer>                  depthMap = new HashMap<>();
     private       boolean                               pendingDirty = false;
 
+    // Tracks whether any marked state has been visited — mirrors featuresCtx.markedStateFound
+    // but remains valid even when featureCompute (and thus featuresCtx) is null (deploy mode).
+    private boolean anyMarkedStateFound = false;
+
+    // Count of closed winning loops — mirrors featuresCtx.closedWinningLoopsCount but remains
+    // valid when featuresCtx is null (deploy mode).
+    private int closedWinningLoops = 0;
+
     // ── step-by-step state ────────────────────────────────────────────────────
 
     private final String                   s0;
@@ -234,7 +242,9 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
         SimpleSynthesisContext hCtx = new SimpleSynthesisContext(
                 this.components, compMarked, this.controllable) {
             @Override public Set<String>              exploredStates()       { return succMap.keySet(); }
-            @Override public Set<String>              goals()                { return goals; }
+            // Must qualify: SimpleSynthesisContext declares its own (always-empty) `goals`
+            // field, which would otherwise shadow the enclosing engine's live goals set.
+            @Override public Set<String>              goals()                { return OTFDirectedControledSyntesisNonBlocking.this.goals; }
             @Override public Set<String>              errors()               { return errors; }
             @Override public List<ExtendedTransition> successorsOf(String s) {
                 return succMap.getOrDefault(s, List.of());
@@ -251,6 +261,8 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
             @Override public List<ExtendedTransition> getFutureAddToFrontier(ExtendedTransition t) {
                 return OTFDirectedControledSyntesisNonBlocking.this.getFutureAddToFrontier(t);
             }
+            @Override public boolean isMarkedStateFound() { return anyMarkedStateFound; }
+            @Override public int     closedWinningLoopsCount() { return closedWinningLoops; }
         };
         heuristic.init(hCtx);
 
@@ -274,7 +286,10 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
             explorationEnded = true;
         } else {
             none.add(s0);
-            if (featuresCtx != null && isMarked(s0)) featuresCtx.markedStateFound = true;
+            if (isMarked(s0)) {
+                anyMarkedStateFound = true;
+                if (featuresCtx != null) featuresCtx.markedStateFound = true;
+            }
             pending          = new ArrayList<>(succMap.getOrDefault(s0, List.of()));
             for (ExtendedTransition t : pending) t.setStep(0);
             explorationEnded = false;
@@ -321,6 +336,7 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
                 Set<String> loop = getMaxLoop(e, eʹ);
                 if (!loop.isEmpty()) {
                     if (canBeWinningLoop(loop)) {
+                        closedWinningLoops++;
                         if (featuresCtx != null) featuresCtx.closedWinningLoopsCount++;
                         Set<String> C = findNewGoalsIn(loop);
                         promoteToGoals(C);
@@ -341,7 +357,10 @@ public class OTFDirectedControledSyntesisNonBlocking implements OTFDirectedContr
                 propagateError(Set.of(eʹ));
             } else {
                 none.add(eʹ);
-                if (featuresCtx != null && isMarked(eʹ)) featuresCtx.markedStateFound = true;
+                if (isMarked(eʹ)) {
+                    anyMarkedStateFound = true;
+                    if (featuresCtx != null) featuresCtx.markedStateFound = true;
+                }
                 List<ExtendedTransition> newTransitions = succMap.getOrDefault(eʹ, List.of());
                 for (ExtendedTransition nt : newTransitions) nt.setStep(frontierStep);
                 pending.addAll(newTransitions);

@@ -15,12 +15,12 @@ import java.util.List;
  *
  * <p>Feature vector sizes by family:
  * <ul>
- *   <li>AT — 7 features</li>
- *   <li>DP — 7 features</li>
- *   <li>BW — 8 features</li>
- *   <li>CM — 4 features</li>
+ *   <li>AT — 5 features</li>
+ *   <li>DP — 5 features</li>
+ *   <li>BW — 7 features</li>
+ *   <li>CM — 3 features</li>
  *   <li>TL — 2 features</li>
- *   <li>TA — 7 features</li>
+ *   <li>TA — 6 features</li>
  * </ul>
  *
  * <p>{@link #precompute(List)} must be called with the full candidate list before
@@ -97,12 +97,18 @@ public class SuperCustomFeatures implements FeatureCompute {
     // ── AT ────────────────────────────────────────────────────────────────────
 
     /**
-     * AT features (7):
-     * is_approach, target_height_empty, plane_at_height_above, heights_consecutive,
-     * num_planes_norm, height_idx_norm, plane_idx_norm.
+     * AT features (5):
+     * is_approach, target_height_empty, heights_consecutive, height_idx_norm,
+     * height_matches_approach_slot.
      *
      * <p>State layout: parts[0]=ResponseMonitor, parts[1]=RampMonitor,
-     * parts[2+h]=height-h slot ("Empty" or "Occupied[p]").
+     * parts[2+h]=height-h slot ("Empty" or "Occupied[p]"),
+     * parts[2+k+q]=state of airplane q ("Airplane(q)", "Holding[h]", "End", …).
+     *
+     * <p>height_matches_approach_slot: for descend[p][h], equals 1 iff h equals the
+     * number of lower-indexed planes (q&lt;p) still in "Airplane(q)" state (waiting to
+     * request landing).  This encodes the correct slot assignment: plane p should
+     * leave heights 0..c-1 free for the c planes that will land ahead of it.
      */
     private float[] computeAT(ExtendedTransition t) {
         String   action = t.action();
@@ -110,32 +116,35 @@ public class SuperCustomFeatures implements FeatureCompute {
 
         boolean isApproach = action.startsWith("approach[");
         boolean isDescend  = action.startsWith("descend[");
-        int p = (isApproach || isDescend) ? t.extractFirstIndex() : 0;
-        int h = isDescend ? t.extractLastIndex() : 0;
+        int p = isDescend ? t.extractFirstIndex() : 0;
+        int h = isDescend ? t.extractLastIndex()  : 0;
 
         boolean targetEmpty = false;
-        boolean planeAbove  = false;
         if (isDescend) {
             int hIdx = 2 + h;
             if (hIdx < parts.length) targetEmpty = "Empty".equals(parts[hIdx]);
-            int aboveIdx = 2 + h + 1;
-            if (aboveIdx < parts.length)
-                planeAbove = ("Occupied[" + p + "]").equals(parts[aboveIdx]);
         }
 
         boolean consecutive   = heightsAreConsecutive(parts);
-        float   numPlanesNorm = k > 0 ? countOccupied(parts) / (float) k : 0f;
         float   heightIdxNorm = isDescend && k > 0 ? h / (float) k : 0f;
-        float   planeIdxNorm  = n > 0 ? p / (float) n : 0f;
+
+        int lowerWaitingCount = 0;
+        if (isDescend) {
+            for (int q = 0; q < p; q++) {
+                int qIdx = 2 + k + q;
+                if (qIdx < parts.length && parts[qIdx].equals("Airplane(" + q + ")")) {
+                    lowerWaitingCount++;
+                }
+            }
+        }
+        boolean heightMatchesSlot = isDescend && (h == lowerWaitingCount);
 
         return new float[] {
-            isApproach  ? 1f : 0f,
-            targetEmpty ? 1f : 0f,
-            planeAbove  ? 1f : 0f,
-            consecutive ? 1f : 0f,
-            numPlanesNorm,
+            isApproach        ? 1f : 0f,
+            targetEmpty       ? 1f : 0f,
+            consecutive       ? 1f : 0f,
             heightIdxNorm,
-            planeIdxNorm
+            heightMatchesSlot ? 1f : 0f
         };
     }
 
@@ -154,21 +163,11 @@ public class SuperCustomFeatures implements FeatureCompute {
         return true;
     }
 
-    private int countOccupied(String[] parts) {
-        int count = 0;
-        for (int h = 0; h < k; h++) {
-            int idx = 2 + h;
-            if (idx < parts.length && parts[idx].startsWith("Occupied[")) count++;
-        }
-        return count;
-    }
-
     // ── DP ────────────────────────────────────────────────────────────────────
 
     /**
-     * DP features (7):
-     * is_take, phil_is_ready, phil_is_hungry, is_min_ready_idx, is_min_hungry_idx,
-     * num_ready_norm, num_hungry_norm.
+     * DP features (5):
+     * is_take, phil_is_ready, phil_is_hungry, is_min_ready_idx, is_min_hungry_idx.
      *
      * <p>State layout: 3 components per philosopher at positions 3i, 3i+1, 3i+2.
      * parts[3i] = philosopher i sub-state ("Hungry", "Ready", "Thinking", …).
@@ -203,33 +202,21 @@ public class SuperCustomFeatures implements FeatureCompute {
             }
         }
 
-        int readyCount  = 0;
-        int hungryCount = 0;
-        for (int j = 0; j < n; j++) {
-            int jIdx = 3 * j;
-            if (jIdx < parts.length) {
-                if ("Ready".equals(parts[jIdx]))  readyCount++;
-                if ("Hungry".equals(parts[jIdx])) hungryCount++;
-            }
-        }
-
         return new float[] {
             isTake      ? 1f : 0f,
             philReady   ? 1f : 0f,
             philHungry  ? 1f : 0f,
             isMinReady  ? 1f : 0f,
-            isMinHungry ? 1f : 0f,
-            n > 0 ? readyCount  / (float) n : 0f,
-            n > 0 ? hungryCount / (float) n : 0f
+            isMinHungry ? 1f : 0f
         };
     }
 
     // ── BW ────────────────────────────────────────────────────────────────────
 
     /**
-     * BW features (8):
+     * BW features (7):
      * is_approve, is_refuse, is_assign, doc_is_rejected,
-     * crew_is_pending, crew_is_rejected, is_min_eligible_assign, num_pending_norm.
+     * crew_is_pending, crew_is_rejected, is_min_eligible_assign.
      *
      * <p>State layout: parts[0]=Document state, parts[t+1]=Crew(t) state.
      */
@@ -265,12 +252,6 @@ public class SuperCustomFeatures implements FeatureCompute {
             }
         }
 
-        int pendingCount = 0;
-        for (int j = 0; j < n; j++) {
-            int jIdx = j + 1;
-            if (jIdx < parts.length && "Pending".equals(parts[jIdx])) pendingCount++;
-        }
-
         return new float[] {
             isApprove     ? 1f : 0f,
             isRefuse      ? 1f : 0f,
@@ -278,16 +259,15 @@ public class SuperCustomFeatures implements FeatureCompute {
             docRejected   ? 1f : 0f,
             crewPending   ? 1f : 0f,
             crewRejected  ? 1f : 0f,
-            isMinEligible ? 1f : 0f,
-            n > 0 ? pendingCount / (float) n : 0f
+            isMinEligible ? 1f : 0f
         };
     }
 
     // ── CM ────────────────────────────────────────────────────────────────────
 
     /**
-     * CM features (4):
-     * dist_to_safe_norm, is_min_dist_candidate, is_min_mouse_among_min_dist, current_pos_norm.
+     * CM features (3):
+     * dist_to_safe_norm, is_min_dist_candidate, is_min_mouse_among_min_dist.
      *
      * <p>Action: {@code mouse[i][move[j]]} — mouse i moves to position j.
      * safePlace = floor((2k+1)/2).
@@ -301,10 +281,9 @@ public class SuperCustomFeatures implements FeatureCompute {
         boolean isMinMouse = isMinDist && mouse == cachedMinDistMouse;
 
         return new float[] {
-            safePlace > 0    ? dist / (float) safePlace   : 0f,
+            safePlace > 0 ? dist / (float) safePlace : 0f,
             isMinDist  ? 1f : 0f,
-            isMinMouse ? 1f : 0f,
-            (2 * k + 1) > 0 ? pos / (float)(2 * k + 1) : 0f
+            isMinMouse ? 1f : 0f
         };
     }
 
@@ -330,9 +309,9 @@ public class SuperCustomFeatures implements FeatureCompute {
     // ── TA ────────────────────────────────────────────────────────────────────
 
     /**
-     * TA features (7):
+     * TA features (6):
      * is_agency_succ, is_agency_fail, is_purchase, all_monitors_success,
-     * this_monitor_success, agency_disallow_idx_norm, purchase_to_disallow_dist_norm.
+     * this_monitor_success, purchase_to_disallow_dist_norm.
      *
      * <p>State layout: parts[0]=Agency, parts[1]=AgencyMonitor,
      * parts[2+2i]=Service(i), parts[3+2i]=ServiceMonitor(i).
@@ -374,7 +353,6 @@ public class SuperCustomFeatures implements FeatureCompute {
             isPurchase     ? 1f : 0f,
             allSuccess     ? 1f : 0f,
             thisMonSuccess ? 1f : 0f,
-            n > 0 ? disallowJ / (float) n : 0f,
             (isPurchase && n > 0) ? Math.abs(pIdx - disallowJ) / (float) n : 0f
         };
     }
@@ -385,23 +363,21 @@ public class SuperCustomFeatures implements FeatureCompute {
     public List<String> getFeatureNames() {
         return switch (family) {
             case "AT" -> List.of(
-                "is_approach", "target_height_empty", "plane_at_height_above",
-                "heights_consecutive", "num_planes_norm", "height_idx_norm", "plane_idx_norm");
+                "is_approach", "target_height_empty", "heights_consecutive", "height_idx_norm",
+                "height_matches_approach_slot");
             case "DP" -> List.of(
                 "is_take", "phil_is_ready", "phil_is_hungry",
-                "is_min_ready_idx", "is_min_hungry_idx",
-                "num_ready_norm", "num_hungry_norm");
+                "is_min_ready_idx", "is_min_hungry_idx");
             case "BW" -> List.of(
                 "is_approve", "is_refuse", "is_assign", "doc_is_rejected",
-                "crew_is_pending", "crew_is_rejected", "is_min_eligible_assign", "num_pending_norm");
+                "crew_is_pending", "crew_is_rejected", "is_min_eligible_assign");
             case "CM" -> List.of(
-                "dist_to_safe_norm", "is_min_dist_candidate",
-                "is_min_mouse_among_min_dist", "current_pos_norm");
+                "dist_to_safe_norm", "is_min_dist_candidate", "is_min_mouse_among_min_dist");
             case "TL" -> List.of("dest_is_explored", "is_max_index");
             case "TA" -> List.of(
                 "is_agency_succ", "is_agency_fail", "is_purchase",
                 "all_monitors_success", "this_monitor_success",
-                "agency_disallow_idx_norm", "purchase_to_disallow_dist_norm");
+                "purchase_to_disallow_dist_norm");
             default -> List.of();
         };
     }

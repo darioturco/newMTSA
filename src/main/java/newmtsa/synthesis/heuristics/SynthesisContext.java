@@ -81,6 +81,22 @@ public interface SynthesisContext {
     default Set<String> predecessorsOf(String compositeState) { return Set.of(); }
 
     /**
+     * Returns {@code true} once any composite state satisfying the marking condition has been
+     * visited.  Mirrors {@link newmtsa.synthesis.features.FeaturesContext#markedStateFound} but
+     * is valid even when no {@code FeatureCompute} is registered (e.g. ONNX deploy mode).
+     * Default: {@code false} (engines that don't track this return the conservative value).
+     */
+    default boolean isMarkedStateFound() { return false; }
+
+    /**
+     * Number of winning loops closed so far. Mirrors
+     * {@link newmtsa.synthesis.features.FeaturesContext#closedWinningLoopsCount} but is valid
+     * even when no {@code FeatureCompute} is registered (e.g. ONNX deploy mode).
+     * Default: {@code 0}.
+     */
+    default int closedWinningLoopsCount() { return 0; }
+
+    /**
      * Returns the transitions that would be added to the frontier if {@code t} is expanded next.
      * Empty if {@code t.to()} is already visited or would be classified as losing.
      * May pre-explore {@code t.to()} as a side effect (idempotent).

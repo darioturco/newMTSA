@@ -97,12 +97,12 @@ PATH_LEARNING = dict(
     save_frequency=10,
     epsilon_decay=0.995,
     epsilon_end=0.0,
-    random_explore=100,
+    random_explore=1,
     explore_all=True,
     #best_path=None,
     best_path={
         "TL": [1, 1, 1],
-        "AT": [0, 1, 1, 0, 1, 1, 0, 0], # Puede ser mejor
+        "AT": [0, 1, 1, 1, 0, 0, 0],
         "DP": [0, 0, 1, 1, 0],
         "BW": [0, 0, 0, 0],
         "CM": [0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],

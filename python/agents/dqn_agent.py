@@ -508,7 +508,7 @@ def train(
     verbose: bool = True,
 ) -> DQNAgent:
     env.reset(fsp_path)
-    print(f"Instance type: {'non-blocking' if env.is_nonblocking else 'blocking'}")
+    print(f"Instance type: {'non-blocking' if env.is_nonblocking else 'GR(1)'}")
     if env.uses_features() and env.frontier:
         print(f"Feature size  : {len(env.frontier[0])}")
 

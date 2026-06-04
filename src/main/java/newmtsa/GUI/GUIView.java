@@ -25,7 +25,7 @@ public final class GUIView {
     private static final Path TEMPLATE_PATH = HTML_DIR.resolve("lts-template.html");
     private static final int MAX_STATE_RENDER = 2600;
     //private static final String DEFAULT_SOL_PATH = "python/results/traces/TA/RA_ERG_OPEN/TA-2-2.sol";
-    private static final String DEFAULT_SOL_PATH = "python/results/traces/AT/SUPER_DFS/AT-2-2.sol";
+    private static final String DEFAULT_SOL_PATH = "python\\results\\traces\\AT\\SUPER_HUMAN\\AT-2-2.sol";
     //private static final String DEFAULT_SOL_PATH = "python/results/traces/BW/HUMAN/BW-3-2.sol";
 
     private GUIView() {}

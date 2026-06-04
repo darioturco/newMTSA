@@ -111,16 +111,18 @@ public class SuperDFSHeuristic extends SuperHeuristic {
         };
     }
 
-    // Features: is_approach[0], target_height_empty[1], plane_at_height_above[2],
-    //           heights_consecutive[3], num_planes_norm[4], height_idx_norm[5], plane_idx_norm[6]
+    // Features: is_approach[0], target_height_empty[1], heights_consecutive[2], height_idx_norm[3], height_matches_approach_slot[4]
     private ExtendedTransition pickATByFeatures(List<ExtendedTransition> ctrl, float[][] feats) {
-        // Priority 1: is_approach && heights_consecutive
+        // Priority 1: approach + consecutive heights
         for (int i = 0; i < ctrl.size(); i++)
-            if (feats[i][0] == 1f && feats[i][3] == 1f) return ctrl.get(i);
-        // Priority 2: target_height_empty — pick min height_idx_norm
+            if (feats[i][0] == 1f && feats[i][2] == 1f) return ctrl.get(i);
+        // Priority 2: target empty + matches waiting-slot assignment
+        for (int i = 0; i < ctrl.size(); i++)
+            if (feats[i][1] == 1f && feats[i][4] == 1f) return ctrl.get(i);
+        // Priority 3: target empty + min height (fallback)
         int bestIdx = -1; float bestHeight = Float.MAX_VALUE;
         for (int i = 0; i < ctrl.size(); i++)
-            if (feats[i][1] == 1f && feats[i][5] < bestHeight) { bestHeight = feats[i][5]; bestIdx = i; }
+            if (feats[i][1] == 1f && feats[i][3] < bestHeight) { bestHeight = feats[i][3]; bestIdx = i; }
         return bestIdx >= 0 ? ctrl.get(bestIdx) : ctrl.get(0);
     }
 
@@ -163,7 +165,7 @@ public class SuperDFSHeuristic extends SuperHeuristic {
     }
 
     // Features: is_agency_succ[0], is_agency_fail[1], is_purchase[2], all_monitors_success[3],
-    //           this_monitor_success[4], agency_disallow_idx_norm[5], purchase_to_disallow_dist_norm[6]
+    //           this_monitor_success[4], purchase_to_disallow_dist_norm[5]
     private ExtendedTransition pickTAByFeatures(List<ExtendedTransition> ctrl, float[][] feats) {
         for (int i = 0; i < ctrl.size(); i++)
             if (feats[i][0] == 1f && feats[i][3] == 1f) return ctrl.get(i);
@@ -172,7 +174,7 @@ public class SuperDFSHeuristic extends SuperHeuristic {
         // pick purchase where monitor not success, min dist to disallow
         int bestIdx = -1; float bestDist = Float.MAX_VALUE;
         for (int i = 0; i < ctrl.size(); i++)
-            if (feats[i][2] == 1f && feats[i][4] == 0f && feats[i][6] < bestDist) { bestDist = feats[i][6]; bestIdx = i; }
+            if (feats[i][2] == 1f && feats[i][4] == 0f && feats[i][5] < bestDist) { bestDist = feats[i][5]; bestIdx = i; }
         return bestIdx >= 0 ? ctrl.get(bestIdx) : ctrl.get(0);
     }
 

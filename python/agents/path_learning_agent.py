@@ -94,6 +94,8 @@ class PathLearningAgent:
 
     def _reset_network(self) -> None:
         """Reinitialise weights so each round trains from scratch on the new dataset."""
+        if not self._initialized:
+            return
         self.net       = MLPScorer(self.feature_size, self.hidden_size)
         self.optimizer = optim.Adam(self.net.parameters(), lr=self.lr)
 
@@ -227,8 +229,10 @@ class PathLearningAgent:
         if verbose:
             if all_episodes:
                 best_ep  = max(all_episodes, key=lambda x: x[1])
-                path_str = " ".join(str(a) for _, a in best_ep[0])
-                print(f"[Explore done] Path found (steps={min_steps[0]}): [{path_str}]", flush=True)
+                path_str = " ".join(str(a) for _, a, *_ in best_ep[0])
+                dt = best_ep[3]
+                te = best_ep[4]
+                print(f"[Explore done] Path found (steps={min_steps[0]}, director_transitions={dt}, transitions={te}): [{path_str}]", flush=True)
             else:
                 print(f"[Explore done] No realizable path found", flush=True)
         return all_episodes
@@ -237,6 +241,24 @@ class PathLearningAgent:
         with torch.no_grad():
             t = torch.tensor(np.array(frontier_feats, dtype=np.float32))
             return int(self.net(t).argmax())
+
+    def _run_episode_greedy(self, env, fsp_path: str) -> tuple:
+        """Greedy episode using trained network (epsilon=0). Same 5-tuple as other runners."""
+        frontier = env.reset(fsp_path)
+        episode_data   = []
+        total_reward   = 0
+        ep_info        = {}
+        cum_expansions = 0
+        while not env.is_finished:
+            if not frontier:
+                break
+            action = self._select_action(frontier)
+            episode_data.append((list(frontier), action, cum_expansions))
+            frontier, _, done, ep_info = env.step(action)
+            cum_expansions += ep_info.get("expansions", 0)
+            total_reward   -= ep_info.get("expansions", 0)
+        return (episode_data, total_reward, ep_info.get("realizable"),
+                ep_info.get("director_transitions"), ep_info.get("transitions_explored"))
 
     # ── dataset construction ──────────────────────────────────────────────────
 
@@ -249,20 +271,107 @@ class PathLearningAgent:
                 y.append(1.0 if i == chosen else 0.0)
         return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
 
+    def _build_ranked_dataset(self, step_map: dict,
+                               extra_negatives: list = None) -> tuple:
+        """Build (X, y) with ranked integer targets derived from step_map.
+
+        step_map maps tuple(feat) -> (gano, perdio) where:
+          gano  = steps where this FV was chosen in best_data
+          perdio = steps where this FV was in the frontier but NOT chosen
+
+        Ranking logic
+        -------------
+        "A dominates B" if gano_A ∩ perdio_B != ∅:
+          A won at some step where B was present and lost, so A > B.
+
+        y for non-winners (gano=[]) : -1
+        y for winners               : len(gano) - n_dominated_by
+          where n_dominated_by = number of distinct winner FVs that dominate this one.
+
+        Example with gano_sizes all = 3:
+          FV1 dominated by 0 others → y = 3
+          FV3 dominated by FV1      → y = 2
+          FV4 dominated by FV1, FV3 → y = 1
+          FV2 no wins               → y = -1
+
+        Trained with MSELoss (not BCE) because targets can be negative or > 1.
+        During inference argmax is used, so absolute scale does not matter —
+        only the ordering needs to be learned.
+
+        Inconsistency: if A dominates B AND B dominates A the partial order has
+        a cycle and the network cannot satisfy both constraints. Printed as warning.
+        """
+        # Step-sets won by each winner FV, used for dominance checks
+        winner_sets = {k: set(gano) for k, (gano, _) in step_map.items() if gano}
+
+        # Detect cycles of length 2: A > B and B > A simultaneously
+        winner_list = list(winner_sets.items())
+        for i, (k_a, gano_a) in enumerate(winner_list):
+            perdio_a = set(step_map[k_a][1])
+            for k_b, gano_b in winner_list[i + 1:]:
+                perdio_b = set(step_map[k_b][1])
+                # A dominates B: A won at a step where B also appeared
+                # B dominates A: B won at a step where A also appeared
+                if (gano_a & perdio_b) and (gano_b & perdio_a):
+                    print(
+                        f"  [INCONSISTENCY] FV {list(k_a)} beats FV {list(k_b)} "
+                        f"AND FV {list(k_b)} beats FV {list(k_a)}",
+                        flush=True,
+                    )
+
+        X, y = [], []
+        for key, (gano, perdio) in step_map.items():
+            if not gano:
+                # Never chosen → lowest score
+                y_val = -1.0
+            else:
+                perdio_set = set(perdio)
+                # Count how many other winners ever beat this FV
+                n_beaten_by = sum(
+                    1 for k2, gs in winner_sets.items()
+                    if k2 != key and gs & perdio_set
+                )
+                # More wins + fewer dominators = higher rank
+                y_val = float(len(gano) - n_beaten_by)
+            X.append(list(key))
+            y.append(y_val)
+
+        # FVs from random episodes not seen in best_data → forced negative
+        if extra_negatives:
+            existing = {tuple(x) for x in X}
+            for feat in extra_negatives:
+                key = tuple(feat)
+                if key not in existing and key not in step_map:
+                    X.append(list(feat))
+                    y.append(-1.0)
+                    existing.add(key)
+
+        # Collapse gaps: replace positive y values with dense ranks (1, 2, 3, ...)
+        # so [-1, 1, 4, 60, -1] → [-1, 1, 2, 3, -1]. Ties share the same rank.
+        unique_pos = sorted(set(v for v in y if v > 0))
+        rank_map = {v: float(r + 1) for r, v in enumerate(unique_pos)}
+        y = [rank_map[v] if v > 0 else v for v in y]
+
+        return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
+
     # ── training ──────────────────────────────────────────────────────────────
 
     def _train_until_converged(self, X: np.ndarray, y: np.ndarray,
                                tol: float = 1e-5, max_epochs: int = 200_000,
-                               verbose: bool = False) -> float:
+                               verbose: bool = False,
+                               step_map: dict = None,
+                               use_mse: bool = False) -> float:
         """Train from scratch until loss < tol or max_epochs. Returns final loss."""
+        if not self._initialized or len(X) == 0:
+            return float("inf")
         self._reset_network()
         X_t     = torch.tensor(X)
         y_t     = torch.tensor(y)
-        loss_fn = nn.BCEWithLogitsLoss()
+        loss_fn = nn.MSELoss() if use_mse else nn.BCEWithLogitsLoss()
         last_loss = float("inf")
         for epoch in range(max_epochs):
             self.optimizer.zero_grad()
-            loss = loss_fn(self.net(X_t), y_t)
+            loss = loss_fn(self.net(X_t).squeeze(-1), y_t)
             loss.backward()
             self.optimizer.step()
             last_loss = loss.item()
@@ -271,14 +380,26 @@ class PathLearningAgent:
                 break
         if verbose:
             with torch.no_grad():
-                preds = self.net(X_t).tolist()
-            n_pos = int((y == 1.0).sum())
+                preds = self.net(X_t).squeeze(-1).tolist()
+            n_pos = int((y > 0).sum())
             n_neg = len(y) - n_pos
             print(f"  [Training set] {len(X)} samples ({n_pos} positive, {n_neg} negative):", flush=True)
             for feat, label, pred in zip(X, y, preds):
-                sign = "+" if label == 1.0 else "-"
+                sign = "+" if label > 0 else "-"
                 feat_str = " ".join(f"{v:6.3f}" for v in feat)
-                print(f"    [{sign}] pred={pred:7.4f} | [{feat_str}]", flush=True)
+                steps_str = ""
+                if step_map is not None:
+                    entry = step_map.get(tuple(feat))
+                    if entry:
+                        gano, perdio = entry
+                        parts = []
+                        if gano:
+                            parts.append(f"gano={gano}")
+                        if perdio:
+                            parts.append(f"perdio={perdio}")
+                        if parts:
+                            steps_str = " | " + " | ".join(parts)
+                print(f"    [{sign}] y={label:+.1f} pred={pred:7.4f} | [{feat_str}]{steps_str}", flush=True)
         return last_loss
 
     def _print_best_path(self, best_data: list) -> None:
@@ -289,7 +410,7 @@ class PathLearningAgent:
                 cum_exp = rest[0] if rest else "?"
                 t = torch.tensor(np.array(frontier_feats, dtype=np.float32))
                 scores = self.net(t).tolist()
-                print(f"  [Step {cum_exp}] {len(frontier_feats)} candidate(s):", flush=True)
+                print(f"  [Step {cum_exp+1}] {len(frontier_feats)} candidate(s):", flush=True)
                 for i, (feat, score) in enumerate(zip(frontier_feats, scores)):
                     feat_str = " ".join(f"{v:6.3f}" for v in feat)
                     marker = "  <- CHOSEN" if i == chosen else ""
@@ -349,38 +470,49 @@ def _supervised_train_on_path(
         path_str = " ".join(str(a) for _, a, *_ in best_data)
         print(f"[{label}] Solved{dt_str}{tr_str} | steps={len(best_data)} | path=[{path_str}]", flush=True)
 
-    best_path_feats = {tuple(frontier[action]) for frontier, action, *_ in best_data}
-    feat_to_label: dict = {}
-    for ep_data in random_ep_data:
-        for frontier, _, *_ in ep_data:
-            for feat in frontier:
-                key = tuple(feat)
-                if key not in feat_to_label:
-                    feat_to_label[key] = 0.0
-    for key in best_path_feats:
-        feat_to_label[key] = 1.0
+    step_map = {}
+    for step_idx, (frontier_feats, chosen, *_) in enumerate(best_data):
+        chosen_key = tuple(frontier_feats[chosen])
+        seen_keys = set()
+        for feat in frontier_feats:
+            key = tuple(feat)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            if key not in step_map:
+                step_map[key] = ([], [])
+            if key == chosen_key:
+                step_map[key][0].append(step_idx)
+            else:
+                step_map[key][1].append(step_idx)
 
-    X = np.array(list(feat_to_label.keys()), dtype=np.float32)
-    y = np.array(list(feat_to_label.values()), dtype=np.float32)
-    n_pos = int(y.sum())
+    extra_neg = [feat for ep_data in random_ep_data
+                 for frontier, _, *_ in ep_data for feat in frontier]
+    X, y = agent._build_ranked_dataset(step_map, extra_negatives=extra_neg)
+    n_pos = int((y > 0).sum())
 
     if verbose:
         print(f"[{label}] Dataset: {len(X)} unique vectors"
               f" ({n_pos} positive, {len(X) - n_pos} negative) | Training to convergence ...", flush=True)
 
-    loss = agent._train_until_converged(X, y, verbose=verbose)
+    loss = agent._train_until_converged(X, y, verbose=verbose, step_map=step_map, use_mse=True)
 
     if verbose:
         print(f"[{label}] Final loss={loss:.2e}", flush=True)
-        print(f"[{label}] Replaying best path:", flush=True)
-    env.set_verbose(verbose)
-    path_actions = [a for _, a, *_ in best_data]
-    _, _, _, r_director, r_transitions = agent._run_episode_fixed(env, fsp_path, path_actions)
-    env.set_verbose(False)
-    if not verbose:
-        dt_str = f"{r_director}" if r_director is not None else "?"
-        tr_str = f"{r_transitions}" if r_transitions is not None else "?"
-        print(f"  [Replay] expansions={tr_str} | decisions={len(best_data)} | director={dt_str}", flush=True)
+        print(f"[{label}] Network greedy replay:", flush=True)
+    net_data, _, _, r_director, r_transitions = agent._run_episode_greedy(env, fsp_path)
+    net_path = [a for _, a, *_ in net_data]
+    best_path_actions = [a for _, a, *_ in best_data]
+    match = net_path == best_path_actions
+    if verbose:
+        agent._print_best_path(net_data)
+        if not match:
+            print(f"  [Replay] path=[{' '.join(str(a) for a in net_path)}] (best=[{' '.join(str(a) for a in best_path_actions)}])", flush=True)
+    else:
+        best_path_str = " ".join(str(a) for a in best_path_actions)
+        net_path_str  = " ".join(str(a) for a in net_path)
+        print(f"  [Replay] best=[{best_path_str}]", flush=True)
+        print(f"           got= [{net_path_str}] | match={match}", flush=True)
 
     agent.save_onnx(str(results_path / "path_best.onnx"))
     agent.save_model(str(results_path / "path_best.pt"))
@@ -430,9 +562,8 @@ def train(
         fixed_tup = agent._run_episode_fixed(env, fsp_path, effective_best_path)
         fixed_data, fixed_reward, fixed_real, fixed_director, fixed_transitions = fixed_tup
 
-        if verbose:
-            print(f"[best_path] Replaying known path (reward={fixed_reward}) | "
-                  f"Running {agent.random_explore} random episodes ...", flush=True)
+        print(f"[best_path] Replaying known path (reward={fixed_reward}) | "
+              f"Running {agent.random_explore} random episodes ...", flush=True)
         random_episodes = []
         for _ in range(agent.random_explore):
             ep_tup = agent._run_episode_random(env, fsp_path)
@@ -441,14 +572,12 @@ def train(
         best_random_tup = max(random_episodes, key=lambda x: x[1])
         if best_random_tup[1] > fixed_reward:
             best_data, best_reward, best_real, best_director, best_transitions = best_random_tup
-            if verbose:
-                print(f"[best_path] Random found better path (reward={best_reward})", flush=True)
+            print(f"[best_path] Random found better path (reward={best_reward})", flush=True)
         else:
             best_data, best_reward, best_real, best_director, best_transitions = (
                 fixed_data, fixed_reward, fixed_real, fixed_director, fixed_transitions
             )
-            if verbose:
-                print(f"[best_path] Known path remains best (reward={best_reward})", flush=True)
+            print(f"[best_path] Known path remains best (reward={best_reward})", flush=True)
 
         all_ep_data = [fixed_data] + [ep[0] for ep in random_episodes]
         _supervised_train_on_path(
@@ -469,7 +598,22 @@ def train(
         global_best = max(episodes, key=lambda x: x[1])
         best_data, _, best_real, best_director, best_transitions = global_best
 
-        X, y = agent._build_dataset(best_data)
+        step_map = {}
+        for step_idx, (frontier_feats, chosen, *_) in enumerate(best_data):
+            chosen_key = tuple(frontier_feats[chosen])
+            seen_keys = set()
+            for feat in frontier_feats:
+                key = tuple(feat)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                if key not in step_map:
+                    step_map[key] = ([], [])
+                if key == chosen_key:
+                    step_map[key][0].append(step_idx)
+                else:
+                    step_map[key][1].append(step_idx)
+        X, y = agent._build_ranked_dataset(step_map)
         if verbose:
             dt_str   = f" | director={best_director:5d}" if best_director is not None else ""
             tr_str   = f" | expanded={best_transitions:6d}" if best_transitions is not None else ""
@@ -477,19 +621,23 @@ def train(
             print(f"[explore_all] Solved{dt_str}{tr_str} | steps={len(best_data)} | path=[{path_str}]", flush=True)
             print(f"[explore_all] Dataset: {len(X)} samples | Training to convergence ...", flush=True)
 
-        loss = agent._train_until_converged(X, y, verbose=verbose)
+        loss = agent._train_until_converged(X, y, verbose=verbose, step_map=step_map, use_mse=True)
 
         if verbose:
             print(f"[explore_all] Final loss={loss:.2e}", flush=True)
-            print(f"[explore_all] Replaying best path:", flush=True)
-        env.set_verbose(verbose)
-        path_actions = [a for _, a, *_ in best_data]
-        _, _, _, r_director, r_transitions = agent._run_episode_fixed(env, fsp_path, path_actions)
-        env.set_verbose(False)
-        if not verbose:
+            print(f"[explore_all] Network greedy replay:", flush=True)
+        net_data, _, _, r_director, r_transitions = agent._run_episode_greedy(env, fsp_path)
+        net_path = [a for _, a, *_ in net_data]
+        best_path_actions = [a for _, a, *_ in best_data]
+        match = net_path == best_path_actions
+        if verbose:
+            agent._print_best_path(net_data)
+            if not match:
+                print(f"  [Replay] path=[{' '.join(str(a) for a in net_path)}] (best=[{' '.join(str(a) for a in best_path_actions)}])", flush=True)
+        else:
             dt_str = f"{r_director}" if r_director is not None else "?"
             tr_str = f"{r_transitions}" if r_transitions is not None else "?"
-            print(f"  [Replay] expansions={tr_str} | decisions={len(best_data)} | director={dt_str}", flush=True)
+            print(f"  [Replay] expansions={tr_str} | decisions={len(net_data)} | director={dt_str} | match_best={match}", flush=True)
 
         agent.save_onnx(str(results_path / "path_best.onnx"))
         agent.save_model(str(results_path / "path_best.pt"))
@@ -517,8 +665,23 @@ def train(
         print(f"[Round   0] Building dataset ({sum(len(f) for f, _, *_ in best_data)} samples) "
               f"and training {agent.train_epochs} epochs ...", flush=True)
 
-    X, y  = agent._build_dataset(best_data)
-    loss  = agent._train_until_converged(X, y, verbose=verbose)
+    step_map = {}
+    for step_idx, (frontier_feats, chosen, *_) in enumerate(best_data):
+        chosen_key = tuple(frontier_feats[chosen])
+        seen_keys = set()
+        for feat in frontier_feats:
+            key = tuple(feat)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            if key not in step_map:
+                step_map[key] = ([], [])
+            if key == chosen_key:
+                step_map[key][0].append(step_idx)
+            else:
+                step_map[key][1].append(step_idx)
+    X, y  = agent._build_ranked_dataset(step_map)
+    loss  = agent._train_until_converged(X, y, verbose=verbose, step_map=step_map, use_mse=True)
 
     if verbose:
         print(f"[Round   0] Feature size={agent.feature_size} | train loss={loss:.6f}", flush=True)
@@ -548,8 +711,23 @@ def train(
             global_best = round_best
         best_data, best_reward, best_real, best_director, best_transitions = global_best
 
-        X, y  = agent._build_dataset(best_data)
-        loss  = agent._train_until_converged(X, y, verbose=verbose)
+        step_map = {}
+        for step_idx, (frontier_feats, chosen, *_) in enumerate(best_data):
+            chosen_key = tuple(frontier_feats[chosen])
+            seen_keys = set()
+            for feat in frontier_feats:
+                key = tuple(feat)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                if key not in step_map:
+                    step_map[key] = ([], [])
+                if key == chosen_key:
+                    step_map[key][0].append(step_idx)
+                else:
+                    step_map[key][1].append(step_idx)
+        X, y  = agent._build_ranked_dataset(step_map)
+        loss  = agent._train_until_converged(X, y, verbose=verbose, step_map=step_map, use_mse=True)
 
         if verbose:
             imp      = "↑" if round_best[1] > best_ever_reward else " "
@@ -585,15 +763,19 @@ def train(
             break
 
     if verbose:
-        print(f"\n[Final replay] Best path:", flush=True)
-    env.set_verbose(verbose)
-    path_actions = [a for _, a, *_ in best_data]
-    _, _, _, r_director, r_transitions = agent._run_episode_fixed(env, fsp_path, path_actions)
-    env.set_verbose(False)
-    if not verbose:
+        print(f"\n[Final replay] Network greedy:", flush=True)
+    net_data, _, _, r_director, r_transitions = agent._run_episode_greedy(env, fsp_path)
+    net_path = [a for _, a, *_ in net_data]
+    best_path_actions = [a for _, a, *_ in best_data]
+    match = net_path == best_path_actions
+    if verbose:
+        agent._print_best_path(net_data)
+        if not match:
+            print(f"  [Final replay] path=[{' '.join(str(a) for a in net_path)}] (best=[{' '.join(str(a) for a in best_path_actions)}])", flush=True)
+    else:
         dt_str = f"{r_director}" if r_director is not None else "?"
         tr_str = f"{r_transitions}" if r_transitions is not None else "?"
-        print(f"  [Final replay] expansions={tr_str} | decisions={len(best_data)} | director={dt_str}", flush=True)
+        print(f"  [Final replay] expansions={tr_str} | decisions={len(net_data)} | director={dt_str} | match_best={match}", flush=True)
 
     print(
         f"\n[STOP] PathLearning | {stop_reason}"

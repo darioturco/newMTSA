@@ -355,6 +355,32 @@ Pila $\to$ ignorados garantiza que todas las ramas no-controlables se exploran \
 \end{frame}
 
 %=======================================================================
+% ESTADOS Y SUB-ESTADOS
+%=======================================================================
+\begin{frame}{Estados de la Planta}
+
+\textbf{Estado de la planta:} tupla de sub-estados, uno por cada LTS componente.
+\[
+  s = (s_0,\; s_1,\; \ldots,\; s_{m-1})
+\]
+
+\bigskip
+\textbf{Ejemplo:}
+\[
+  \texttt{Wait[2] | Wait[4] | Next[1] | Next[0] | off}
+\]
+
+\medskip
+Cada elemento es un sub-estado: \texttt{Wait[2]} es el sub-estado del primer LTS, \texttt{Wait[4]} el del segundo, etc.
+
+\bigskip
+\begin{alertblock}{Información valiosa}
+Los sub-estados son strings con semántica del componente. El \texttt{picker} los lee para decidir qué transición controlable expandir.
+\end{alertblock}
+
+\end{frame}
+
+%=======================================================================
 % PICKERS POR FAMILIA
 %=======================================================================
 \begin{frame}{}
@@ -757,11 +783,254 @@ Confirmar la compra cuando todos los servicios aceptaron; si no, comprar el serv
 \addlegendentry{TL}
 \addplot+[fill=teal!70,   draw=teal!90!black]    coordinates {(RA,60)  (SuperDFS,129)};
 \addlegendentry{TA}
+\node[above, font=\normalsize\bfseries] at (axis cs:RA, 700) {700};
+\node[above, font=\normalsize\bfseries] at (axis cs:SuperDFS, 780) {780};
 \end{axis}
-% Totals on top
-\node[font=\normalsize\bfseries] at (2.55,6.30) {700};
-\node[font=\normalsize\bfseries] at (6.45,6.95) {780};
 \end{tikzpicture}
+\end{center}
+\end{frame}
+
+%=======================================================================
+% SUPER RL -- SEPARADOR
+%=======================================================================
+\begin{frame}{}
+\begin{center}
+\Huge Super RL
+\end{center}
+\end{frame}
+
+%=======================================================================
+% SUPER RL -- QUÉ ES
+%=======================================================================
+\begin{frame}{Super RL -- Idea}
+
+\begin{block}{Objetivo}
+Reemplazar el \texttt{picker} manual de SuperDFS por una red neuronal entrenada por RL.
+\end{block}
+
+\bigskip
+\textbf{Arquitectura:}
+\begin{itemize}
+  \item Red MLP: recibe el \textbf{vector de features} de cada transición candidata y devuelve un score.
+  \item En cada paso se elige la transición con mayor score (\emph{argmax}).
+  \item Una red por familia (AT, DP, BW, CM, TL, TA).
+\end{itemize}
+
+\bigskip
+\begin{alertblock}{Mismo esqueleto que SuperDFS}
+El algoritmo de exploración (pila, ignorados, fallback) es idéntico. Solo cambia el \texttt{picker}: en lugar de reglas codificadas a mano, usa la red.
+\end{alertblock}
+
+\end{frame}
+
+%=======================================================================
+% SUPER_CUSTOM FEATURES
+%=======================================================================
+\begin{frame}{Features: \texttt{SUPER\_CUSTOM}}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{c|c|l}
+\toprule
+Familia & \# & Features \\
+\midrule
+AT & 5 & \texttt{is\_approach, target\_empty, consecutive,} \\
+   &   & \texttt{height\_norm, height\_matches\_slot} \\
+\midrule
+DP & 5 & \texttt{is\_take, ready, hungry, min\_ready\_idx, min\_hungry\_idx} \\
+\midrule
+BW & 7 & \texttt{is\_approve, is\_refuse, is\_assign, doc\_rejected,} \\
+   &   & \texttt{crew\_pending, crew\_rejected, min\_eligible} \\
+\midrule
+CM & 3 & \texttt{dist\_to\_safe\_norm, is\_min\_dist, is\_min\_mouse} \\
+\midrule
+TL & 2 & \texttt{dest\_explored, is\_max\_idx} \\
+\midrule
+TA & 6 & \texttt{is\_succ, is\_fail, is\_purchase,} \\
+   &   & \texttt{all\_success, this\_success, dist\_to\_disallow\_norm} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{frame}
+
+%=======================================================================
+% ENTRENAMIENTO -- PathLearning
+%=======================================================================
+\begin{frame}{Entrenamiento: PathLearning}
+
+\textbf{Objetivo:} aprender a imitar el mejor camino encontrado.
+
+\bigskip
+\begin{enumerate}
+  \item \textbf{Ronda 0 -- exploración aleatoria:} correr $N$ episodios aleatorios. Guardar el episodio con mayor reward (= menos expansiones). \textbf{Ese es el mejor path.}
+
+  \bigskip
+  \item \textbf{Rondas $k > 0$ -- guided:} correr $N$ episodios con la red actual ($\varepsilon$-greedy). Si alguno supera el mejor path global, actualizarlo.
+
+  \bigskip
+  \item \textbf{Entrenamiento por ronda:} construir un dataset desde el mejor path y re-entrenar la red desde cero hasta convergencia.
+\end{enumerate}
+
+\end{frame}
+
+%=======================================================================
+% ENTRENAMIENTO -- Ranking de feature vectors
+%=======================================================================
+\begin{frame}{Entrenamiento: Ranking de Feature Vectors}
+
+\textbf{¿Cómo construir el dataset desde el mejor path?}
+
+\bigskip
+Para cada feature vector (FV) único observado, se rastrean:
+\begin{itemize}
+  \item $\text{gano}$: pasos donde ese FV fue \emph{elegido}
+  \item $\text{perdio}$: pasos donde ese FV estaba pero \emph{no fue elegido}
+\end{itemize}
+
+\medskip
+\textbf{Dominancia:} $A$ domina a $B$ si $A$ ganó en algún paso donde $B$ estaba y perdió.
+
+\medskip
+\textbf{Target:}
+\[
+  y = \begin{cases}
+    -1 & \text{si } \text{gano} = \emptyset \\
+    |\text{gano}| - |\{B : B \text{ domina a } A\}| & \text{si no}
+  \end{cases}
+\]
+
+\medskip
+Los targets se colapsan a rangos densos. La red se entrena con MSELoss; en inferencia se usa \emph{argmax}.
+
+\end{frame}
+
+%=======================================================================
+% GRAFICO COMPARATIVO 3 MODELOS
+%=======================================================================
+\begin{frame}[shrink=2]{Comparativa -- RA vs SuperDFS vs SuperRL (budget = 15\,000)}
+\begin{center}
+\begin{tikzpicture}
+\begin{axis}[
+    ybar stacked,
+    bar width=1.3cm,
+    symbolic x coords={RA, SuperDFS, SuperRL},
+    xtick=data,
+    x tick label style={font=\large\bfseries},
+    ylabel={Instancias resueltas},
+    ylabel style={font=\normalsize},
+    ymin=0, ymax=900,
+    width=10cm, height=7.1cm,
+    legend style={at={(1.02,1)}, anchor=north west, font=\scriptsize},
+    legend cell align=left,
+    enlarge x limits=0.4,
+    xtick style={draw=none},
+    ymajorgrids=true,
+    grid style={dashed, gray!40},
+    nodes near coords,
+    nodes near coords align={center},
+    nodes near coords style={font=\scriptsize\bfseries, text=white},
+    every node near coord/.append style={yshift=0pt},
+]
+\addplot+[fill=blue!50,   draw=blue!80!black]    coordinates {(RA,81)  (SuperDFS,85)  (SuperRL,85)};
+\addlegendentry{AT}
+\addplot+[fill=orange!70, draw=orange!90!black]  coordinates {(RA,146) (SuperDFS,146) (SuperRL,165)};
+\addlegendentry{BW}
+\addplot+[fill=red!60,    draw=red!80!black]     coordinates {(RA,23)  (SuperDFS,30)  (SuperRL,30)};
+\addlegendentry{CM}
+\addplot+[fill=green!60!black, draw=green!80!black] coordinates {(RA,165) (SuperDFS,165) (SuperRL,165)};
+\addlegendentry{DP}
+\addplot+[fill=purple!60, draw=purple!80!black]  coordinates {(RA,225) (SuperDFS,225) (SuperRL,225)};
+\addlegendentry{TL}
+\addplot+[fill=teal!70,   draw=teal!90!black]    coordinates {(RA,60)  (SuperDFS,129) (SuperRL,129)};
+\addlegendentry{TA}
+\node[above, font=\normalsize\bfseries] at (axis cs:RA, 700)      {700};
+\node[above, font=\normalsize\bfseries] at (axis cs:SuperDFS, 780) {780};
+\node[above, font=\normalsize\bfseries] at (axis cs:SuperRL, 799)  {799};
+\end{axis}
+\end{tikzpicture}
+\end{center}
+\end{frame}
+
+%=======================================================================
+% SUPER RL -- HEATMAPS
+%=======================================================================
+\begin{frame}{SuperRL -- Instancias resueltas (budget = 15\,000)}
+\begin{center}
+\vspace{-6pt}
+\cmap{AT (85/225)}{%
+  \fill[cB1] (0,0) rectangle (15,2);
+  \fill[cB1] (0,2) rectangle (1,3);
+  \fill[cB2] (1,2) rectangle (15,3);
+  \fill[cB1] (0,3) rectangle (1,4);
+  \fill[cB2] (1,3) rectangle (2,4);
+  \fill[cB3] (2,3) rectangle (3,4);
+  \fill[cB2] (3,3) rectangle (7,4);
+  \fill[cB3] (7,3) rectangle (15,4);
+  \fill[cB1] (0,4) rectangle (1,5);
+  \fill[cB3] (1,4) rectangle (2,5);
+  \fill[cB4] (2,4) rectangle (3,5);
+  \fill[cB4] (4,4) rectangle (15,5);
+  \fill[cB1] (0,5) rectangle (1,6);
+  \fill[cB4] (1,5) rectangle (2,6);
+  \fill[cB1] (0,6) rectangle (1,15);
+}%
+\hspace{6pt}%
+\cmap{BW (165/225)}{%
+  \fill[cB1] (0,0) rectangle (15,2);
+  \fill[cB1] (0,2) rectangle (8,3);
+  \fill[cB2] (8,2) rectangle (15,3);
+  \fill[cB1] (0,3) rectangle (4,4);
+  \fill[cB2] (4,3) rectangle (15,4);
+  \fill[cB2] (0,4) rectangle (15,7);
+  \fill[cB3] (0,7) rectangle (15,10);
+  \fill[cB4] (0,10) rectangle (15,11);
+}%
+\hspace{6pt}%
+\cmap{CM (30/225)}{%
+  \fill[cB1] (0,0) rectangle (3,1);
+  \fill[cB2] (3,0) rectangle (15,1);
+  \fill[cB2] (0,1) rectangle (3,2);
+  \fill[cB3] (3,1) rectangle (6,2);
+  \fill[cB4] (6,1) rectangle (11,2);
+  \fill[cB2] (0,2) rectangle (1,3);
+  \fill[cB3] (1,2) rectangle (2,3);
+  \fill[cB4] (2,2) rectangle (3,3);
+  \fill[cB4] (0,3) rectangle (1,4);
+}%
+\\[3pt]
+\cmap{DP (165/225)}{%
+  \fill[cB1] (0,0) rectangle (15,3);
+  \fill[cB1] (0,3) rectangle (10,4);
+  \fill[cB2] (10,3) rectangle (15,4);
+  \fill[cB2] (0,4) rectangle (15,8);
+  \fill[cB3] (0,8) rectangle (15,10);
+  \fill[cB4] (0,10) rectangle (15,11);
+}%
+\hspace{6pt}%
+\cmap{TL (225/225)}{%
+  \fill[cB1] (0,0) rectangle (15,15);
+}%
+\hspace{6pt}%
+\cmap{TA (129/225)}{%
+  \fill[cB1] (0,0) rectangle (15,1);
+  \fill[cB1] (0,1) rectangle (6,2);
+  \fill[cB2] (6,1) rectangle (15,2);
+  \fill[cB2] (0,2) rectangle (15,4);
+  \fill[cB2] (0,4) rectangle (7,5);
+  \fill[cB3] (7,4) rectangle (15,5);
+  \fill[cB2] (0,5) rectangle (2,6);
+  \fill[cB3] (2,5) rectangle (15,6);
+  \fill[cB3] (0,6) rectangle (10,7);
+  \fill[cB4] (10,6) rectangle (15,7);
+  \fill[cB3] (0,7) rectangle (3,8);
+  \fill[cB4] (3,7) rectangle (15,8);
+  \fill[cB4] (0,8) rectangle (7,9);
+  \fill[cB4] (0,9) rectangle (2,10);
+}%
+
+\vspace{3pt}
+\hmlegend
 \end{center}
 \end{frame}
 

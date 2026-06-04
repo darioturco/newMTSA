@@ -33,19 +33,27 @@ public class Benchmark {
     static final int    EXPANSION_LIMIT   = 15_000;
     static final String BENCHMARK_DIR     = "fsp/Blocking/Benchmark";
     static final Map<String, String> ONNX_FILES = Map.of(
-        "TA", "python\\results\\blocking\\TA\\super_custom\\path_flat\\path_best.onnx",
-        "AT", "python\\results\\blocking\\AT\\super_custom\\path_flat\\path_best.onnx",
-        "BW", "python\\results\\blocking\\BW\\super_custom\\path_flat\\path_best.onnx",
-        "DP", "python\\results\\blocking\\DP\\super_custom\\path_flat\\path_best.onnx",
-        "CM", "python\\results\\blocking\\CM\\super_custom\\path_flat\\path_best.onnx",
-        "TL", "python\\results\\blocking\\TL\\super_custom\\path_flat\\path_best.onnx"
+        "TA", "python\\results\\blocking\\TA\\super_custom\\path_flat\\path_best.onnx", // Best
+        "AT", "python\\results\\blocking\\AT\\super_custom\\path_flat\\path_best.onnx", // Bad
+        "BW", "python\\results\\blocking\\BW\\super_custom\\path_flat\\path_best.onnx", // Supera Best
+        "DP", "python\\results\\blocking\\DP\\super_custom\\path_flat\\path_best.onnx", // Best
+        "CM", "python\\results\\blocking\\CM\\super_custom\\path_flat\\path_best.onnx", // Best
+        "TL", "python\\results\\blocking\\TL\\super_custom\\path_flat\\path_best.onnx" // Best
     );
+    /*static final Map<String, String> ONNX_FILES = Map.of(
+        "TA", "python\\results\\blocking\\TA\\super_general\\path_flat\\path_best.onnx", // Casi Best
+        "AT", "python\\results\\blocking\\AT\\super_general\\path_flat\\path_best.onnx", // Casi Best
+        "BW", "python\\results\\blocking\\BW\\super_general\\path_flat\\path_best.onnx", // Best
+        "DP", "python\\results\\blocking\\DP\\super_general\\path_flat\\path_best.onnx", // Best (sacando los features Float)
+        "CM", "python\\results\\blocking\\CM\\super_general\\path_flat\\path_best.onnx", // Bad
+        "TL", "python\\results\\blocking\\TL\\super_general\\path_flat\\path_best.onnx" // Best
+    );*/
     static final String HEURISTIC         = "SuperRL"; // options: "SuperDFS", "SuperRL", "SuperHuman"
-    static final String FEATURE_GROUP     = "SUPER_CUSTOM"; // options: "BASIC", "ROL", "SUPER", "SUPER_CUSTOM" — used by feature-based heuristics
-    //static final String[] FAMILIES        = {"TA", "AT", "BW", "CM", "DP", "TL"};
+    static final String FEATURE_GROUP     = "SUPER_CUSTOM"; // options: "BASIC", "ROL", "SUPER", "SUPER_CUSTOM", "SUPER_GENERAL" — used by feature-based heuristics
+    //static final String[] FAMILIES        = {"BW", "CM", "DP", "TL", "TA", "AT"};
     //static final String[] FAMILIES        = {"TA", "AT", "BW", "DP", "TL"};
-    static final String[] FAMILIES        = {"BW"};
-    static final boolean  TIMEOUT_CUTS    = true;  // false = run every instance regardless of prior timeouts
+    static final String[] FAMILIES        = {"AT"};
+    static final boolean  TIMEOUT_CUTS    = false;  // false = run every instance regardless of prior timeouts
 
     public static void main(String[] args) throws IOException {
         Path outDir = Paths.get("python/results/Benchmark");
@@ -100,8 +108,9 @@ public class Benchmark {
 
                     csv.printf("%s,%d,%d,,%d,%d%n", family, n, k, run.transitions, timeOut);
                     csv.flush();
-                    System.out.printf("  N=%2d K=%2d | %s  transitions=%d%n",
-                            n, k, solved ? "SOLVED " : "TIMEOUT", run.transitions);
+                    String directorStr = solved ? "Director=" + run.directorTransitions : "Director=NO RESOLUBLE";
+                    System.out.printf("  N=%2d K=%2d | %s  transitions=%d  %s%n",
+                            n, k, solved ? "SOLVED " : "TIMEOUT", run.transitions, directorStr);
 
                     if (!solved && TIMEOUT_CUTS) {
                         skipFromK = k + 1;          // skip k > j for same n
@@ -162,7 +171,10 @@ public class Benchmark {
             int t = result.transitionsExplored();
             if (t > EXPANSION_LIMIT) t = EXPANSION_LIMIT;
             if (h instanceof AutoCloseable ac) { try { ac.close(); } catch (Exception ignored) {} }
-            return BenchmarkRun.of(t, elapsedMs);
+            int directorT = result.isRealizable()
+                    ? result.enabled().values().stream().mapToInt(List::size).sum()
+                    : -1;
+            return BenchmarkRun.of(t, elapsedMs, directorT);
         } catch (Exception e) {
             System.err.printf("  ERROR %s N=%d K=%d: %s%n", family, n, k, e.getMessage());
             if (e.getCause() != null) System.err.printf("    cause: %s%n", e.getCause().getMessage());
@@ -210,9 +222,9 @@ public class Benchmark {
         }
     }
 
-    private record BenchmarkRun(int transitions, long timeMs, boolean isError) {
-        static BenchmarkRun timeout()              { return new BenchmarkRun(EXPANSION_LIMIT, -1, false); }
-        static BenchmarkRun asError()              { return new BenchmarkRun(EXPANSION_LIMIT, -1, true);  }
-        static BenchmarkRun of(int t, long ms)     { return new BenchmarkRun(t, ms, false); }
+    private record BenchmarkRun(int transitions, long timeMs, boolean isError, int directorTransitions) {
+        static BenchmarkRun timeout()                    { return new BenchmarkRun(EXPANSION_LIMIT, -1, false, -1); }
+        static BenchmarkRun asError()                    { return new BenchmarkRun(EXPANSION_LIMIT, -1, true,  -1); }
+        static BenchmarkRun of(int t, long ms, int dir)  { return new BenchmarkRun(t, ms, false, dir); }
     }
 }

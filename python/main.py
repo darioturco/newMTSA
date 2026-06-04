@@ -13,8 +13,8 @@ fsp_path     : path to the .fsp instance file
 mode         : random | dqn | ppo | sac | path  (default: dqn)
 network      : flat | lstm | transformer  (default: flat)
 episodes     : number of episodes for random mode  (default: 1)
-feature_type : BASIC | ROL | SUPER | SUPER_CUSTOM  (default: ROL)
-               SUPER / SUPER_CUSTOM automatically use heuristic=SUPER_RL.
+feature_type : BASIC | ROL | SUPER | SUPER_CUSTOM | SUPER_GENERAL  (default: ROL)
+               SUPER / SUPER_CUSTOM / SUPER_GENERAL automatically use heuristic=SUPER_RL.
 
 Examples
 --------
@@ -36,6 +36,7 @@ Examples
 
 import sys
 import os
+import time
 from pathlib import Path
 
 # Handle --graph before JVM-starting imports so it works without Java/ONNX.
@@ -71,15 +72,16 @@ DEFAULT_EPISODES = 1             # only used for random mode
 # BASIC        : action one-hot, state label, controllable, phase, deadlock, neighborhood, …
 # ROL          : all BASIC features + role-based component encoding + action one-hot + has_index
 # SUPER        : per-transition scoring features — all in [-1,1]. Requires heuristic=SUPER_RL
-#                (auto-selected when feature_type is SUPER or SUPER_CUSTOM).
+#                (auto-selected when feature_type is SUPER / SUPER_CUSTOM / SUPER_GENERAL).
 # SUPER_CUSTOM : family-specific features (AT:7, DP:7, BW:8, CM:4, TL:2, TA:7). Flat only.
-FEATURE_TYPE     = "ROL"       # BASIC | ROL | SUPER | SUPER_CUSTOM  ← change here to switch globally
+# SUPER_GENERAL: SUPER + cross-candidate index ranking; family-agnostic, no hardcoded substates. Flat only.
+FEATURE_TYPE     = "ROL"       # BASIC | ROL | SUPER | SUPER_CUSTOM | SUPER_GENERAL  ← change here to switch globally
 VERBOSE_HEURISTIC = True      # Print every SuperRL expansion + decision candidates (very noisy)
 # ──────────────────────────────────────────────────────────────────────────────
 
 RESULTS_BASE = Path(__file__).parent / "results"
 
-_SUPER_FEATURE_TYPES = ("SUPER", "SUPER_CUSTOM")
+_SUPER_FEATURE_TYPES = ("SUPER", "SUPER_CUSTOM", "SUPER_GENERAL")
 
 
 def _make_env(feature_type: str, verbose: bool = False) -> DCSEnvironment:
@@ -206,19 +208,23 @@ def main() -> None:
 
     #train_agent(fsp_path, mode, network, feature_type, episodes)
     
-    #train_agent("..\\fsp\\Blocking\\Benchmark\\TL\\TL-2-2.fsp", "dqn", "flat", "SUPER")
     #train_agent("..\\fsp\\Blocking\\Benchmark\\TL\\TL-2-2.fsp", "path", "flat", "SUPER_CUSTOM")
-    
-    #train_agent("..\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp", "dqn", "flat", "SUPER")
-    #train_agent("..\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp", "path", "flat", "SUPER_CUSTOM")
-    #train_agent("..\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp", "dqn", "flat", "SUPER")
+    train_agent("..\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp", "path", "flat", "SUPER_CUSTOM")
     #train_agent("..\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp", "path", "flat", "SUPER_CUSTOM")
-    #train_agent("..\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp", "dqn", "flat", "SUPER")
-    train_agent("..\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp", "path", "flat", "SUPER_CUSTOM")
-    #train_agent("..\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp", "dqn", "flat", "SUPER")
+    #train_agent("..\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp", "path", "flat", "SUPER_CUSTOM")
     #train_agent("..\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp", "path", "flat", "SUPER_CUSTOM")
-    #train_agent("..\\fsp\\Blocking\\Benchmark\\CM\\CM-2-2.fsp", "dqn", "flat", "SUPER")
     #train_agent("..\\fsp\\Blocking\\Benchmark\\CM\\CM-2-2.fsp", "path", "flat", "SUPER_CUSTOM")
+
+
+
+    #train_agent("..\\fsp\\Blocking\\Benchmark\\TL\\TL-2-2.fsp", "path", "flat", "SUPER_GENERAL")
+    #train_agent("..\\fsp\\Blocking\\Benchmark\\AT\\AT-2-2.fsp", "path", "flat", "SUPER_GENERAL")
+    #train_agent("..\\fsp\\Blocking\\Benchmark\\DP\\DP-2-2.fsp", "path", "flat", "SUPER_GENERAL")
+    #train_agent("..\\fsp\\Blocking\\Benchmark\\BW\\BW-2-2.fsp", "path", "flat", "SUPER_GENERAL")
+    #train_agent("..\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp", "path", "flat", "SUPER_GENERAL")
+    #train_agent("..\\fsp\\Blocking\\Benchmark\\CM\\CM-2-2.fsp", "path", "flat", "SUPER_GENERAL")
+
+
 
     #train_agent("..\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp", "dqn", "flat", "ROL")
     #train_agent("..\\fsp\\Blocking\\Benchmark\\TA\\TA-2-2.fsp", "dqn", "flat", "BASIC")
@@ -227,7 +233,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
+        t0 = time.time()
         main()
+        elapsed = time.time() - t0
+        h, rem = divmod(int(elapsed), 3600)
+        m, s = divmod(rem, 60)
+        print(f"\nTraining time: {h:02d}:{m:02d}:{s:02d} ({elapsed:.1f}s total)")
     except KeyboardInterrupt:
         print("\n[Interrupted]", flush=True)
         os._exit(0)

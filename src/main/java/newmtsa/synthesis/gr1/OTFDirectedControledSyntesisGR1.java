@@ -90,6 +90,14 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
     private final Map<String, Boolean>                  assumptionSatCache = new HashMap<>();
     private       boolean                               pendingDirty = false;
 
+    // Tracks whether any marked state has been visited — mirrors featuresCtx.markedStateFound
+    // but remains valid even when featureCompute (and thus featuresCtx) is null (deploy mode).
+    private       boolean                               anyMarkedStateFound = false;
+
+    // Count of closed winning loops — mirrors featuresCtx.closedWinningLoopsCount but remains
+    // valid when featuresCtx is null (deploy mode).
+    private       int                                   closedWinningLoops = 0;
+
     // ── feature computation ───────────────────────────────────────────────────
 
     private final FeatureCompute  featureCompute;
@@ -241,7 +249,9 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
         this.compMarked = Collections.unmodifiableList(cm);
         heuristic.init(new SimpleSynthesisContext(this.components, this.compMarked, this.controllable) {
             @Override public Set<String>              exploredStates()            { return succMap.keySet(); }
-            @Override public Set<String>              goals()                     { return goals; }
+            // Must qualify: SimpleSynthesisContext declares its own (always-empty) `goals`
+            // field, which would otherwise shadow the enclosing engine's live goals set.
+            @Override public Set<String>              goals()                     { return OTFDirectedControledSyntesisGR1.this.goals; }
             @Override public Set<String>              errors()                    { return errors; }
             @Override public List<ExtendedTransition> successorsOf(String s)      { return succMap.getOrDefault(s, List.of()); }
             @Override public Set<String>              predecessorsOf(String s)    { return parents.getOrDefault(s, Set.of()); }
@@ -250,6 +260,8 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
             @Override public List<ExtendedTransition> getFutureAddToFrontier(ExtendedTransition t) {
                 return OTFDirectedControledSyntesisGR1.this.getFutureAddToFrontier(t);
             }
+            @Override public boolean isMarkedStateFound() { return anyMarkedStateFound; }
+            @Override public int     closedWinningLoopsCount() { return closedWinningLoops; }
         });
 
         this.featureCompute = featureCompute;
@@ -272,7 +284,10 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
             explorationEnded = true;
         } else {
             none.add(s0);
-            if (featuresCtx != null && isMarked(s0)) featuresCtx.markedStateFound = true;
+            if (isMarked(s0)) {
+                anyMarkedStateFound = true;
+                if (featuresCtx != null) featuresCtx.markedStateFound = true;
+            }
             List<ExtendedTransition> s0Trans = succMap.getOrDefault(s0, List.of());
             for (ExtendedTransition nt : s0Trans) nt.setStep(0);
             pending = new ArrayList<>();
@@ -451,6 +466,7 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
                 Set<String> loop = getMaxLoop(e, eʹ);
                 if (!loop.isEmpty()) {
                     if (canBeWinningLoop(loop)) {
+                        closedWinningLoops++;
                         if (featuresCtx != null) featuresCtx.closedWinningLoopsCount++;
                         Set<String> C = findNewGoalsIn(loop);
                         promoteToGoals(C);
@@ -470,7 +486,10 @@ public class OTFDirectedControledSyntesisGR1 implements OTFDirectedControlledSyn
                 propagateError(Set.of(eʹ));
             } else {
                 none.add(eʹ);
-                if (featuresCtx != null && isMarked(eʹ)) featuresCtx.markedStateFound = true;
+                if (isMarked(eʹ)) {
+                    anyMarkedStateFound = true;
+                    if (featuresCtx != null) featuresCtx.markedStateFound = true;
+                }
                 List<ExtendedTransition> newTransitions = succMap.getOrDefault(eʹ, List.of());
                 for (ExtendedTransition nt : newTransitions) nt.setStep(frontierStep);
                 if (frontierRestriction) {
